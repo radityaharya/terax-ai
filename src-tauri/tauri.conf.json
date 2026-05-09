@@ -55,11 +55,12 @@
     },
     "windows": {
       "webviewInstallMode": {
-        "type": "embedBootstrapper"
+        "type": "downloadBootstrapper"
       },
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["English"]
+        "languages": ["English"],
+        "displayLanguageSelector": false
       }
     },
     "category": "DeveloperTool",
