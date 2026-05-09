@@ -36,7 +36,9 @@ PTY shells are bootstrapped via injected init scripts in `src-tauri/src/modules/
 
 `pty/shell_init.rs` is split into `#[cfg(unix)]` / `#[cfg(windows)]` modules — keep new platform-specific code in the right cfg arm.
 
-ConPTY on Windows requires `SPAWN_LOCK` (Mutex) around `openpty + spawn_command` in `session.rs`. Concurrent spawns leave one of the resulting PTYs with a stalled output pipe (child alive, prompt never reaches xterm). React 19 strict-mode would otherwise spawn two PTYs back-to-back in dev; `useTerminalSession` defers its spawn through `setTimeout(0)` so the first mount's cleanup pre-empts the second mount's spawn entirely — only one PTY ever reaches Rust per real mount. Keep both: the lock is the production-side guarantee (fast tab spam), the deferral is the dev-side guarantee (strict mode).
+ConPTY on Windows requires `SPAWN_LOCK` (Mutex) around `openpty + spawn_command` in `session.rs`. Concurrent spawns leave one of the resulting PTYs with a stalled output pipe (child alive, prompt never reaches xterm). Don't remove the lock without verifying first-tab stability under fast tab spam.
+
+`AiComposerProvider` is mounted unconditionally at the App.tsx root: a conditional wrapper would change the parent element type when keys load, remounting the entire tree (and re-spawning every PTY) the moment `getAllKeys()` resolves. Production happened to dodge this because keychain reads can land in the same paint frame; dev didn't. Keep the unconditional wrap.
 
 ### Frontend (`src/`)
 
@@ -85,6 +87,7 @@ BYOK. Multi-provider via `@ai-sdk/*`: **OpenAI, Anthropic, Google, Groq, xAI, Ce
 - Animation: `motion` (Framer Motion successor). Resizable layout: `react-resizable-panels`.
 - Path imports: always `@/…`, never relative across modules.
 - Cross-platform paths: anywhere a path may originate from OSC 7, the explorer, or the OS, normalize separators with `.split(/[\\/]/)` rather than `.split("/")`.
+- Canonical path form on the frontend is **forward-slash**. `homeDir()` returns backslashes on Windows; convert at the boundary (App.tsx setHome). OSC 7 already arrives as forward-slash. Equal canonical strings keep `useFileTree` from wiping its tree and flashing the explorer when `tab.cwd` first arrives.
 
 ### Window styling
 
