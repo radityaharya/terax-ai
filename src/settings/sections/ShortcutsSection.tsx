@@ -282,6 +282,14 @@ function Recorder({
         return;
       }
 
+      // Require at least one primary modifier (Ctrl, Alt, Meta).
+      // Reject Shift‑only shortcuts that would insert a character.
+      const hasPrimaryModifier = e.ctrlKey || e.altKey || e.metaKey;
+      const isCharacterKey = e.key.length === 1; // anything that types a glyph
+      // this blocks shortcuts such as Shift+2 which would be "@" and Shift+, which would be "<" on many layouts
+      if (!hasPrimaryModifier && (!e.shiftKey || isCharacterKey)) {
+        return;
+      }
       onRecord({
         key: e.key,
         ctrl: e.ctrlKey,
