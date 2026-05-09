@@ -47,6 +47,7 @@ impl Drop for Session {
         }
     }
 }
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn spawn(
     cols: u16,
@@ -54,6 +55,8 @@ pub fn spawn(
     cwd: Option<String>,
     on_event: Channel<PtyEvent>,
 ) -> Result<(Arc<Session>, PtySize), String> {
+    let _spawn_guard = SPAWN_LOCK.lock().unwrap();
+
     let pty_system = native_pty_system();
     let size = PtySize {
         rows,
