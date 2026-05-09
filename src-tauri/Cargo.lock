@@ -4989,7 +4989,7 @@ dependencies = [
 
 [[package]]
 name = "terax"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
