@@ -1,13 +1,6 @@
 # terax-shell-integration (PowerShell)
 # Emits OSC 7 (cwd) + OSC 133 A/B/D so the host tracks cwd and prompt boundaries.
 
-# ConPTY's output stream sometimes stalls before the first write — the prompt
-# sits in a buffer until input forces a flush (the "blinking cursor" bug).
-# A no-op cursor-visible sequence written explicitly through [Console]::Out
-# wakes the pipe.
-[Console]::Out.Write([char]27 + "[?25h")
-[Console]::Out.Flush()
-
 if ($global:__TERAX_HOOKS_LOADED) { return }
 $global:__TERAX_HOOKS_LOADED = $true
 

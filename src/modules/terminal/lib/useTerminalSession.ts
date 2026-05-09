@@ -55,7 +55,14 @@ export function useTerminalSession({
     let disposed = false;
     const cleanups: Array<() => void> = [];
 
-    (async () => {
+    // Deferred one tick so strict-mode's cleanup pre-empts the first spawn
+    // otherwise two PTYs race and ConPTY stalls the survivor's output pipe.
+    const startTimer = setTimeout(() => {
+      if (disposed || !container.current) return;
+      void start();
+    }, 0);
+
+    const start = async () => {
       await document.fonts.load(`${FONT_SIZE}px "JetBrains Mono"`);
       if (disposed || !container.current) return;
 
@@ -195,10 +202,11 @@ export function useTerminalSession({
       });
 
       if (visible) term.focus();
-    })();
+    };
 
     return () => {
       disposed = true;
+      clearTimeout(startTimer);
       cleanups.forEach((fn) => fn());
       ptyRef.current?.close();
       ptyRef.current = null;
