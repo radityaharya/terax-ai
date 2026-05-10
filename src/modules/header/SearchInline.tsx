@@ -57,9 +57,8 @@ export const SearchInline = forwardRef<SearchInlineHandle, Props>(
     }, [userShortcuts]);
 
     const placeholder = useMemo(() => {
-      const base = target?.kind === "editor" ? "Search in file" : "Search";
-      return shortcutText ? `${base} (${shortcutText})` : base;
-    }, [target?.kind, shortcutText]);
+      return shortcutText ? `Search (${shortcutText})` : "Search";
+    }, [shortcutText]);
 
     const tooltipTitle = useMemo(() => {
       return shortcutText ? `Search (${shortcutText})` : "Search";
@@ -139,7 +138,7 @@ export const SearchInline = forwardRef<SearchInlineHandle, Props>(
                 ref={inputRef}
                 value={q}
                 placeholder={placeholder}
-                className="h-7 w-full bg-muted/80 pr-7 pl-7 text-xs placeholder:text-muted-foreground/70 focus-visible:ring-0"
+                className="h-7 w-full bg-muted/80 pr-7 pl-7 text-[11px] placeholder:text-muted-foreground/70 focus-visible:ring-0"
                 onChange={(e) => {
                   const next = e.target.value;
                   setQ(next);

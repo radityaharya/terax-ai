@@ -4,7 +4,7 @@ import {
   Cancel01Icon,
   Copy01Icon,
   MinusSignIcon,
-  Square01Icon,
+  SquareIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -45,7 +45,7 @@ export function WindowControls() {
         onClick={() => void w.toggleMaximize()}
       >
         <HugeiconsIcon
-          icon={maximized ? Copy01Icon : Square01Icon}
+          icon={maximized ? Copy01Icon : SquareIcon}
           size={13}
           strokeWidth={1.75}
         />
