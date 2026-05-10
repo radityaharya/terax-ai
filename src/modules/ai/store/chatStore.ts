@@ -247,10 +247,9 @@ export const useChatStore = create<StoreState>((set, get) => ({
   },
 
   apiKeys: { ...EMPTY_PROVIDER_KEYS },
-  setApiKeys: (keys) => set({ apiKeys: keys, agentMeta: IDLE_META }),
+  setApiKeys: (keys) => set({ apiKeys: keys }),
   setApiKey: (provider, key) => {
-    const next = { ...get().apiKeys, [provider]: key };
-    set({ apiKeys: next, agentMeta: IDLE_META });
+    set({ apiKeys: { ...get().apiKeys, [provider]: key } });
   },
 
   selectedModelId: DEFAULT_MODEL_ID,
