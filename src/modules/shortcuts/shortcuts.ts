@@ -1,6 +1,4 @@
-import { IS_MAC } from "@/lib/platform";
-
-export const DEFAULT_MODIFIER: keyof KeyBinding = IS_MAC ? "meta" : "ctrl";
+import { IS_MAC, MOD_KEY } from "@/lib/platform";
 
 /**
  * Single source of truth for keyboard shortcuts.
@@ -43,37 +41,37 @@ export const SHORTCUTS: Shortcut[] = [
     id: "settings.open",
     label: "Open settings",
     group: "General",
-    defaultBindings: [{ [DEFAULT_MODIFIER]: true, key: "," }],
+    defaultBindings: [{ [MOD_KEY]: true, key: "," }],
   },
   {
     id: "shortcuts.open",
     label: "Show keyboard shortcuts",
     group: "General",
-    defaultBindings: [{ [DEFAULT_MODIFIER]: true, key: "k" }],
+    defaultBindings: [{ [MOD_KEY]: true, key: "k" }],
   },
   {
     id: "tab.new",
     label: "New tab",
     group: "Tabs",
-    defaultBindings: [{ [DEFAULT_MODIFIER]: true, key: "t" }],
+    defaultBindings: [{ [MOD_KEY]: true, key: "t" }],
   },
   {
     id: "tab.newPreview",
     label: "New preview tab",
     group: "Tabs",
-    defaultBindings: [{ [DEFAULT_MODIFIER]: true, key: "p" }],
+    defaultBindings: [{ [MOD_KEY]: true, key: "p" }],
   },
   {
     id: "tab.newEditor",
     label: "New editor tab",
     group: "Tabs",
-    defaultBindings: [{ [DEFAULT_MODIFIER]: true, key: "e" }],
+    defaultBindings: [{ [MOD_KEY]: true, key: "e" }],
   },
   {
     id: "tab.close",
     label: "Close tab",
     group: "Tabs",
-    defaultBindings: [{ [DEFAULT_MODIFIER]: true, key: "w" }],
+    defaultBindings: [{ [MOD_KEY]: true, key: "w" }],
   },
   {
     id: "tab.next",
@@ -91,31 +89,31 @@ export const SHORTCUTS: Shortcut[] = [
     id: "tab.selectByIndex",
     label: "Jump to tab 1–9",
     group: "Tabs",
-    defaultBindings: [{ [DEFAULT_MODIFIER]: true, key: "1" }],
+    defaultBindings: [{ [MOD_KEY]: true, key: "1" }],
   },
   {
     id: "search.focus",
     label: "Find in terminal",
     group: "Search",
-    defaultBindings: [{ [DEFAULT_MODIFIER]: true, key: "f" }],
+    defaultBindings: [{ [MOD_KEY]: true, key: "f" }],
   },
   {
     id: "ai.toggle",
     label: "Toggle AI agent",
     group: "AI",
-    defaultBindings: [{ [DEFAULT_MODIFIER]: true, key: "i" }],
+    defaultBindings: [{ [MOD_KEY]: true, key: "i" }],
   },
   {
     id: "ai.askSelection",
     label: "Ask AI about selection",
     group: "AI",
-    defaultBindings: [{ [DEFAULT_MODIFIER]: true, key: "l" }],
+    defaultBindings: [{ [MOD_KEY]: true, key: "l" }],
   },
   {
     id: "sidebar.toggle",
     label: "Toggle file explorer",
     group: "View",
-    defaultBindings: [{ [DEFAULT_MODIFIER]: true, key: "b" }],
+    defaultBindings: [{ [MOD_KEY]: true, key: "b" }],
   },
 ];
 
