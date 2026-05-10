@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { KEY_SEP } from "@/lib/platform";
 import type { EditorPaneHandle } from "@/modules/editor";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { getBindingTokens, SHORTCUTS } from "@/modules/shortcuts/shortcuts";
@@ -52,7 +53,7 @@ export const SearchInline = forwardRef<SearchInlineHandle, Props>(
       const bindings = userShortcuts["search.focus"] || s.defaultBindings;
       if (!bindings || bindings.length === 0) return "";
       const tokens = getBindingTokens(bindings[0]);
-      return tokens.join("");
+      return tokens.join(KEY_SEP);
     }, [userShortcuts]);
 
     const placeholder = useMemo(() => {
