@@ -1,10 +1,14 @@
+use crate::modules::git::errors::{GitError, Result};
 use crate::modules::git::types::GitChangedFile;
 
 pub fn parse_branch_header(
     header: &str,
-) -> Result<(String, Option<String>, u32, u32, bool), String> {
+) -> Result<(String, Option<String>, u32, u32, bool)> {
     if !header.starts_with("## ") {
-        return Err("malformed git status branch header".into());
+        return Err(GitError::command(
+            "git status",
+            "malformed branch header",
+        ));
     }
 
     let body = &header[3..];

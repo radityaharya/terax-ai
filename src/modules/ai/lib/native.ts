@@ -62,11 +62,13 @@ export type GitStatusSnapshot = {
   ahead: number;
   behind: number;
   isDetached: boolean;
+  truncated: boolean;
   changedFiles: GitChangedFile[];
 };
 
 export type GitDiffResult = {
   diffText: string;
+  truncated: boolean;
 };
 
 export type GitDiffContentResult = {
@@ -74,6 +76,7 @@ export type GitDiffContentResult = {
   modifiedContent: string;
   isBinary: boolean;
   fallbackPatch: string;
+  truncated: boolean;
 };
 
 export type GitCommitResult = {
@@ -87,8 +90,20 @@ export type GitPushResult = {
   pushed: boolean;
 };
 
+export type GitPanelSnapshot = {
+  repo: GitRepoInfo | null;
+  status: GitStatusSnapshot | null;
+};
+
+export type GitDiscardEntry = {
+  path: string;
+  untracked: boolean;
+};
+
 export const native = {
-  appCurrentDir: () => invoke<string>("app_current_dir"),
+  workspaceCurrentDir: () => invoke<string>("workspace_current_dir"),
+  workspaceAuthorize: (path: string) =>
+    invoke<string>("workspace_authorize", { path }),
   readFile: (path: string) =>
     invoke<ReadResult>("fs_read_file", {
       path,
@@ -206,18 +221,30 @@ export const native = {
     >("shell_bg_list"),
   gitResolveRepo: (cwd: string) =>
     invoke<GitRepoInfo | null>("git_resolve_repo", { cwd }),
+  gitPanelSnapshot: (cwd: string) =>
+    invoke<GitPanelSnapshot>("git_panel_snapshot", { cwd }),
   gitStatus: (repoRoot: string) =>
     invoke<GitStatusSnapshot>("git_status", { repoRoot }),
   gitDiff: (repoRoot: string, path: string | null, staged: boolean) =>
     invoke<GitDiffResult>("git_diff", { repoRoot, path, staged }),
-  gitDiffContent: (repoRoot: string, path: string, staged: boolean) =>
-    invoke<GitDiffContentResult>("git_diff_content", { repoRoot, path, staged }),
+  gitDiffContent: (
+    repoRoot: string,
+    path: string,
+    staged: boolean,
+    originalPath?: string | null,
+  ) =>
+    invoke<GitDiffContentResult>("git_diff_content", {
+      repoRoot,
+      path,
+      staged,
+      originalPath: originalPath ?? null,
+    }),
   gitStage: (repoRoot: string, paths: string[]) =>
     invoke<void>("git_stage", { repoRoot, paths }),
   gitUnstage: (repoRoot: string, paths: string[]) =>
     invoke<void>("git_unstage", { repoRoot, paths }),
-  gitDiscard: (repoRoot: string, paths: string[]) =>
-    invoke<void>("git_discard", { repoRoot, paths }),
+  gitDiscard: (repoRoot: string, entries: GitDiscardEntry[]) =>
+    invoke<void>("git_discard", { repoRoot, entries }),
   gitCommit: (repoRoot: string, message: string) =>
     invoke<GitCommitResult>("git_commit", { repoRoot, message }),
   gitFetch: (repoRoot: string) => invoke<void>("git_fetch", { repoRoot }),

@@ -166,7 +166,7 @@ export function Header({
             size={14}
             strokeWidth={1.75}
           />
-          {sourceControl.changedCount > 0 ? (
+          {sourceControlOpen && sourceControl.changedCount > 0 ? (
             <span className="absolute -right-2 -top-2 inline-flex min-w-3.5 items-center justify-center rounded-full bg-primary px-1 py-px text-[8px] font-semibold leading-none text-primary-foreground shadow-sm ring-1 ring-card">
               {sourceControl.changedCount > 99 ? "99+" : sourceControl.changedCount}
             </span>
@@ -174,7 +174,7 @@ export function Header({
         </span>
         <span className="inline-flex items-center leading-none">Diff</span>
       </button>
-      {remoteIndicator.visible ? (
+      {sourceControlOpen && remoteIndicator.visible ? (
         <button
           type="button"
           className={cn(

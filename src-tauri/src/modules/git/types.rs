@@ -1,10 +1,11 @@
 use serde::Serialize;
-use std::time::Duration;
 
 pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 30;
-pub(crate) const MAX_TIMEOUT_SECS: u64 = 120;
-pub(crate) const MAX_OUTPUT_BYTES: usize = 512 * 1024;
-pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(50);
+pub(crate) const NETWORK_TIMEOUT_SECS: u64 = 120;
+pub(crate) const MAX_TIMEOUT_SECS: u64 = 180;
+pub(crate) const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+pub(crate) const MIN_GIT_VERSION: &str = "2.23";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,13 +38,29 @@ pub struct GitStatusSnapshot {
     pub ahead: u32,
     pub behind: u32,
     pub is_detached: bool,
+    pub truncated: bool,
     pub changed_files: Vec<GitChangedFile>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPanelSnapshot {
+    pub repo: Option<GitRepoInfo>,
+    pub status: Option<GitStatusSnapshot>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardEntry {
+    pub path: String,
+    pub untracked: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitDiffResult {
     pub diff_text: String,
+    pub truncated: bool,
 }
 
 #[derive(Serialize)]
@@ -53,6 +70,7 @@ pub struct GitDiffContentResult {
     pub modified_content: String,
     pub is_binary: bool,
     pub fallback_patch: String,
+    pub truncated: bool,
 }
 
 #[derive(Serialize)]
@@ -75,6 +93,7 @@ pub(crate) struct GitOutput {
     pub(crate) stderr: Vec<u8>,
     pub(crate) exit_code: Option<i32>,
     pub(crate) timed_out: bool,
+    pub(crate) truncated: bool,
 }
 
 pub(crate) enum TextSource {

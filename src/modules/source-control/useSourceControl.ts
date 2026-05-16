@@ -5,7 +5,8 @@ import {
 } from "@/modules/ai/lib/native";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const AUTO_FETCH_THROTTLE_MS = 30_000;
+const AUTO_FETCH_THROTTLE_MS = 5 * 60_000;
+const AUTO_FETCH_LRU_LIMIT = 16;
 
 export type SourceControlRefreshMode = "auto" | "always" | "never";
 export type SourceControlRemoteAction = "fetch" | "pull" | "push";
@@ -32,6 +33,9 @@ export type SourceControlSummary = {
   localError: string | null;
   busyAction: SourceControlRemoteAction | null;
   lastRemoteError: string | null;
+  applyStatus: (
+    updater: (status: GitStatusSnapshot) => GitStatusSnapshot,
+  ) => void;
   refresh: (options?: {
     remote?: SourceControlRefreshMode;
   }) => Promise<void>;
@@ -84,15 +88,8 @@ export function getSourceControlRemoteIndicator(
   >,
 ): SourceControlRemoteIndicator {
   if (!summary.hasRepo || !summary.upstream) {
-    return {
-      visible: false,
-      label: "",
-      title: "",
-      disabled: true,
-      action: null,
-    };
+    return { visible: false, label: "", title: "", disabled: true, action: null };
   }
-
   if (summary.ahead > 0 && summary.behind > 0) {
     return {
       visible: true,
@@ -103,7 +100,6 @@ export function getSourceControlRemoteIndicator(
       action: null,
     };
   }
-
   if (summary.behind > 0) {
     return {
       visible: true,
@@ -115,7 +111,6 @@ export function getSourceControlRemoteIndicator(
       action: "pull",
     };
   }
-
   if (summary.ahead > 0) {
     return {
       visible: true,
@@ -127,7 +122,6 @@ export function getSourceControlRemoteIndicator(
       action: "push",
     };
   }
-
   return {
     visible: true,
     label: "Sync",
@@ -137,8 +131,19 @@ export function getSourceControlRemoteIndicator(
   };
 }
 
+function touchAutoFetch(map: Map<string, number>, key: string): void {
+  map.delete(key);
+  map.set(key, Date.now());
+  while (map.size > AUTO_FETCH_LRU_LIMIT) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
+
 export function useSourceControl(
   contextPath: string | null,
+  enabled: boolean = true,
 ): SourceControlSummary {
   const [state, setState] = useState<SourceControlSummaryState>({
     repo: null,
@@ -151,17 +156,35 @@ export function useSourceControl(
   });
   const stateRef = useRef(state);
   const requestIdRef = useRef(0);
+  const inflightRef = useRef<Promise<void> | null>(null);
+  const inflightModeRef = useRef<SourceControlRefreshMode>("never");
   const autoFetchByRepoRef = useRef(new Map<string, number>());
+  const enabledRef = useRef(enabled);
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
 
-  const refresh = useCallback(
-    async (options?: { remote?: SourceControlRefreshMode }) => {
-      const remoteMode = options?.remote ?? "auto";
+  useEffect(() => {
+    enabledRef.current = enabled;
+  }, [enabled]);
+
+  const applyStatus = useCallback(
+    (updater: (status: GitStatusSnapshot) => GitStatusSnapshot) => {
+      setState((current) => {
+        if (!current.status) return current;
+        const next = updater(current.status);
+        if (next === current.status) return current;
+        return { ...current, status: next };
+      });
+    },
+    [],
+  );
+
+  const doRefresh = useCallback(
+    async (remoteMode: SourceControlRefreshMode): Promise<void> => {
+      if (!enabledRef.current) return;
       const requestId = ++requestIdRef.current;
-      let resolvedRepo: GitRepoInfo | null = null;
 
       if (!contextPath) {
         setState({
@@ -171,23 +194,18 @@ export function useSourceControl(
           isLoading: false,
           localError: null,
           busyAction: null,
-          lastRemoteError: stateRef.current.lastRemoteError,
+          lastRemoteError: null,
         });
         return;
       }
 
-      setState((current) => ({
-        ...current,
-        isLoading: true,
-        localError: null,
-      }));
+      setState((current) => ({ ...current, isLoading: true, localError: null }));
 
       try {
-        const repo = await native.gitResolveRepo(contextPath);
+        const snapshot = await native.gitPanelSnapshot(contextPath);
         if (requestId !== requestIdRef.current) return;
-        resolvedRepo = repo;
 
-        if (!repo) {
+        if (!snapshot.repo) {
           setState((current) => ({
             ...current,
             repo: null,
@@ -201,30 +219,40 @@ export function useSourceControl(
 
         let nextRemoteError = stateRef.current.lastRemoteError;
         const shouldAutoFetch =
-          repo.upstream &&
+          snapshot.repo.upstream &&
           remoteMode !== "never" &&
           (remoteMode === "always" ||
             Date.now() -
-              (autoFetchByRepoRef.current.get(repo.repoRoot) ?? 0) >=
+              (autoFetchByRepoRef.current.get(snapshot.repo.repoRoot) ?? 0) >=
               AUTO_FETCH_THROTTLE_MS);
 
         if (shouldAutoFetch) {
           try {
-            await native.gitFetch(repo.repoRoot);
-            autoFetchByRepoRef.current.set(repo.repoRoot, Date.now());
+            await native.gitFetch(snapshot.repo.repoRoot);
+            touchAutoFetch(autoFetchByRepoRef.current, snapshot.repo.repoRoot);
             nextRemoteError = null;
+            if (requestId !== requestIdRef.current) return;
+            const fresh = await native.gitStatus(snapshot.repo.repoRoot);
+            if (requestId !== requestIdRef.current) return;
+            setState((current) => ({
+              ...current,
+              repo: snapshot.repo,
+              status: fresh,
+              hasRepo: true,
+              isLoading: false,
+              localError: null,
+              lastRemoteError: nextRemoteError,
+            }));
+            return;
           } catch (error) {
             nextRemoteError = normalizeError(error);
           }
         }
 
-        const snapshot = await native.gitStatus(repo.repoRoot);
-        if (requestId !== requestIdRef.current) return;
-
         setState((current) => ({
           ...current,
-          repo,
-          status: snapshot,
+          repo: snapshot.repo,
+          status: snapshot.status,
           hasRepo: true,
           isLoading: false,
           localError: null,
@@ -232,18 +260,39 @@ export function useSourceControl(
         }));
       } catch (error) {
         if (requestId !== requestIdRef.current) return;
-        const repo = resolvedRepo ?? stateRef.current.repo;
         setState((current) => ({
           ...current,
-          repo,
           status: null,
-          hasRepo: !!repo,
           isLoading: false,
           localError: normalizeError(error),
         }));
       }
     },
     [contextPath],
+  );
+
+  const refresh = useCallback(
+    async (options?: { remote?: SourceControlRefreshMode }) => {
+      const remoteMode = options?.remote ?? "never";
+      const inflight = inflightRef.current;
+      if (inflight) {
+        const cur = inflightModeRef.current;
+        const upgrade =
+          (cur === "never" && remoteMode !== "never") ||
+          (cur === "auto" && remoteMode === "always");
+        if (!upgrade) return inflight;
+      }
+      inflightModeRef.current = remoteMode;
+      const run = doRefresh(remoteMode).finally(() => {
+        if (inflightRef.current === run) {
+          inflightRef.current = null;
+          inflightModeRef.current = "never";
+        }
+      });
+      inflightRef.current = run;
+      return run;
+    },
+    [doRefresh],
   );
 
   const runRemoteAction = useCallback(
@@ -258,62 +307,73 @@ export function useSourceControl(
         return { ok: false, action: null, blocked: "missing-upstream" };
       }
 
-      const action =
-        mode === "contextual" ? getContextualAction(status) : mode;
+      const action = mode === "contextual" ? getContextualAction(status) : mode;
       if (!action) {
         return { ok: false, action: null, blocked: "diverged" };
       }
 
-      setState((current) => ({
-        ...current,
-        busyAction: action,
-      }));
+      setState((current) => ({ ...current, busyAction: action }));
 
       try {
         if (action === "fetch") {
           await native.gitFetch(repo.repoRoot);
-          autoFetchByRepoRef.current.set(repo.repoRoot, Date.now());
+          touchAutoFetch(autoFetchByRepoRef.current, repo.repoRoot);
         } else if (action === "pull") {
           await native.gitFetch(repo.repoRoot);
-          autoFetchByRepoRef.current.set(repo.repoRoot, Date.now());
+          touchAutoFetch(autoFetchByRepoRef.current, repo.repoRoot);
           await native.gitPullFfOnly(repo.repoRoot);
         } else {
           await native.gitPush(repo.repoRoot);
         }
-
-        setState((current) => ({
-          ...current,
-          lastRemoteError: null,
-        }));
+        setState((current) => ({ ...current, lastRemoteError: null }));
         await refresh({ remote: "never" });
         return { ok: true, action };
       } catch (error) {
         const message = normalizeError(error);
-        setState((current) => ({
-          ...current,
-          lastRemoteError: message,
-        }));
+        setState((current) => ({ ...current, lastRemoteError: message }));
         await refresh({ remote: "never" }).catch(() => {});
         return { ok: false, action, error: message };
       } finally {
-        setState((current) => ({
-          ...current,
-          busyAction: null,
-        }));
+        setState((current) => ({ ...current, busyAction: null }));
       }
     },
     [refresh],
   );
 
   useEffect(() => {
-    void refresh({ remote: "auto" });
-  }, [refresh]);
+    if (!enabled) {
+      requestIdRef.current++;
+      setState({
+        repo: null,
+        status: null,
+        hasRepo: false,
+        isLoading: false,
+        localError: null,
+        busyAction: null,
+        lastRemoteError: null,
+      });
+      return;
+    }
+    setState((current) => ({ ...current, lastRemoteError: null }));
+    void refresh({ remote: "never" });
+  }, [refresh, contextPath, enabled]);
 
   useEffect(() => {
-    const onFocus = () => void refresh({ remote: "auto" });
+    if (!enabled) return;
+    let timer = 0;
+    const onFocus = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = 0;
+        void refresh({ remote: "never" });
+      }, 400);
+    };
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, [refresh]);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [refresh, enabled]);
 
   return {
     repo: state.repo,
@@ -327,6 +387,7 @@ export function useSourceControl(
     localError: state.localError,
     busyAction: state.busyAction,
     lastRemoteError: state.lastRemoteError,
+    applyStatus,
     refresh,
     runRemoteAction,
   };

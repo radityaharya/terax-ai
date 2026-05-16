@@ -1,5 +1,15 @@
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
@@ -108,21 +118,9 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   onClose,
   onOpenDiff,
 }: Props) {
-  const rootRef = useRef<HTMLElement | null>(null);
   const refreshAnimationRef = useRef<number | null>(null);
-  const [panelWidth, setPanelWidth] = useState(0);
   const [refreshAnimating, setRefreshAnimating] = useState(false);
-  const scm = useSourceControlPanel(open, sourceControl, onOpenDiff, panelWidth);
-
-  useEffect(() => {
-    const node = rootRef.current;
-    if (!node) return;
-    const observer = new ResizeObserver((entries) => {
-      setPanelWidth(entries[0]?.contentRect.width ?? 0);
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
+  const scm = useSourceControlPanel(open, sourceControl, onOpenDiff);
 
   useEffect(() => {
     return () => {
@@ -217,15 +215,9 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   return (
     <TooltipProvider delayDuration={800} skipDelayDuration={300}>
       <aside
-        ref={rootRef}
-        className="flex h-full min-w-0 flex-col border-l border-border/60 bg-card/80 backdrop-blur"
+        className="flex h-full min-w-0 flex-col border-l border-border/60 bg-card/80 backdrop-blur [contain:layout_style]"
       >
-      <div
-        className={cn(
-          "flex items-center justify-between gap-2 border-b border-border/60",
-          scm.compact ? "px-2.5 py-1.5" : "px-3 py-2",
-        )}
-      >
+      <div className="flex items-center justify-between gap-2 border-b border-border/60 px-2.5 py-1.5">
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <div className="text-[8.5px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
@@ -300,14 +292,13 @@ export const SourceControlPanel = memo(function SourceControlPanel({
       {scm.panelState === "ready" && scm.status ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <ScrollArea className="min-h-0 flex-1">
-            <div className={cn("space-y-2.5", scm.compact ? "p-2" : "p-3")}>
+            <div className="space-y-2.5 p-2">
               <ChangeGroup
                 title="Staged Changes"
                 entries={scm.stagedEntries}
                 selected={scm.selected}
                 actionBusy={scm.actionBusy}
                 empty={scm.stagedEmptyText}
-                compact={scm.compact}
                 defaultOpen
                 actionType="unstage"
                 onActionAll={scm.unstageAllEntries}
@@ -320,26 +311,20 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                 selected={scm.selected}
                 actionBusy={scm.actionBusy}
                 empty={scm.unstagedEmptyText}
-                compact={scm.compact}
                 defaultOpen
                 actionType="stage"
                 onActionAll={scm.stageAllEntries}
-                onDiscardAll={scm.discardAllEntries}
+                onDiscardAll={() => scm.requestDiscardAll()}
                 onSelect={scm.selectEntry}
                 onAction={scm.stageEntry}
-                onDiscard={scm.discardEntry}
+                onDiscard={(entry) => scm.requestDiscardEntry(entry)}
               />
             </div>
           </ScrollArea>
 
           <Separator />
 
-          <div
-            className={cn(
-              "relative border-t border-border/30 bg-card/90 backdrop-blur supports-[backdrop-filter]:bg-card/90",
-              scm.compact ? "space-y-1.5 p-2" : "space-y-2 p-3",
-            )}
-          >
+          <div className="relative border-t border-border/30 bg-card/90 backdrop-blur supports-[backdrop-filter]:bg-card/90 space-y-1.5 p-2">
             <div className="relative">
               <Textarea
                 value={scm.commitMessage}
@@ -415,14 +400,9 @@ export const SourceControlPanel = memo(function SourceControlPanel({
 
             <CommitFeedback feedback={footerFeedback} />
 
-            <div
-              className={cn(
-                "grid grid-cols-2",
-                scm.compact ? "gap-1.5" : "gap-2",
-              )}
-            >
+            <div className="grid grid-cols-2 gap-1.5">
               <Button
-                size={scm.compact ? "xs" : "sm"}
+                size="xs"
                 className="w-full cursor-pointer disabled:cursor-not-allowed"
                 disabled={!canCommit}
                 title={commitDisabledReason ?? `Commit (${commitShortcut})`}
@@ -431,7 +411,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                 {scm.actionBusy === "commit" ? "Committing..." : "Commit"}
               </Button>
               <Button
-                size={scm.compact ? "xs" : "sm"}
+                size="xs"
                 variant="secondary"
                 className="w-full cursor-pointer disabled:cursor-not-allowed"
                 disabled={!scm.canPush || !!scm.actionBusy}
@@ -445,6 +425,33 @@ export const SourceControlPanel = memo(function SourceControlPanel({
         </div>
       ) : null}
       </aside>
+      <AlertDialog
+        open={scm.pendingDiscard !== null}
+        onOpenChange={(open) => {
+          if (!open) scm.cancelPendingDiscard();
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {scm.pendingDiscard?.scope === "all"
+                ? `This will discard ${scm.pendingDiscard.label} and cannot be undone.`
+                : scm.pendingDiscard
+                  ? `Discard changes in "${scm.pendingDiscard.label}"? This cannot be undone.`
+                  : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => scm.cancelPendingDiscard()}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={() => void scm.confirmPendingDiscard()}>
+              Discard
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </TooltipProvider>
   );
 });
@@ -477,7 +484,6 @@ function ChangeGroup({
   selected,
   actionBusy,
   empty,
-  compact,
   defaultOpen,
   actionType,
   onActionAll,
@@ -491,14 +497,13 @@ function ChangeGroup({
   selected: { path: string; mode: "-" | "+" } | null;
   actionBusy: string | null;
   empty: string;
-  compact: boolean;
   defaultOpen?: boolean;
   actionType: "stage" | "unstage";
-  onActionAll: () => Promise<void>;
-  onDiscardAll?: () => Promise<void>;
+  onActionAll: () => Promise<void> | void;
+  onDiscardAll?: () => Promise<void> | void;
   onSelect: (entry: SourceControlEntry) => Promise<void>;
   onAction: (entry: SourceControlEntry) => Promise<void>;
-  onDiscard?: (entry: SourceControlEntry) => Promise<void>;
+  onDiscard?: (entry: SourceControlEntry) => Promise<void> | void;
 }) {
   const [isOpen, setIsOpen] = useState(defaultOpen ?? false);
   const actionIcon = actionType === "stage" ? PlusSignIcon : MinusSignIcon;
@@ -512,10 +517,7 @@ function ChangeGroup({
         <CollapsibleTrigger asChild>
           <button
             type="button"
-            className={cn(
-              "flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left text-muted-foreground transition-colors hover:text-foreground",
-              compact ? "px-1 py-0.5" : "px-1.5 py-0.5",
-            )}
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left text-muted-foreground transition-colors hover:text-foreground px-1 py-0.5"
           >
             <span className="flex size-3.5 shrink-0 items-center justify-center">
               <HugeiconsIcon
@@ -567,12 +569,7 @@ function ChangeGroup({
 
       <CollapsibleContent>
         {entries.length === 0 ? (
-          <div
-            className={cn(
-              "px-2 py-1 text-[11px] text-muted-foreground",
-              compact && "px-1.5",
-            )}
-          >
+          <div className="px-1.5 py-1 text-[11px] text-muted-foreground">
             {empty}
           </div>
         ) : (
@@ -588,8 +585,7 @@ function ChangeGroup({
                 <li key={entry.key}>
                   <div
                     className={cn(
-                      "group grid grid-cols-[minmax(0,1fr)_1.5rem] items-center gap-2 rounded-lg border border-transparent transition-colors",
-                      compact ? "px-1 py-0" : "px-1.5 py-px",
+                      "group grid grid-cols-[minmax(0,1fr)_1.5rem] items-center gap-2 rounded-lg border border-transparent transition-colors px-1 py-0",
                       isSelected
                         ? "bg-accent/80 text-foreground"
                         : "hover:bg-accent/45",
@@ -600,10 +596,7 @@ function ChangeGroup({
                         <button
                           type="button"
                           onClick={() => void onSelect(entry)}
-                          className={cn(
-                            "flex min-w-0 cursor-pointer items-center gap-1.5 text-left",
-                            compact ? "py-px" : "py-0.5",
-                          )}
+                          className="flex min-w-0 cursor-pointer items-center gap-1.5 text-left py-px"
                         >
                           <div className="flex size-5 shrink-0 items-center justify-center rounded-md bg-black/20 ring-1 ring-inset ring-white/5">
                             {iconUrl ? (

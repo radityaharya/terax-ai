@@ -95,7 +95,6 @@ const SOURCE_CONTROL_MIN_WIDTH = 240;
 const SOURCE_CONTROL_MAX_WIDTH = 420;
 const SOURCE_CONTROL_MIN_SIZE = `${SOURCE_CONTROL_MIN_WIDTH}px`;
 const SOURCE_CONTROL_MAX_SIZE = `${SOURCE_CONTROL_MAX_WIDTH}px`;
-const SOURCE_CONTROL_COMFORT_WIDTH = 285;
 const SOURCE_CONTROL_MAIN_MIN_SIZE = "72px";
 const SOURCE_CONTROL_WIDTH_STORAGE_KEY = "terax.sourceControl.width";
 
@@ -202,13 +201,21 @@ export default function App() {
   const workspaceEnv = useWorkspaceEnvStore((s) => s.env);
   const setWorkspaceEnv = useWorkspaceEnvStore((s) => s.setEnv);
   const [launchCwd, setLaunchCwd] = useState<string | null>(null);
+  const [launchCwdResolved, setLaunchCwdResolved] = useState(false);
   const [pendingDeleteTabs, setPendingDeleteTabs] = useState<number[] | null>(
     null,
   );
   useEffect(() => {
-    // Forward-slash form so explorerRoot stays equal across home → OSC 7.
     homeDir()
-      .then((p) => setHome(p.replace(/\\/g, "/")))
+      .then(async (p) => {
+        const normalized = p.replace(/\\/g, "/");
+        setHome(normalized);
+        try {
+          await native.workspaceAuthorize(normalized);
+        } catch {
+          // Bootstrap already authorizes home from Rust; ignore.
+        }
+      })
       .catch(() => setHome(null));
   }, []);
 
@@ -248,22 +255,30 @@ export default function App() {
       setActiveEditorHandle(null);
       setWorkspaceEnv(env.kind === "local" ? LOCAL_WORKSPACE : env);
       setHome(nextHome);
+      if (nextHome) {
+        try {
+          await native.workspaceAuthorize(nextHome);
+        } catch {
+          // Non-fatal — git panel will surface "not authorized" if needed.
+        }
+      }
       resetWorkspace(nextHome ?? undefined);
     },
     [workspaceEnv, setWorkspaceEnv, resetWorkspace],
   );
   useEffect(() => {
-    native.appCurrentDir().then(setLaunchCwd).catch(() => setLaunchCwd(null));
+    native
+      .workspaceCurrentDir()
+      .then(setLaunchCwd)
+      .catch(() => setLaunchCwd(null))
+      .finally(() => setLaunchCwdResolved(true));
   }, []);
 
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [newEditorOpen, setNewEditorOpen] = useState(false);
   const [sourceControlOpen, setSourceControlOpen] = useState(false);
-  const [sourceControlPinnedContextPath, setSourceControlPinnedContextPath] =
-    useState<string | null>(null);
-  const [sourceControlWidth, setSourceControlWidth] = useState(
-    readSourceControlWidth,
-  );
+  const sourceControlWidthRef = useRef(readSourceControlWidth());
+  const sourceControlWidthWriteTimerRef = useRef(0);
   const miniOpen = useChatStore((s) => s.mini.open);
   const openMini = useChatStore((s) => s.openMini);
   const focusInput = useChatStore((s) => s.focusInput);
@@ -658,43 +673,65 @@ export default function App() {
     activeTab?.kind === "editor" || activeTab?.kind === "git-diff"
       ? activeTab.path
       : null;
-  const sourceControlContextPath =
-    activeTab?.kind === "terminal"
-      ? (activeTerminalLeafCwd ?? explorerRoot ?? launchCwd ?? home ?? null)
-      : activeTab?.kind === "editor"
-        ? dirname(activeTab.path)
-        : activeTab?.kind === "git-diff"
-          ? activeTab.repoRoot
-        : explorerRoot ?? launchCwd ?? home ?? null;
-  const sourceControlTrackedContextPath =
-    sourceControlPinnedContextPath ?? sourceControlContextPath;
-  const sourceControl = useSourceControl(sourceControlTrackedContextPath);
-
-  const rememberSourceControlWidth = useCallback((width: number) => {
-    if (!Number.isFinite(width) || width <= 0) return;
-    const next = clampSourceControlWidth(width);
-    setSourceControlWidth(next);
-    try {
-      window.localStorage.setItem(SOURCE_CONTROL_WIDTH_STORAGE_KEY, String(next));
-    } catch {
-      // Ignore storage failures; the panel still works for the current session.
+  const workspaceFallbackPath = launchCwdResolved
+    ? (launchCwd ?? home ?? null)
+    : null;
+  const sourceControlContextPath = (() => {
+    if (activeTab?.kind === "terminal") {
+      return activeTerminalLeafCwd ?? explorerRoot ?? workspaceFallbackPath;
     }
+    if (activeTab?.kind === "editor") return dirname(activeTab.path);
+    if (activeTab?.kind === "git-diff") return activeTab.repoRoot;
+    return explorerRoot ?? workspaceFallbackPath;
+  })();
+  const sourceControl = useSourceControl(
+    sourceControlContextPath,
+    sourceControlOpen,
+  );
+
+  const persistSourceControlWidth = useCallback((next: number) => {
+    sourceControlWidthRef.current = next;
+    if (sourceControlWidthWriteTimerRef.current) {
+      window.clearTimeout(sourceControlWidthWriteTimerRef.current);
+    }
+    sourceControlWidthWriteTimerRef.current = window.setTimeout(() => {
+      sourceControlWidthWriteTimerRef.current = 0;
+      try {
+        window.localStorage.setItem(
+          SOURCE_CONTROL_WIDTH_STORAGE_KEY,
+          String(next),
+        );
+      } catch {
+        // Storage may fail in private mode; the session still works.
+      }
+    }, 200);
   }, []);
 
+  const rememberSourceControlWidth = useCallback(
+    (width: number) => {
+      if (!Number.isFinite(width) || width <= 0) return;
+      persistSourceControlWidth(clampSourceControlWidth(width));
+    },
+    [persistSourceControlWidth],
+  );
+
   const openSourceControl = useCallback(() => {
-    setSourceControlPinnedContextPath(sourceControlContextPath);
     setSourceControlOpen(true);
-  }, [sourceControlContextPath]);
+    const panel = sourceControlRef.current;
+    if (panel?.isCollapsed()) {
+      panel.resize(`${sourceControlWidthRef.current}px`);
+    }
+  }, []);
 
   const closeSourceControl = useCallback(() => {
     const panel = sourceControlRef.current;
     if (panel && !panel.isCollapsed()) {
-      rememberSourceControlWidth(panel.getSize().inPixels);
+      const current = panel.getSize().inPixels;
+      if (current > 0) persistSourceControlWidth(clampSourceControlWidth(current));
       panel.collapse();
     }
     setSourceControlOpen(false);
-    setSourceControlPinnedContextPath(null);
-  }, [rememberSourceControlWidth]);
+  }, [persistSourceControlWidth]);
 
   const toggleSourceControl = useCallback(() => {
     if (sourceControlOpen) {
@@ -705,34 +742,17 @@ export default function App() {
   }, [closeSourceControl, openSourceControl, sourceControlOpen]);
 
   const runSourceControlRemoteAction = useCallback(async () => {
-    const result = await sourceControl.runRemoteAction();
-    if (!result.ok && result.error) {
-      setSourceControlPinnedContextPath(
-        sourceControlTrackedContextPath ?? sourceControlContextPath,
-      );
-      setSourceControlOpen(true);
-    }
-  }, [
-    sourceControl,
-    sourceControlContextPath,
-    sourceControlTrackedContextPath,
-  ]);
+    if (!sourceControlOpen) openSourceControl();
+    await sourceControl.runRemoteAction();
+  }, [openSourceControl, sourceControl, sourceControlOpen]);
 
   useEffect(() => {
-    if (!sourceControlOpen) return;
-    const frame = window.requestAnimationFrame(() => {
-      const panel = sourceControlRef.current;
-      if (!panel) return;
-      if (panel.isCollapsed()) panel.expand();
-      const targetSize = `${sourceControlWidth}px`;
-      if (Math.abs(panel.getSize().inPixels - sourceControlWidth) > 2) {
-        panel.resize(targetSize);
-      } else if (panel.getSize().inPixels < SOURCE_CONTROL_COMFORT_WIDTH) {
-        panel.resize(targetSize);
+    return () => {
+      if (sourceControlWidthWriteTimerRef.current) {
+        window.clearTimeout(sourceControlWidthWriteTimerRef.current);
       }
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [sourceControlOpen, sourceControlWidth]);
+    };
+  }, []);
 
   const openPreviewTab = useCallback(
     (url: string) => {
@@ -1090,24 +1110,30 @@ export default function App() {
                       <ResizablePanel
                         id="source-control"
                         panelRef={sourceControlRef}
-                        defaultSize={`${sourceControlWidth}px`}
+                        defaultSize={
+                          sourceControlOpen
+                            ? `${sourceControlWidthRef.current}px`
+                            : 0
+                        }
                         minSize={SOURCE_CONTROL_MIN_SIZE}
                         maxSize={SOURCE_CONTROL_MAX_SIZE}
                         collapsible
                         collapsedSize={0}
-                        onResize={() => {
-                          const width = sourceControlRef.current?.getSize().inPixels;
-                          if (sourceControlOpen && width) {
-                            rememberSourceControlWidth(width);
+                        onResize={(size) => {
+                          if (!sourceControlOpen) return;
+                          if (size.inPixels > 0) {
+                            rememberSourceControlWidth(size.inPixels);
                           }
                         }}
                       >
-                        <SourceControlPanel
-                          open={sourceControlOpen}
-                          sourceControl={sourceControl}
-                          onClose={closeSourceControl}
-                          onOpenDiff={openGitDiffTab}
-                        />
+                        {sourceControlOpen ? (
+                          <SourceControlPanel
+                            open
+                            sourceControl={sourceControl}
+                            onClose={closeSourceControl}
+                            onOpenDiff={openGitDiffTab}
+                          />
+                        ) : null}
                       </ResizablePanel>
                     </ResizablePanelGroup>
                   </div>

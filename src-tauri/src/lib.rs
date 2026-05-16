@@ -5,13 +5,6 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_window_state::StateFlags;
 
 #[tauri::command]
-async fn app_current_dir() -> Result<String, String> {
-    std::env::current_dir()
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Result<(), String> {
     let url_path = match tab.as_deref() {
         Some(t) if !t.is_empty() => format!("settings.html?tab={}", t),
@@ -91,6 +84,11 @@ pub fn run() {
         .manage(pty::PtyState::default())
         .manage(shell::ShellState::default())
         .manage(secrets::SecretsState::default())
+        .manage({
+            let registry = workspace::WorkspaceRegistry::default();
+            workspace::bootstrap_registry(&registry);
+            registry
+        })
         .invoke_handler(tauri::generate_handler![
             pty::pty_open,
             pty::pty_write,
@@ -111,6 +109,7 @@ pub fn run() {
             fs::grep::fs_grep,
             fs::grep::fs_glob,
             git::commands::git_resolve_repo,
+            git::commands::git_panel_snapshot,
             git::commands::git_status,
             git::commands::git_diff,
             git::commands::git_diff_content,
@@ -132,7 +131,8 @@ pub fn run() {
             workspace::wsl_list_distros,
             workspace::wsl_default_distro,
             workspace::wsl_home,
-            app_current_dir,
+            workspace::workspace_authorize,
+            workspace::workspace_current_dir,
             open_settings_window,
             secrets::secrets_get,
             secrets::secrets_set,
