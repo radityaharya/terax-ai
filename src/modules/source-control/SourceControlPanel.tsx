@@ -28,9 +28,10 @@ import { cn } from "@/lib/utils";
 import { IS_MAC } from "@/lib/platform";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
+  Alert02Icon,
+  ArrowReloadHorizontalIcon,
   ArrowRight01Icon,
-  Cancel01Icon,
-  Delete01Icon,
+  CheckmarkCircle01Icon,
   GitBranchIcon,
   MinusSignIcon,
   PlusSignIcon,
@@ -56,7 +57,6 @@ import {
 type Props = {
   open: boolean;
   sourceControl: SourceControlSummary;
-  onClose: () => void;
   onOpenDiff: (input: {
     path: string;
     repoRoot: string;
@@ -100,22 +100,37 @@ function statusTone(statusCode: string): string {
   switch (statusCode) {
     case "A":
     case "?":
-      return "text-emerald-700 dark:text-emerald-400";
+      return "text-emerald-600 dark:text-emerald-400";
     case "M":
-      return "text-amber-700 dark:text-amber-300";
+      return "text-amber-600 dark:text-amber-300";
     case "D":
-      return "text-rose-700 dark:text-rose-400";
+      return "text-rose-600 dark:text-rose-400";
     case "R":
-      return "text-sky-700 dark:text-sky-300";
+      return "text-sky-600 dark:text-sky-300";
     default:
       return "text-muted-foreground";
+  }
+}
+
+function statusDotBg(statusCode: string): string {
+  switch (statusCode) {
+    case "A":
+    case "?":
+      return "bg-emerald-500/15";
+    case "M":
+      return "bg-amber-500/15";
+    case "D":
+      return "bg-rose-500/15";
+    case "R":
+      return "bg-sky-500/15";
+    default:
+      return "bg-muted/40";
   }
 }
 
 export const SourceControlPanel = memo(function SourceControlPanel({
   open,
   sourceControl,
-  onClose,
   onOpenDiff,
 }: Props) {
   const refreshAnimationRef = useRef<number | null>(null);
@@ -134,18 +149,6 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   const repoLabel = useMemo(() => {
     if (!scm.status) return "Source Control";
     return scm.status.isDetached ? "detached" : scm.status.branch;
-  }, [scm.status]);
-
-  const headerMeta = useMemo(() => {
-    if (!scm.status) return null;
-    const parts: string[] = [];
-    if (scm.status.ahead > 0 || scm.status.behind > 0) {
-      parts.push(`↑${scm.status.ahead} ↓${scm.status.behind}`);
-    }
-    if (scm.status.isDetached) {
-      parts.push("Detached HEAD");
-    }
-    return parts.join(" · ");
   }, [scm.status]);
 
   const commitShortcut = IS_MAC ? "⌘+Enter" : "Ctrl+Enter";
@@ -215,12 +218,12 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   return (
     <TooltipProvider delayDuration={800} skipDelayDuration={300}>
       <aside
-        className="flex h-full min-w-0 flex-col border-l border-border/60 bg-card/80 backdrop-blur [contain:layout_style]"
+        className="flex h-full min-w-0 flex-col bg-card/80 backdrop-blur [contain:layout_style]"
       >
       <div className="flex items-center justify-between gap-2 border-b border-border/60 px-2.5 py-1.5">
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
-            <div className="text-[8.5px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
               Source Control
             </div>
             <div className="flex shrink-0 items-center gap-0.5">
@@ -240,29 +243,38 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                   />
                 )}
               </IconActionButton>
-              <IconActionButton label="Close source control" onClick={onClose}>
-                <HugeiconsIcon
-                  icon={Cancel01Icon}
-                  size={14}
-                  strokeWidth={1.9}
-                />
-              </IconActionButton>
             </div>
           </div>
-          <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] font-semibold leading-none text-foreground">
-            <HugeiconsIcon
-              icon={GitBranchIcon}
-              size={11}
-              strokeWidth={1.9}
-              className="shrink-0 text-muted-foreground"
-            />
-            <span className="truncate">{repoLabel}</span>
-          </div>
-          {headerMeta ? (
-            <div className="truncate pt-0.5 text-[10px] leading-tight text-muted-foreground">
-              {headerMeta}
+          <div className="mt-1 flex items-center gap-1.5">
+            <div className="inline-flex min-w-0 items-center gap-1.5 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] font-semibold leading-none text-foreground">
+              <HugeiconsIcon
+                icon={GitBranchIcon}
+                size={11}
+                strokeWidth={1.9}
+                className="shrink-0 text-muted-foreground"
+              />
+              <span className="truncate">{repoLabel}</span>
             </div>
-          ) : null}
+            {scm.status && (scm.status.ahead > 0 || scm.status.behind > 0) ? (
+              <div className="flex shrink-0 items-center gap-1 text-[10px] font-medium tabular-nums leading-none text-muted-foreground">
+                {scm.status.ahead > 0 ? (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-sky-500/15 px-1 py-0.5 text-sky-600 dark:text-sky-300">
+                    ↑{scm.status.ahead}
+                  </span>
+                ) : null}
+                {scm.status.behind > 0 ? (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1 py-0.5 text-amber-600 dark:text-amber-300">
+                    ↓{scm.status.behind}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            {scm.status?.isDetached ? (
+              <span className="rounded bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-medium text-rose-600 dark:text-rose-300">
+                detached
+              </span>
+            ) : null}
+          </div>
         </div>
       </div>
 
@@ -291,34 +303,72 @@ export const SourceControlPanel = memo(function SourceControlPanel({
 
       {scm.panelState === "ready" && scm.status ? (
         <div className="flex min-h-0 flex-1 flex-col">
+          {scm.status.ahead > 0 && scm.status.behind > 0 ? (
+            <div className="mx-2 mt-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] leading-snug text-amber-700 dark:text-amber-200">
+              <HugeiconsIcon
+                icon={Alert02Icon}
+                size={13}
+                strokeWidth={1.9}
+                className="mt-px shrink-0"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="font-medium">Branch diverged from upstream</div>
+                <div className="opacity-80">
+                  Open a terminal to merge or rebase before syncing.
+                </div>
+              </div>
+            </div>
+          ) : null}
           <ScrollArea className="min-h-0 flex-1">
             <div className="space-y-2.5 p-2">
-              <ChangeGroup
-                title="Staged Changes"
-                entries={scm.stagedEntries}
-                selected={scm.selected}
-                actionBusy={scm.actionBusy}
-                empty={scm.stagedEmptyText}
-                defaultOpen
-                actionType="unstage"
-                onActionAll={scm.unstageAllEntries}
-                onSelect={scm.selectEntry}
-                onAction={scm.unstageEntry}
-              />
-              <ChangeGroup
-                title="Changes"
-                entries={scm.unstagedEntries}
-                selected={scm.selected}
-                actionBusy={scm.actionBusy}
-                empty={scm.unstagedEmptyText}
-                defaultOpen
-                actionType="stage"
-                onActionAll={scm.stageAllEntries}
-                onDiscardAll={() => scm.requestDiscardAll()}
-                onSelect={scm.selectEntry}
-                onAction={scm.stageEntry}
-                onDiscard={(entry) => scm.requestDiscardEntry(entry)}
-              />
+              {scm.allClean ? (
+                <div className="flex flex-col items-center justify-center gap-2 px-4 py-6 text-center">
+                  <div className="flex size-9 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                    <HugeiconsIcon
+                      icon={CheckmarkCircle01Icon}
+                      size={18}
+                      strokeWidth={1.75}
+                    />
+                  </div>
+                  <div className="text-[12px] font-medium">Working tree clean</div>
+                  <div className="text-[10.5px] leading-snug text-muted-foreground">
+                    No staged or unstaged changes on{" "}
+                    <span className="font-mono text-foreground/80">
+                      {repoLabel}
+                    </span>
+                    .
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <ChangeGroup
+                    title="Staged Changes"
+                    entries={scm.stagedEntries}
+                    selected={scm.selected}
+                    actionBusy={scm.actionBusy}
+                    empty={scm.stagedEmptyText}
+                    defaultOpen
+                    actionType="unstage"
+                    onActionAll={scm.unstageAllEntries}
+                    onSelect={scm.selectEntry}
+                    onAction={scm.unstageEntry}
+                  />
+                  <ChangeGroup
+                    title="Changes"
+                    entries={scm.unstagedEntries}
+                    selected={scm.selected}
+                    actionBusy={scm.actionBusy}
+                    empty={scm.unstagedEmptyText}
+                    defaultOpen
+                    actionType="stage"
+                    onActionAll={scm.stageAllEntries}
+                    onDiscardAll={() => scm.requestDiscardAll()}
+                    onSelect={scm.selectEntry}
+                    onAction={scm.stageEntry}
+                    onDiscard={(entry) => scm.requestDiscardEntry(entry)}
+                  />
+                </>
+              )}
             </div>
           </ScrollArea>
 
@@ -549,7 +599,11 @@ function ChangeGroup({
               {isDiscardAllBusy ? (
                 <Spinner className="size-3" />
               ) : (
-                <HugeiconsIcon icon={Delete01Icon} size={11} strokeWidth={2} />
+                <HugeiconsIcon
+                  icon={ArrowReloadHorizontalIcon}
+                  size={11}
+                  strokeWidth={2}
+                />
               )}
             </IconActionButton>
           ) : null}
@@ -585,37 +639,44 @@ function ChangeGroup({
                 <li key={entry.key}>
                   <div
                     className={cn(
-                      "group grid grid-cols-[minmax(0,1fr)_1.5rem] items-center gap-2 rounded-lg border border-transparent transition-colors px-1 py-0",
+                      "group flex items-center gap-1.5 rounded-md border border-transparent px-1 py-0.5 transition-colors",
                       isSelected
                         ? "bg-accent/80 text-foreground"
                         : "hover:bg-accent/45",
                     )}
                   >
+                    <span
+                      className={cn(
+                        "inline-flex size-4 shrink-0 items-center justify-center rounded text-[9.5px] font-bold leading-none tabular-nums",
+                        statusDotBg(entry.statusCode),
+                        statusTone(entry.statusCode),
+                      )}
+                      title={entry.statusLabel}
+                    >
+                      {entry.statusCode}
+                    </span>
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <button
                           type="button"
                           onClick={() => void onSelect(entry)}
-                          className="flex min-w-0 cursor-pointer items-center gap-1.5 text-left py-px"
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
                         >
-                          <div className="flex size-5 shrink-0 items-center justify-center rounded-md bg-black/20 ring-1 ring-inset ring-white/5">
-                            {iconUrl ? (
-                              <img
-                                src={iconUrl}
-                                alt=""
-                                className="size-3.5 shrink-0"
-                              />
-                            ) : (
-                              <span className="size-3.5 shrink-0" />
-                            )}
-                          </div>
-
+                          {iconUrl ? (
+                            <img
+                              src={iconUrl}
+                              alt=""
+                              className="size-3.5 shrink-0"
+                            />
+                          ) : (
+                            <span className="size-3.5 shrink-0" />
+                          )}
                           <div className="flex min-w-0 flex-1 items-baseline gap-1.5 leading-none">
                             <span
                               className={cn(
                                 "truncate text-[11.5px] font-medium leading-tight",
                                 pathLabel
-                                  ? "max-w-[55%] shrink-0"
+                                  ? "max-w-[60%] shrink-0"
                                   : "min-w-0 flex-1",
                               )}
                             >
@@ -685,43 +746,37 @@ function EntryActions({
   onDiscard?: () => void;
 }) {
   return (
-    <div className="relative h-6 w-6 shrink-0 overflow-visible">
-      <div
-        className={cn(
-          "absolute right-0 top-0 inline-flex h-6 min-w-6 items-center justify-center px-1 text-[10px] font-semibold tracking-[0.08em] opacity-90 transition-opacity group-hover:opacity-0",
-          statusTone(entry.statusCode),
-        )}
-      >
-        {entry.statusCode}
-      </div>
-      <div className="absolute right-0 top-0 z-10 flex items-center gap-0.5 rounded-md bg-card/95 opacity-0 transition-opacity group-hover:opacity-100">
+    <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      {onDiscard ? (
         <IconActionButton
-          label={label}
+          label={`Discard ${entry.path}`}
           disabled={disabled}
           side="top"
-          onClick={onClick}
+          onClick={onDiscard}
         >
-          {busy ? (
+          {discardBusy ? (
             <Spinner className="size-3" />
           ) : (
-            <HugeiconsIcon icon={icon} size={11} strokeWidth={2} />
+            <HugeiconsIcon
+              icon={ArrowReloadHorizontalIcon}
+              size={11}
+              strokeWidth={2}
+            />
           )}
         </IconActionButton>
-        {onDiscard ? (
-          <IconActionButton
-            label={`Discard ${entry.path}`}
-            disabled={disabled}
-            side="top"
-            onClick={onDiscard}
-          >
-            {discardBusy ? (
-              <Spinner className="size-3" />
-            ) : (
-              <HugeiconsIcon icon={Delete01Icon} size={11} strokeWidth={2} />
-            )}
-          </IconActionButton>
-        ) : null}
-      </div>
+      ) : null}
+      <IconActionButton
+        label={label}
+        disabled={disabled}
+        side="top"
+        onClick={onClick}
+      >
+        {busy ? (
+          <Spinner className="size-3" />
+        ) : (
+          <HugeiconsIcon icon={icon} size={11} strokeWidth={2} />
+        )}
+      </IconActionButton>
     </div>
   );
 }
