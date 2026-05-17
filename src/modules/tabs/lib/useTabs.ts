@@ -71,10 +71,7 @@ export type GitDiffTab = {
   path: string;
   repoRoot: string;
   mode: "-" | "+";
-  originalContent: string;
-  modifiedContent: string;
-  isBinary: boolean;
-  fallbackPatch: string;
+  originalPath: string | null;
 };
 
 export type GitHistoryTab = {
@@ -94,10 +91,6 @@ export type GitCommitFileDiffTab = {
   subject: string;
   path: string;
   originalPath: string | null;
-  originalContent: string;
-  modifiedContent: string;
-  isBinary: boolean;
-  fallbackPatch: string;
 };
 
 export type Tab =
@@ -377,10 +370,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       path: string;
       repoRoot: string;
       mode: "-" | "+";
-      originalContent: string;
-      modifiedContent: string;
-      isBinary: boolean;
-      fallbackPatch: string;
+      originalPath?: string | null;
       title?: string;
     }) => {
       const curr = tabsRef.current;
@@ -393,18 +383,12 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       );
       const computedTitle =
         input.title ?? `${basename(input.path)} (${input.mode})`;
+      const originalPath = input.originalPath ?? null;
 
       if (existing) {
         const nextTabs = curr.map((t) =>
           t.id === existing.id
-            ? {
-                ...t,
-                title: computedTitle,
-                originalContent: input.originalContent,
-                modifiedContent: input.modifiedContent,
-                isBinary: input.isBinary,
-                fallbackPatch: input.fallbackPatch,
-              }
+            ? { ...t, title: computedTitle, originalPath }
             : t,
         );
         tabsRef.current = nextTabs;
@@ -423,10 +407,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           path: input.path,
           repoRoot: input.repoRoot,
           mode: input.mode,
-          originalContent: input.originalContent,
-          modifiedContent: input.modifiedContent,
-          isBinary: input.isBinary,
-          fallbackPatch: input.fallbackPatch,
+          originalPath,
         } satisfies GitDiffTab,
       ];
       tabsRef.current = nextTabs;
@@ -481,10 +462,6 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       subject: string;
       path: string;
       originalPath: string | null;
-      originalContent: string;
-      modifiedContent: string;
-      isBinary: boolean;
-      fallbackPatch: string;
     }) => {
       const curr = tabsRef.current;
       const existing = curr.find(
@@ -503,10 +480,6 @@ export function useTabs(initial?: Partial<TerminalTab>) {
                 title,
                 subject: input.subject,
                 originalPath: input.originalPath,
-                originalContent: input.originalContent,
-                modifiedContent: input.modifiedContent,
-                isBinary: input.isBinary,
-                fallbackPatch: input.fallbackPatch,
               }
             : t,
         );
@@ -528,10 +501,6 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           subject: input.subject,
           path: input.path,
           originalPath: input.originalPath,
-          originalContent: input.originalContent,
-          modifiedContent: input.modifiedContent,
-          isBinary: input.isBinary,
-          fallbackPatch: input.fallbackPatch,
         } satisfies GitCommitFileDiffTab,
       ];
       tabsRef.current = nextTabs;

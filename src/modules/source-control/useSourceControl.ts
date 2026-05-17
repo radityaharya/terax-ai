@@ -160,6 +160,10 @@ export function useSourceControl(
   const inflightModeRef = useRef<SourceControlRefreshMode>("never");
   const autoFetchByRepoRef = useRef(new Map<string, number>());
   const enabledRef = useRef(enabled);
+  // Path → resolved repo root (or null when path is not inside a repo).
+  // Lets us skip git_panel_snapshot when navigating inside an already-known
+  // repo (or between non-repo paths) and reuse the cheaper git_status call.
+  const repoLookupRef = useRef(new Map<string, string | null>());
 
   useEffect(() => {
     stateRef.current = state;
@@ -199,13 +203,70 @@ export function useSourceControl(
         return;
       }
 
+      const lookup = repoLookupRef.current;
+      const cachedRoot = lookup.get(contextPath);
+      const reusableRoot = (() => {
+        if (cachedRoot !== undefined) return cachedRoot;
+        for (const [, root] of lookup) {
+          if (root && contextPath.startsWith(`${root}/`)) return root;
+        }
+        return undefined;
+      })();
+
+      if (reusableRoot === null) {
+        setState((current) =>
+          current.hasRepo || current.repo || current.status
+            ? {
+                ...current,
+                repo: null,
+                status: null,
+                hasRepo: false,
+                isLoading: false,
+                localError: null,
+              }
+            : current,
+        );
+        return;
+      }
+
       setState((current) => ({ ...current, isLoading: true, localError: null }));
 
       try {
-        const snapshot = await native.gitPanelSnapshot(contextPath);
-        if (requestId !== requestIdRef.current) return;
+        let repo: GitRepoInfo | null;
+        let status: GitStatusSnapshot | null;
 
-        if (!snapshot.repo) {
+        if (reusableRoot) {
+          repo = stateRef.current.repo ?? null;
+          status = await native.gitStatus(reusableRoot);
+          if (requestId !== requestIdRef.current) return;
+          if (!repo || repo.repoRoot !== reusableRoot) {
+            repo = {
+              repoRoot: reusableRoot,
+              branch: status.branch,
+              upstream: status.upstream,
+              isDetached: status.isDetached,
+            };
+          }
+        } else {
+          const snapshot = await native.gitPanelSnapshot(contextPath);
+          if (requestId !== requestIdRef.current) return;
+          lookup.set(contextPath, snapshot.repo?.repoRoot ?? null);
+          if (!snapshot.repo) {
+            setState((current) => ({
+              ...current,
+              repo: null,
+              status: null,
+              hasRepo: false,
+              isLoading: false,
+              localError: null,
+            }));
+            return;
+          }
+          repo = snapshot.repo;
+          status = snapshot.status ?? null;
+        }
+
+        if (!repo) {
           setState((current) => ({
             ...current,
             repo: null,
@@ -219,31 +280,21 @@ export function useSourceControl(
 
         let nextRemoteError = stateRef.current.lastRemoteError;
         const shouldAutoFetch =
-          snapshot.repo.upstream &&
+          repo.upstream &&
           remoteMode !== "never" &&
           (remoteMode === "always" ||
             Date.now() -
-              (autoFetchByRepoRef.current.get(snapshot.repo.repoRoot) ?? 0) >=
+              (autoFetchByRepoRef.current.get(repo.repoRoot) ?? 0) >=
               AUTO_FETCH_THROTTLE_MS);
 
         if (shouldAutoFetch) {
           try {
-            await native.gitFetch(snapshot.repo.repoRoot);
-            touchAutoFetch(autoFetchByRepoRef.current, snapshot.repo.repoRoot);
+            await native.gitFetch(repo.repoRoot);
+            touchAutoFetch(autoFetchByRepoRef.current, repo.repoRoot);
             nextRemoteError = null;
             if (requestId !== requestIdRef.current) return;
-            const fresh = await native.gitStatus(snapshot.repo.repoRoot);
+            status = await native.gitStatus(repo.repoRoot);
             if (requestId !== requestIdRef.current) return;
-            setState((current) => ({
-              ...current,
-              repo: snapshot.repo,
-              status: fresh,
-              hasRepo: true,
-              isLoading: false,
-              localError: null,
-              lastRemoteError: nextRemoteError,
-            }));
-            return;
           } catch (error) {
             nextRemoteError = normalizeError(error);
           }
@@ -251,8 +302,8 @@ export function useSourceControl(
 
         setState((current) => ({
           ...current,
-          repo: snapshot.repo,
-          status: snapshot.status,
+          repo,
+          status,
           hasRepo: true,
           isLoading: false,
           localError: null,
@@ -355,7 +406,24 @@ export function useSourceControl(
       return;
     }
     setState((current) => ({ ...current, lastRemoteError: null }));
-    void refresh({ remote: "never" });
+    const run = () => {
+      void refresh({ remote: "never" });
+    };
+    const idle =
+      typeof window.requestIdleCallback === "function"
+        ? window.requestIdleCallback(run, { timeout: 600 })
+        : (window.setTimeout(run, 0) as unknown as number);
+    return () => {
+      if (typeof window.cancelIdleCallback === "function") {
+        try {
+          window.cancelIdleCallback(idle as number);
+        } catch {
+          /* noop */
+        }
+      } else {
+        window.clearTimeout(idle as number);
+      }
+    };
   }, [refresh, contextPath, enabled]);
 
   useEffect(() => {

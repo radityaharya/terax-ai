@@ -60,10 +60,7 @@ type Props = {
     path: string;
     repoRoot: string;
     mode: "+" | "-";
-    originalContent: string;
-    modifiedContent: string;
-    isBinary: boolean;
-    fallbackPatch: string;
+    originalPath: string | null;
     title?: string;
   }) => void;
 };
@@ -164,7 +161,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
     };
   }, []);
 
-  const isRefreshing = scm.panelState === "loading" || scm.diffLoading;
+  const isRefreshing = scm.panelState === "loading";
   const repoLabel = useMemo(() => {
     if (!scm.status) return "Source Control";
     return scm.status.isDetached ? "detached" : scm.status.branch;

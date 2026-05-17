@@ -776,11 +776,54 @@ export default function App() {
     if (activeTab?.kind === "git-history") return activeTab.repoRoot;
     return explorerRoot ?? workspaceFallbackPath;
   })();
-  const sourceControl = useSourceControl(sourceControlContextPath, true);
+  const hasOpenGitTab = useMemo(
+    () =>
+      tabs.some(
+        (t) =>
+          t.kind === "git-diff" ||
+          t.kind === "git-history" ||
+          t.kind === "git-commit-file",
+      ),
+    [tabs],
+  );
+  const sourceControlActive =
+    hasOpenGitTab || sidebarView === "source-control";
+  // Stable per-session path so switching tabs / cd-ing in a shell does NOT
+  // re-fire git IPC for the badge. The active panel resolves the current
+  // context path on its own when the user actually opens git.
+  const badgeContextPath = workspaceFallbackPath;
+  const sourceControlPath = sourceControlActive
+    ? sourceControlContextPath
+    : badgeContextPath;
+  const sourceControl = useSourceControl(sourceControlPath, true);
 
   const toggleSourceControl = useCallback(() => {
     cycleSidebarView("source-control");
   }, [cycleSidebarView]);
+
+  const openGitGraphFromContext = useCallback(async () => {
+    const known = sourceControl.repo;
+    if (known) {
+      openCommitHistoryTab({
+        repoRoot: known.repoRoot,
+        branch: sourceControl.status?.branch ?? null,
+      });
+      return;
+    }
+    if (!sourceControlContextPath) return;
+    try {
+      const repo = await native.gitResolveRepo(sourceControlContextPath);
+      if (!repo) return;
+      openCommitHistoryTab({ repoRoot: repo.repoRoot, branch: repo.branch });
+    } catch {
+      /* noop */
+    }
+  }, [
+    openCommitHistoryTab,
+    sourceControl.repo,
+    sourceControl.status?.branch,
+    sourceControlContextPath,
+  ]);
 
   const openPreviewTab = useCallback(
     (url: string) => {
@@ -1149,15 +1192,7 @@ export default function App() {
                     onSelectView={persistSidebarView}
                     changedCount={sourceControl.changedCount}
                     onOpenCommandPalette={() => setShortcutsOpen(true)}
-                    onOpenGitGraph={
-                      sourceControl.repo
-                        ? () =>
-                            openCommitHistoryTab({
-                              repoRoot: sourceControl.repo!.repoRoot,
-                              branch: sourceControl.status?.branch ?? null,
-                            })
-                        : undefined
-                    }
+                    onOpenGitGraph={openGitGraphFromContext}
                   />
                 </div>
               </ResizablePanel>

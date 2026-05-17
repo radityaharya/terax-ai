@@ -22,13 +22,14 @@ export function GitDiffStack({ tabs, activeId }: Props) {
       <div className="h-full w-full">
         <GitDiffPane
           key={active.id}
-          path={active.path}
-          repoRoot={active.repoRoot}
-          mode={active.mode}
-          originalContent={active.originalContent}
-          modifiedContent={active.modifiedContent}
-          isBinary={active.isBinary}
-          fallbackPatch={active.fallbackPatch}
+          active
+          source={{
+            kind: "working",
+            repoRoot: active.repoRoot,
+            path: active.path,
+            mode: active.mode,
+            originalPath: active.originalPath,
+          }}
         />
       </div>
     );
@@ -37,13 +38,14 @@ export function GitDiffStack({ tabs, activeId }: Props) {
     <div className="h-full w-full">
       <GitDiffPane
         key={active.id}
-        path={active.path}
-        repoRoot={active.repoRoot}
-        mode="+"
-        originalContent={active.originalContent}
-        modifiedContent={active.modifiedContent}
-        isBinary={active.isBinary}
-        fallbackPatch={active.fallbackPatch}
+        active
+        source={{
+          kind: "commit",
+          repoRoot: active.repoRoot,
+          sha: active.sha,
+          path: active.path,
+          originalPath: active.originalPath,
+        }}
         chipLabel={active.shortSha}
       />
     </div>

@@ -1,4 +1,4 @@
-export { SourceControlPanel } from "./SourceControlPanel";
+export { SourceControlPanel } from "./SourceControlPanelLazy";
 export {
   getSourceControlRemoteIndicator,
   useSourceControl,

@@ -1,3 +1,5 @@
+use tauri::{AppHandle, Manager};
+
 use crate::modules::git::operations;
 use crate::modules::git::types::{
     DiscardEntry, GitCommitFileChange, GitCommitResult, GitDiffContentResult, GitDiffResult,
@@ -5,28 +7,41 @@ use crate::modules::git::types::{
 };
 use crate::modules::workspace::WorkspaceRegistry;
 
+async fn blocking<F, T>(app: AppHandle, f: F) -> Result<T, String>
+where
+    F: FnOnce(&WorkspaceRegistry) -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let registry = app.state::<WorkspaceRegistry>();
+        f(&registry)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn git_resolve_repo(
     cwd: String,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<Option<GitRepoInfo>, String> {
-    operations::resolve_repo(&registry, &cwd).map_err(Into::into)
+    blocking(app, move |r| operations::resolve_repo(r, &cwd).map_err(Into::into)).await
 }
 
 #[tauri::command]
 pub async fn git_panel_snapshot(
     cwd: String,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<GitPanelSnapshot, String> {
-    operations::panel_snapshot(&registry, &cwd).map_err(Into::into)
+    blocking(app, move |r| operations::panel_snapshot(r, &cwd).map_err(Into::into)).await
 }
 
 #[tauri::command]
 pub async fn git_status(
     repo_root: String,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<GitStatusSnapshot, String> {
-    operations::status(&registry, &repo_root).map_err(Into::into)
+    blocking(app, move |r| operations::status(r, &repo_root).map_err(Into::into)).await
 }
 
 #[tauri::command]
@@ -34,9 +49,12 @@ pub async fn git_diff(
     repo_root: String,
     path: Option<String>,
     staged: bool,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<GitDiffResult, String> {
-    operations::diff(&registry, &repo_root, path.as_deref(), staged).map_err(Into::into)
+    blocking(app, move |r| {
+        operations::diff(r, &repo_root, path.as_deref(), staged).map_err(Into::into)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -45,70 +63,67 @@ pub async fn git_diff_content(
     path: String,
     staged: bool,
     original_path: Option<String>,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<GitDiffContentResult, String> {
-    operations::diff_content(&registry, &repo_root, &path, staged, original_path.as_deref())
-        .map_err(Into::into)
+    blocking(app, move |r| {
+        operations::diff_content(r, &repo_root, &path, staged, original_path.as_deref())
+            .map_err(Into::into)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn git_stage(
     repo_root: String,
     paths: Vec<String>,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<(), String> {
-    operations::stage(&registry, &repo_root, &paths).map_err(Into::into)
+    blocking(app, move |r| operations::stage(r, &repo_root, &paths).map_err(Into::into)).await
 }
 
 #[tauri::command]
 pub async fn git_unstage(
     repo_root: String,
     paths: Vec<String>,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<(), String> {
-    operations::unstage(&registry, &repo_root, &paths).map_err(Into::into)
+    blocking(app, move |r| operations::unstage(r, &repo_root, &paths).map_err(Into::into)).await
 }
 
 #[tauri::command]
 pub async fn git_discard(
     repo_root: String,
     entries: Vec<DiscardEntry>,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<(), String> {
-    operations::discard(&registry, &repo_root, &entries).map_err(Into::into)
+    blocking(app, move |r| operations::discard(r, &repo_root, &entries).map_err(Into::into)).await
 }
 
 #[tauri::command]
 pub async fn git_commit(
     repo_root: String,
     message: String,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<GitCommitResult, String> {
-    operations::commit(&registry, &repo_root, &message).map_err(Into::into)
+    blocking(app, move |r| {
+        operations::commit(r, &repo_root, &message).map_err(Into::into)
+    })
+    .await
 }
 
 #[tauri::command]
-pub async fn git_fetch(
-    repo_root: String,
-    registry: tauri::State<'_, WorkspaceRegistry>,
-) -> Result<(), String> {
-    operations::fetch(&registry, &repo_root).map_err(Into::into)
+pub async fn git_fetch(repo_root: String, app: AppHandle) -> Result<(), String> {
+    blocking(app, move |r| operations::fetch(r, &repo_root).map_err(Into::into)).await
 }
 
 #[tauri::command]
-pub async fn git_pull_ff_only(
-    repo_root: String,
-    registry: tauri::State<'_, WorkspaceRegistry>,
-) -> Result<(), String> {
-    operations::pull_ff_only(&registry, &repo_root).map_err(Into::into)
+pub async fn git_pull_ff_only(repo_root: String, app: AppHandle) -> Result<(), String> {
+    blocking(app, move |r| operations::pull_ff_only(r, &repo_root).map_err(Into::into)).await
 }
 
 #[tauri::command]
-pub async fn git_push(
-    repo_root: String,
-    registry: tauri::State<'_, WorkspaceRegistry>,
-) -> Result<GitPushResult, String> {
-    operations::push(&registry, &repo_root).map_err(Into::into)
+pub async fn git_push(repo_root: String, app: AppHandle) -> Result<GitPushResult, String> {
+    blocking(app, move |r| operations::push(r, &repo_root).map_err(Into::into)).await
 }
 
 #[tauri::command]
@@ -116,33 +131,37 @@ pub async fn git_log(
     repo_root: String,
     limit: Option<u32>,
     before_sha: Option<String>,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<Vec<GitLogEntry>, String> {
-    operations::log(
-        &registry,
-        &repo_root,
-        limit.unwrap_or(30),
-        before_sha.as_deref(),
-    )
-    .map_err(Into::into)
+    blocking(app, move |r| {
+        operations::log(r, &repo_root, limit.unwrap_or(30), before_sha.as_deref())
+            .map_err(Into::into)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn git_show_commit(
     repo_root: String,
     sha: String,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<GitDiffResult, String> {
-    operations::show_commit_diff(&registry, &repo_root, &sha).map_err(Into::into)
+    blocking(app, move |r| {
+        operations::show_commit_diff(r, &repo_root, &sha).map_err(Into::into)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn git_commit_files(
     repo_root: String,
     sha: String,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<Vec<GitCommitFileChange>, String> {
-    operations::commit_files(&registry, &repo_root, &sha).map_err(Into::into)
+    blocking(app, move |r| {
+        operations::commit_files(r, &repo_root, &sha).map_err(Into::into)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -151,24 +170,24 @@ pub async fn git_commit_file_diff(
     sha: String,
     path: String,
     original_path: Option<String>,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<GitDiffContentResult, String> {
-    operations::commit_file_diff(
-        &registry,
-        &repo_root,
-        &sha,
-        &path,
-        original_path.as_deref(),
-    )
-    .map_err(Into::into)
+    blocking(app, move |r| {
+        operations::commit_file_diff(r, &repo_root, &sha, &path, original_path.as_deref())
+            .map_err(Into::into)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn git_remote_url(
     repo_root: String,
     name: Option<String>,
-    registry: tauri::State<'_, WorkspaceRegistry>,
+    app: AppHandle,
 ) -> Result<Option<String>, String> {
     let remote = name.unwrap_or_else(|| "origin".to_string());
-    operations::remote_url(&registry, &repo_root, &remote).map_err(Into::into)
+    blocking(app, move |r| {
+        operations::remote_url(r, &repo_root, &remote).map_err(Into::into)
+    })
+    .await
 }

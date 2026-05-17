@@ -1,16 +1,18 @@
 import {
   native,
   type GitChangedFile,
-  type GitDiffContentResult,
   type GitDiscardEntry,
   type GitRepoInfo,
   type GitStatusSnapshot,
 } from "@/modules/ai/lib/native";
-import { buildConfiguredLanguageModel } from "@/modules/ai/lib/agent";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel, providerNeedsKey } from "@/modules/ai/config";
+import {
+  invalidateDiff,
+  invalidateRepoDiffs,
+  workingDiffKey,
+} from "@/modules/editor/lib/diffCache";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { generateText } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SourceControlSummary } from "./useSourceControl";
 
@@ -21,7 +23,6 @@ type SelectionTransition = "none" | "moved-group" | "reset";
 const COMMIT_DIFF_CHAR_LIMIT = 60_000;
 const COMMIT_MESSAGE_MAX_OUTPUT_TOKENS = 1024;
 const RECONCILE_DEBOUNCE_MS = 180;
-const DIFF_CACHE_LIMIT = 24;
 const CONVENTIONAL_PREFIX =
   /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?: .+/;
 const COMMIT_MESSAGE_SYSTEM_PROMPT =
@@ -55,7 +56,6 @@ type SourceControlPanelState = {
   repo: GitRepoInfo | null;
   status: GitStatusSnapshot | null;
   selected: DiffSelection | null;
-  diffLoading: boolean;
   commitMessage: string;
   actionBusy: string | null;
   statusError: string | null;
@@ -228,10 +228,6 @@ function buildRepairCommitMessagePrompt(
   ].join("\n");
 }
 
-function diffCacheKey(repoRoot: string, sel: DiffSelection): string {
-  return `${repoRoot}|${sel.mode}|${sel.path}`;
-}
-
 function optimisticStage(
   status: GitStatusSnapshot,
   paths: Set<string>,
@@ -344,10 +340,7 @@ export function useSourceControlPanel(
         path: string;
         repoRoot: string;
         mode: DiffMode;
-        originalContent: string;
-        modifiedContent: string;
-        isBinary: boolean;
-        fallbackPatch: string;
+        originalPath: string | null;
         title?: string;
       }) => void)
     | null,
@@ -369,7 +362,6 @@ export function useSourceControlPanel(
   const [repo, setRepo] = useState<GitRepoInfo | null>(null);
   const [status, setStatus] = useState<GitStatusSnapshot | null>(null);
   const [selected, setSelected] = useState<DiffSelection | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [localActionBusy, setLocalActionBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -382,8 +374,6 @@ export function useSourceControlPanel(
     | null
   >(null);
   const selectedRef = useRef<DiffSelection | null>(null);
-  const lastDiffSelectionRef = useRef<DiffSelection | null>(null);
-  const diffCacheRef = useRef(new Map<string, GitDiffContentResult>());
   const reconcileTimerRef = useRef(0);
 
   useEffect(() => {
@@ -476,84 +466,16 @@ export function useSourceControlPanel(
 
   useEffect(() => () => cancelReconcile(), [cancelReconcile]);
 
-  const emitDiff = useCallback(
-    (
-      sel: DiffSelection,
-      repoRoot: string,
-      file: GitChangedFile | undefined,
-      result: GitDiffContentResult,
-    ) => {
-      if (
-        !result.fallbackPatch &&
-        sel.mode === "-" &&
-        file?.untracked
-      ) {
-        onOpenDiff?.({
-          path: sel.path,
-          repoRoot,
-          mode: sel.mode,
-          originalContent: "",
-          modifiedContent: result.modifiedContent,
-          isBinary: result.isBinary,
-          fallbackPatch: `Untracked file: ${sel.path}\n\nStage the file to compare it against the index.`,
-        });
-        return;
-      }
+  const openSelection = useCallback(
+    (sel: DiffSelection, repoRoot: string, file: GitChangedFile | undefined) => {
       onOpenDiff?.({
         path: sel.path,
         repoRoot,
         mode: sel.mode,
-        originalContent: result.originalContent,
-        modifiedContent: result.modifiedContent,
-        isBinary: result.isBinary,
-        fallbackPatch: result.fallbackPatch,
+        originalPath: file?.originalPath ?? null,
       });
     },
     [onOpenDiff],
-  );
-
-  const loadDiff = useCallback(
-    async (
-      repoRoot: string,
-      nextSelection: DiffSelection,
-      currentStatus: GitStatusSnapshot | null,
-    ) => {
-      const file = currentStatus?.changedFiles.find(
-        (candidate) => candidate.path === nextSelection.path,
-      );
-      const cacheKey = diffCacheKey(repoRoot, nextSelection);
-      const cache = diffCacheRef.current;
-      const cached = cache.get(cacheKey);
-      if (cached) {
-        cache.delete(cacheKey);
-        cache.set(cacheKey, cached);
-        lastDiffSelectionRef.current = nextSelection;
-        emitDiff(nextSelection, repoRoot, file, cached);
-        return;
-      }
-      setDiffLoading(true);
-      try {
-        const result = await native.gitDiffContent(
-          repoRoot,
-          nextSelection.path,
-          nextSelection.mode === "+",
-          file?.originalPath ?? null,
-        );
-        cache.set(cacheKey, result);
-        while (cache.size > DIFF_CACHE_LIMIT) {
-          const oldest = cache.keys().next().value;
-          if (oldest === undefined) break;
-          cache.delete(oldest);
-        }
-        lastDiffSelectionRef.current = nextSelection;
-        emitDiff(nextSelection, repoRoot, file, result);
-      } catch (error) {
-        setActionError(normalizeError(error));
-      } finally {
-        setDiffLoading(false);
-      }
-    },
-    [emitDiff],
   );
 
   const refresh = useCallback(async () => {
@@ -562,8 +484,7 @@ export function useSourceControlPanel(
       setSelectionTransition("none");
       return;
     }
-    diffCacheRef.current.clear();
-    lastDiffSelectionRef.current = null;
+    if (summary.repo) invalidateRepoDiffs(summary.repo.repoRoot);
     await summary.refresh({ remote: "never" });
   }, [isOpen, summary]);
 
@@ -645,11 +566,7 @@ export function useSourceControlPanel(
     async (entry: SourceControlEntry) => {
       if (!repo) return;
       const nextSelection: DiffSelection = { path: entry.path, mode: entry.mode };
-      const isSame =
-        sameSelection(selected, nextSelection) &&
-        sameSelection(lastDiffSelectionRef.current, nextSelection) &&
-        diffCacheRef.current.has(diffCacheKey(repo.repoRoot, nextSelection));
-      if (isSame) {
+      if (sameSelection(selected, nextSelection)) {
         setActionError(null);
         setActionMessage(null);
         setSelectionTransition("none");
@@ -659,9 +576,10 @@ export function useSourceControlPanel(
       setActionError(null);
       setActionMessage(null);
       setSelectionTransition("none");
-      await loadDiff(repo.repoRoot, nextSelection, status);
+      const file = status?.changedFiles.find((c) => c.path === entry.path);
+      openSelection(nextSelection, repo.repoRoot, file);
     },
-    [loadDiff, repo, selected, status],
+    [openSelection, repo, selected, status],
   );
 
   const runMutation = useCallback(
@@ -676,10 +594,9 @@ export function useSourceControlPanel(
       setActionMessage(null);
       setActionError(null);
       if (optimistic) summary.applyStatus(optimistic);
-      // Invalidate cached diffs for paths touched by this mutation.
       for (const path of affected) {
-        diffCacheRef.current.delete(`${repo.repoRoot}|+|${path}`);
-        diffCacheRef.current.delete(`${repo.repoRoot}|-|${path}`);
+        invalidateDiff(workingDiffKey(repo.repoRoot, path, "+"));
+        invalidateDiff(workingDiffKey(repo.repoRoot, path, "-"));
       }
       try {
         await ipc();
@@ -798,7 +715,12 @@ export function useSourceControlPanel(
     setActionMessage(null);
     setActionError(null);
     try {
-      const diff = await native.gitDiff(repo.repoRoot, null, true);
+      const [{ buildConfiguredLanguageModel }, { generateText }, diff] =
+        await Promise.all([
+          import("@/modules/ai/lib/agent"),
+          import("ai"),
+          native.gitDiff(repo.repoRoot, null, true),
+        ]);
       const { text: diffText, truncated } = truncateDiff(diff.diffText);
       const chatState = useChatStore.getState();
       const prefs = usePreferencesStore.getState();
@@ -862,8 +784,7 @@ export function useSourceControlPanel(
       setActionMessage(
         `Committed ${result.commitSha.slice(0, 7)} ${result.summary}`,
       );
-      diffCacheRef.current.clear();
-      lastDiffSelectionRef.current = null;
+      invalidateRepoDiffs(repo.repoRoot);
       await summary.refresh({ remote: "never" });
     } catch (error) {
       setActionError(normalizeError(error));
@@ -911,7 +832,6 @@ export function useSourceControlPanel(
     repo,
     status,
     selected,
-    diffLoading,
     commitMessage,
     actionBusy: localActionBusy ?? summary.busyAction,
     statusError: summary.localError,

@@ -1,2 +1,1 @@
-export { GitHistoryPane } from "./GitHistoryPane";
-export { GitHistoryStack } from "./GitHistoryStack";
+export { GitHistoryStack } from "./GitHistoryStackLazy";

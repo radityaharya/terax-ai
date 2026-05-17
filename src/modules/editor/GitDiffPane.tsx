@@ -1,24 +1,43 @@
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Spinner } from "@/components/ui/spinner";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { unifiedMergeView } from "@codemirror/merge";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { buildSharedExtensions, languageCompartment } from "./lib/extensions";
+import {
+  fetchCommitDiff,
+  fetchWorkingDiff,
+  getCachedDiff,
+  workingDiffKey,
+  commitDiffKey,
+} from "./lib/diffCache";
 import { resolveLanguage, resolveLanguageSync } from "./lib/languageResolver";
 import { EDITOR_THEME_EXT } from "./lib/themes";
 
-type Props = {
-  path: string;
+type WorkingSource = {
+  kind: "working";
   repoRoot: string;
+  path: string;
   mode: "-" | "+";
-  originalContent: string;
-  modifiedContent: string;
-  isBinary: boolean;
-  fallbackPatch: string;
+  originalPath: string | null;
+};
+
+type CommitSource = {
+  kind: "commit";
+  repoRoot: string;
+  sha: string;
+  path: string;
+  originalPath: string | null;
+};
+
+type Props = {
+  source: WorkingSource | CommitSource;
   chipLabel?: string;
+  active: boolean;
 };
 
 const LARGE_FILE_THRESHOLD = 256 * 1024;
@@ -39,7 +58,6 @@ const DIFF_THEME = EditorView.theme({
     borderRadius: "3px",
     padding: "0 1px",
   },
-  // Faint line-level wash for added / changed lines.
   "&.cm-merge-b .cm-changedLine, .cm-changedLine, .cm-inlineChangedLine": {
     backgroundColor: "rgba(110, 200, 120, 0.05) !important",
   },
@@ -48,7 +66,6 @@ const DIFF_THEME = EditorView.theme({
     paddingTop: "1px",
     paddingBottom: "1px",
   },
-  // Slim, muted left stripe markers (override the bright `#8f8` default).
   "&.cm-merge-b .cm-changedLineGutter, .cm-changedLineGutter": {
     background: "rgba(110, 200, 120, 0.55) !important",
   },
@@ -82,19 +99,99 @@ function countDiffLines(patch: string): { added: number; removed: number } {
   return { added, removed };
 }
 
-export function GitDiffPane({
-  path,
-  repoRoot,
-  mode,
-  originalContent,
-  modifiedContent,
-  isBinary,
-  fallbackPatch,
-  chipLabel,
-}: Props) {
+type LoadState =
+  | { kind: "idle" }
+  | { kind: "loading" }
+  | { kind: "loaded"; originalContent: string; modifiedContent: string; isBinary: boolean; fallbackPatch: string }
+  | { kind: "error"; message: string };
+
+function cacheKey(source: WorkingSource | CommitSource): string {
+  return source.kind === "working"
+    ? workingDiffKey(source.repoRoot, source.path, source.mode)
+    : commitDiffKey(source.repoRoot, source.sha, source.path);
+}
+
+function loadStateFromCache(
+  source: WorkingSource | CommitSource,
+): LoadState {
+  const hit = getCachedDiff(cacheKey(source));
+  if (!hit) return { kind: "idle" };
+  return {
+    kind: "loaded",
+    originalContent: hit.originalContent,
+    modifiedContent: hit.modifiedContent,
+    isBinary: hit.isBinary,
+    fallbackPatch: hit.fallbackPatch,
+  };
+}
+
+export function GitDiffPane({ source, chipLabel, active }: Props) {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
   const editorThemeId = usePreferencesStore((s) => s.editorTheme);
   const themeExt = EDITOR_THEME_EXT[editorThemeId] ?? EDITOR_THEME_EXT.atomone;
+  const [state, setState] = useState<LoadState>(() =>
+    active ? loadStateFromCache(source) : { kind: "idle" },
+  );
+
+  const key = cacheKey(source);
+
+  useEffect(() => {
+    if (!active) return;
+    const cached = loadStateFromCache(source);
+    if (cached.kind === "loaded") {
+      setState(cached);
+      return;
+    }
+    let cancelled = false;
+    setState({ kind: "loading" });
+    const promise =
+      source.kind === "working"
+        ? fetchWorkingDiff(
+            source.repoRoot,
+            source.path,
+            source.mode,
+            source.originalPath,
+          )
+        : fetchCommitDiff(
+            source.repoRoot,
+            source.sha,
+            source.path,
+            source.originalPath,
+          );
+    promise
+      .then((res) => {
+        if (cancelled) return;
+        setState({
+          kind: "loaded",
+          originalContent: res.originalContent,
+          modifiedContent: res.modifiedContent,
+          isBinary: res.isBinary,
+          fallbackPatch: res.fallbackPatch,
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setState({
+          kind: "error",
+          message:
+            err && typeof err === "object" && "message" in err
+              ? String((err as { message: unknown }).message)
+              : String(err),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, key, source]);
+
+  const path = source.path;
+  const repoRoot = source.repoRoot;
+  const mode = source.kind === "working" ? source.mode : "+";
+  const loaded = state.kind === "loaded" ? state : null;
+  const originalContent = loaded?.originalContent ?? "";
+  const modifiedContent = loaded?.modifiedContent ?? "";
+  const isBinary = loaded?.isBinary ?? false;
+  const fallbackPatch = loaded?.fallbackPatch ?? "";
 
   const isTooLarge =
     originalContent.length > LARGE_FILE_THRESHOLD ||
@@ -136,7 +233,10 @@ export function GitDiffPane({
     };
   }, [useFallback, path, initialLang]);
 
-  const stats = useMemo(() => countDiffLines(fallbackPatch), [fallbackPatch]);
+  const stats = useMemo(
+    () => (useFallback ? countDiffLines(fallbackPatch) : { added: 0, removed: 0 }),
+    [useFallback, fallbackPatch],
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col rounded-md border border-border/60 bg-background">
@@ -166,17 +266,30 @@ export function GitDiffPane({
         </div>
         <div className="flex shrink-0 items-center gap-3 text-[10.5px] tabular-nums text-muted-foreground">
           <span className="truncate max-w-80 font-mono">{repoRoot}</span>
-          <span className="text-emerald-600 dark:text-emerald-400">
-            +{stats.added}
-          </span>
-          <span className="text-rose-600 dark:text-rose-400">
-            −{stats.removed}
-          </span>
+          {useFallback ? (
+            <>
+              <span className="text-emerald-600 dark:text-emerald-400">
+                +{stats.added}
+              </span>
+              <span className="text-rose-600 dark:text-rose-400">
+                −{stats.removed}
+              </span>
+            </>
+          ) : null}
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        {useFallback ? (
+        {state.kind === "loading" || state.kind === "idle" ? (
+          <div className="flex h-full items-center justify-center gap-2 text-[11px] text-muted-foreground">
+            <Spinner className="size-3" />
+            Loading diff…
+          </div>
+        ) : state.kind === "error" ? (
+          <div className="flex h-full items-center justify-center px-6 text-center text-[11.5px] text-destructive">
+            {state.message}
+          </div>
+        ) : useFallback ? (
           <ScrollArea className="h-full">
             <pre className="min-h-full whitespace-pre-wrap wrap-break-word p-4 font-mono text-[12px] leading-relaxed text-muted-foreground">
               {fallbackPatch || "Diff preview is not available for this file."}

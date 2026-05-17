@@ -8,10 +8,6 @@ type CommitFileDiffOpenInput = {
   subject: string;
   path: string;
   originalPath: string | null;
-  originalContent: string;
-  modifiedContent: string;
-  isBinary: boolean;
-  fallbackPatch: string;
 };
 
 type Props = {

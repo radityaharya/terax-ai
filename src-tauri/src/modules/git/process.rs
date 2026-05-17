@@ -213,7 +213,12 @@ where
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    cmd.stdin(Stdio::null())
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

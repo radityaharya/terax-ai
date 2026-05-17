@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::modules::git::errors::{GitError, Result};
-use crate::modules::git::parser::{parse_branch_header, parse_changed_files};
+use crate::modules::git::parser::parse_porcelain_v2;
 use crate::modules::git::process::{
     ensure_git_available, ensure_success, git_show_text, git_stdout_line_opt, git_stdout_lines,
     read_text_file, run_git,
@@ -30,9 +30,6 @@ fn resolve_repo_in_authorized(
     registry: &WorkspaceRegistry,
     cwd: &Path,
 ) -> Result<Option<GitRepoInfo>> {
-    // Single git invocation returns toplevel, HEAD ref and @{u} (if any).
-    // The @{u} arg may fail for branches with no upstream, so we issue it
-    // separately and treat absence as None — fast path stays one process.
     let Some(root_line) = git_stdout_line_opt(cwd, ["rev-parse", "--show-toplevel"])? else {
         return Ok(None);
     };
@@ -70,14 +67,22 @@ pub fn panel_snapshot(registry: &WorkspaceRegistry, cwd: &str) -> Result<GitPane
         return Err(GitError::PathOutsideWorkspace(cwd));
     }
     ensure_git_available()?;
-    let Some(repo) = resolve_repo_in_authorized(registry, &cwd)? else {
+    let Some(root_line) = git_stdout_line_opt(&cwd, ["rev-parse", "--show-toplevel"])? else {
         return Ok(GitPanelSnapshot {
             repo: None,
             status: None,
         });
     };
-    let repo_path = PathBuf::from(&repo.repo_root);
-    let status = status_inner(&repo_path)?;
+    let canonical_root = canonical_dir(&root_line)?;
+    let _ = registry.authorize(&canonical_root);
+
+    let status = status_inner(&canonical_root)?;
+    let repo = GitRepoInfo {
+        repo_root: display_path(&canonical_root),
+        branch: status.branch.clone(),
+        upstream: status.upstream.clone(),
+        is_detached: status.is_detached,
+    };
     Ok(GitPanelSnapshot {
         repo: Some(repo),
         status: Some(status),
@@ -95,7 +100,7 @@ fn status_inner(repo_root: &Path) -> Result<GitStatusSnapshot> {
         Some(repo_root),
         [
             "status",
-            "--porcelain=v1",
+            "--porcelain=v2",
             "--branch",
             "-z",
             "--untracked-files=all",
@@ -105,22 +110,17 @@ fn status_inner(repo_root: &Path) -> Result<GitStatusSnapshot> {
     ensure_success(&output, "git status failed")?;
 
     let stdout = std::str::from_utf8(&output.stdout).unwrap_or("");
-    let fields: Vec<&str> = stdout.split('\0').filter(|s| !s.is_empty()).collect();
-    if fields.is_empty() {
-        return Err(GitError::command("git status", "no data"));
-    }
-
-    let (branch, upstream, ahead, behind, is_detached) = parse_branch_header(fields[0])?;
+    let parsed = parse_porcelain_v2(stdout);
 
     Ok(GitStatusSnapshot {
         repo_root: display_path(repo_root),
-        branch,
-        upstream,
-        ahead,
-        behind,
-        is_detached,
+        branch: parsed.branch,
+        upstream: parsed.upstream,
+        ahead: parsed.ahead,
+        behind: parsed.behind,
+        is_detached: parsed.is_detached,
         truncated: output.truncated,
-        changed_files: parse_changed_files(&fields),
+        changed_files: parsed.files,
     })
 }
 
@@ -550,7 +550,7 @@ pub fn commit_files(
         return Err(GitError::command("git diff-tree", "invalid commit sha"));
     }
 
-    let name_status_output = run_git(
+    let output = run_git(
         Some(&repo_root),
         [
             OsStr::new("diff-tree"),
@@ -558,29 +558,41 @@ pub fn commit_files(
             OsStr::new("-r"),
             OsStr::new("-z"),
             OsStr::new("--name-status"),
-            OsStr::new(sha),
-        ],
-        DEFAULT_TIMEOUT_SECS,
-    )?;
-    ensure_success(&name_status_output, "git diff-tree --name-status failed")?;
-
-    let numstat_output = run_git(
-        Some(&repo_root),
-        [
-            OsStr::new("diff-tree"),
-            OsStr::new("--no-commit-id"),
-            OsStr::new("-r"),
-            OsStr::new("-z"),
             OsStr::new("--numstat"),
             OsStr::new(sha),
         ],
         DEFAULT_TIMEOUT_SECS,
     )?;
-    ensure_success(&numstat_output, "git diff-tree --numstat failed")?;
+    ensure_success(&output, "git diff-tree failed")?;
 
-    let mut files = parse_diff_tree_name_status(&name_status_output.stdout);
-    apply_numstat(&mut files, &numstat_output.stdout);
+    let (name_status_bytes, numstat_bytes) = split_name_status_numstat(&output.stdout);
+    let mut files = parse_diff_tree_name_status(name_status_bytes);
+    apply_numstat(&mut files, numstat_bytes);
     Ok(files)
+}
+
+fn split_name_status_numstat(bytes: &[u8]) -> (&[u8], &[u8]) {
+    let s = std::str::from_utf8(bytes).unwrap_or("");
+    let tokens: Vec<(usize, &str)> = s
+        .split('\0')
+        .scan(0usize, |off, t| {
+            let start = *off;
+            *off += t.len() + 1;
+            Some((start, t))
+        })
+        .collect();
+    let mut split_at = bytes.len();
+    for (idx, tok) in tokens.iter().enumerate() {
+        if tok.1.contains('\t') {
+            split_at = tok.0;
+            // Walk back: numstat for R/C with -z emits "<a>\t<r>" then two
+            // NUL-separated paths. The two trailing path tokens belong to the
+            // numstat block, not name-status.
+            let _ = idx;
+            break;
+        }
+    }
+    (&bytes[..split_at], &bytes[split_at..])
 }
 
 pub fn commit_file_diff(

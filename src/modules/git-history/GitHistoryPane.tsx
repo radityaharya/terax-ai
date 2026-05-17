@@ -16,7 +16,6 @@ import { cn } from "@/lib/utils";
 import {
   native,
   type GitCommitFileChange,
-  type GitDiffContentResult,
   type GitLogEntry,
 } from "@/modules/ai/lib/native";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
@@ -46,7 +45,12 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { GraphRail, MAX_VISIBLE_LANES, railWidth } from "./GraphRail";
-import { layoutGraph, type GraphRow } from "./lib/graph";
+import {
+  EMPTY_GRAPH_STATE,
+  layoutGraph,
+  type GraphRow,
+  type GraphState,
+} from "./lib/graph";
 import {
   commitWebUrl,
   hostLabel,
@@ -62,11 +66,7 @@ const PAGE_SIZE = 30;
 const ROW_HEIGHT = 32;
 const TABLE_HEADER_HEIGHT = 24;
 const NEAR_BOTTOM_PX = 240;
-const FILES_CACHE_LIMIT = 32;
-const FILE_DIFF_CACHE_LIMIT = 24;
-const HOVER_PREFETCH_MS = 120;
-const VISIBLE_PREFETCH_COUNT = 12;
-const PREFETCH_CONCURRENCY = 3;
+const FILES_CACHE_LIMIT = 16;
 
 type CommitFileDiffOpenInput = {
   repoRoot: string;
@@ -75,10 +75,6 @@ type CommitFileDiffOpenInput = {
   subject: string;
   path: string;
   originalPath: string | null;
-  originalContent: string;
-  modifiedContent: string;
-  isBinary: boolean;
-  fallbackPatch: string;
 };
 
 type Props = {
@@ -214,30 +210,75 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
     height: number;
   } | null>(null);
   const [remoteWeb, setRemoteWeb] = useState<RemoteWebInfo | null>(null);
-  const [filesByCommit, setFilesByCommit] = useState<Map<string, FilesEntry>>(
-    () => new Map(),
-  );
+  const filesCacheRef = useRef(new Map<string, FilesEntry>());
+  const [filesTick, setFilesTick] = useState(0);
+  const bumpFiles = useCallback(() => setFilesTick((n) => n + 1), []);
 
-  const fileDiffCacheRef = useRef(new Map<string, GitDiffContentResult>());
   const requestIdRef = useRef(0);
   const inflightMoreRef = useRef(false);
   const filesInflightRef = useRef(new Set<string>());
-  const hoverTimerRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const graphCacheRef = useRef<{
+    rows: GraphRow[];
+    byCommit: Map<string, GraphRow>;
+    tail: GraphState;
+    firstSha: string | null;
+    len: number;
+    maxLaneCount: number;
+  }>({
+    rows: [],
+    byCommit: new Map(),
+    tail: EMPTY_GRAPH_STATE,
+    firstSha: null,
+    len: 0,
+    maxLaneCount: 1,
+  });
 
-  const graph = useMemo(() => layoutGraph(commits), [commits]);
-  const graphByCommit = useMemo(() => {
-    const map = new Map<string, GraphRow>();
-    for (const row of graph.rows) map.set(row.sha, row);
-    return map;
-  }, [graph]);
-  const maxLaneCount = useMemo(() => {
-    let max = 1;
-    for (const row of graph.rows) {
-      if (row.laneCount > max) max = row.laneCount;
+  const { graphByCommit, maxLaneCount } = useMemo(() => {
+    const cache = graphCacheRef.current;
+    if (commits.length === 0) {
+      cache.rows = [];
+      cache.byCommit = new Map();
+      cache.tail = EMPTY_GRAPH_STATE;
+      cache.firstSha = null;
+      cache.len = 0;
+      cache.maxLaneCount = 1;
+      return { graphByCommit: cache.byCommit, maxLaneCount: 1 };
     }
-    return max;
-  }, [graph]);
+    const firstSha = commits[0].sha;
+    const canAppend =
+      cache.firstSha === firstSha && commits.length >= cache.len;
+    if (!canAppend) {
+      const { rows, state } = layoutGraph(commits);
+      const byCommit = new Map<string, GraphRow>();
+      let max = 1;
+      for (const row of rows) {
+        byCommit.set(row.sha, row);
+        if (row.laneCount > max) max = row.laneCount;
+      }
+      cache.rows = rows;
+      cache.byCommit = byCommit;
+      cache.tail = state;
+      cache.firstSha = firstSha;
+      cache.len = commits.length;
+      cache.maxLaneCount = max;
+      return { graphByCommit: byCommit, maxLaneCount: max };
+    }
+    if (commits.length > cache.len) {
+      const delta = commits.slice(cache.len);
+      const { rows: newRows, state } = layoutGraph(delta, cache.tail);
+      let max = cache.maxLaneCount;
+      for (const row of newRows) {
+        cache.byCommit.set(row.sha, row);
+        if (row.laneCount > max) max = row.laneCount;
+      }
+      cache.rows = cache.rows.concat(newRows);
+      cache.tail = state;
+      cache.len = commits.length;
+      cache.maxLaneCount = max;
+    }
+    return { graphByCommit: cache.byCommit, maxLaneCount: cache.maxLaneCount };
+  }, [commits]);
   const gridTemplate = GRID_TEMPLATE;
 
   const filtered = useMemo(() => {
@@ -260,7 +301,7 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
     count: filtered.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_HEIGHT,
-    overscan: 40,
+    overscan: 8,
     getItemKey: (index) => filtered[index]?.sha ?? index,
   });
 
@@ -311,23 +352,13 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
   }, [commits, endReached, loadStatus, repoRoot]);
 
   useEffect(() => {
-    fileDiffCacheRef.current.clear();
     filesInflightRef.current.clear();
-    setFilesByCommit(new Map());
+    filesCacheRef.current.clear();
+    bumpFiles();
     setCommits([]);
     setOpenAnchor(null);
     void loadInitial();
-  }, [loadInitial]);
-
-  useEffect(
-    () => () => {
-      if (hoverTimerRef.current !== null) {
-        window.clearTimeout(hoverTimerRef.current);
-        hoverTimerRef.current = null;
-      }
-    },
-    [],
-  );
+  }, [bumpFiles, loadInitial]);
 
   useEffect(() => {
     let cancelled = false;
@@ -376,41 +407,33 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
   }, [commits.length, deferredSearch, endReached, loadMore, loadStatus]);
 
   const handleRefresh = useCallback(() => {
-    fileDiffCacheRef.current.clear();
     filesInflightRef.current.clear();
-    setFilesByCommit(new Map());
+    filesCacheRef.current.clear();
+    bumpFiles();
     void loadInitial();
-  }, [loadInitial]);
+  }, [bumpFiles, loadInitial]);
 
   const fetchFiles = useCallback(
     async (sha: string) => {
       if (filesInflightRef.current.has(sha)) return;
+      const cache = filesCacheRef.current;
+      const existing = cache.get(sha);
+      if (existing && existing.state !== "error") return;
       filesInflightRef.current.add(sha);
-      setFilesByCommit((prev) => {
-        const existing = prev.get(sha);
-        if (existing && existing.state !== "error") return prev;
-        const next = new Map(prev);
-        next.set(sha, { state: "loading" });
-        return next;
-      });
+      cache.set(sha, { state: "loading" });
+      bumpFiles();
       try {
         const files = await native.gitCommitFiles(repoRoot, sha);
-        setFilesByCommit((prev) => {
-          const next = new Map(prev);
-          next.set(sha, { state: "loaded", files });
-          while (next.size > FILES_CACHE_LIMIT) {
-            const oldest = next.keys().next().value;
-            if (oldest === undefined || oldest === sha) break;
-            next.delete(oldest);
-          }
-          return next;
-        });
+        cache.set(sha, { state: "loaded", files });
+        while (cache.size > FILES_CACHE_LIMIT) {
+          const oldest = cache.keys().next().value;
+          if (oldest === undefined || oldest === sha) break;
+          cache.delete(oldest);
+        }
+        bumpFiles();
       } catch (err) {
-        setFilesByCommit((prev) => {
-          const next = new Map(prev);
-          next.set(sha, { state: "error", error: normalizeError(err) });
-          return next;
-        });
+        cache.set(sha, { state: "error", error: normalizeError(err) });
+        bumpFiles();
       } finally {
         filesInflightRef.current.delete(sha);
       }
@@ -418,27 +441,8 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
     [repoRoot],
   );
 
-  const cancelHoverPrefetch = useCallback(() => {
-    if (hoverTimerRef.current !== null) {
-      window.clearTimeout(hoverTimerRef.current);
-      hoverTimerRef.current = null;
-    }
-  }, []);
-
-  const scheduleHoverPrefetch = useCallback(
-    (sha: string) => {
-      cancelHoverPrefetch();
-      hoverTimerRef.current = window.setTimeout(() => {
-        hoverTimerRef.current = null;
-        void fetchFiles(sha);
-      }, HOVER_PREFETCH_MS);
-    },
-    [cancelHoverPrefetch, fetchFiles],
-  );
-
   const handleRowClick = useCallback(
     (sha: string, event: React.MouseEvent<HTMLElement>) => {
-      cancelHoverPrefetch();
       if (openAnchor?.sha === sha) {
         setOpenAnchor(null);
         return;
@@ -458,77 +462,18 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
       });
       void fetchFiles(sha);
     },
-    [cancelHoverPrefetch, fetchFiles, openAnchor?.sha],
+    [fetchFiles, openAnchor?.sha],
   );
-
-  useEffect(() => {
-    if (commits.length === 0) return;
-    let cancelled = false;
-    const queue = commits
-      .slice(0, VISIBLE_PREFETCH_COUNT)
-      .map((c) => c.sha)
-      .filter((sha) => !filesByCommit.has(sha));
-    if (queue.length === 0) return;
-    let active = 0;
-    let index = 0;
-    const pump = () => {
-      while (
-        !cancelled &&
-        active < PREFETCH_CONCURRENCY &&
-        index < queue.length
-      ) {
-        const sha = queue[index++];
-        active++;
-        void fetchFiles(sha).finally(() => {
-          active--;
-          if (!cancelled) pump();
-        });
-      }
-    };
-    const idleId =
-      typeof window.requestIdleCallback === "function"
-        ? window.requestIdleCallback(pump, { timeout: 800 })
-        : (window.setTimeout(pump, 250) as unknown as number);
-    return () => {
-      cancelled = true;
-      if (typeof window.cancelIdleCallback === "function") {
-        try {
-          window.cancelIdleCallback(idleId as number);
-        } catch {
-          /* noop */
-        }
-      } else {
-        window.clearTimeout(idleId as number);
-      }
-    };
-  }, [commits, fetchFiles, filesByCommit]);
 
   const closePopover = useCallback(() => setOpenAnchor(null), []);
 
+  const openFilesEntry = useMemo(() => {
+    if (!openAnchor) return null;
+    return filesCacheRef.current.get(openAnchor.sha) ?? null;
+  }, [openAnchor, filesTick]);
+
   const handleFileOpen = useCallback(
-    async (commit: GitLogEntry, file: GitCommitFileChange) => {
-      const cacheKey = `${commit.sha}|${file.path}`;
-      const cache = fileDiffCacheRef.current;
-      let result = cache.get(cacheKey);
-      if (!result) {
-        try {
-          result = await native.gitCommitFileDiff(
-            repoRoot,
-            commit.sha,
-            file.path,
-            file.originalPath,
-          );
-          cache.set(cacheKey, result);
-          while (cache.size > FILE_DIFF_CACHE_LIMIT) {
-            const oldest = cache.keys().next().value;
-            if (oldest === undefined) break;
-            cache.delete(oldest);
-          }
-        } catch (err) {
-          setError(normalizeError(err));
-          return;
-        }
-      }
+    (commit: GitLogEntry, file: GitCommitFileChange) => {
       onOpenCommitFile({
         repoRoot,
         sha: commit.sha,
@@ -536,10 +481,6 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
         subject: commit.subject,
         path: file.path,
         originalPath: file.originalPath,
-        originalContent: result.originalContent,
-        modifiedContent: result.modifiedContent,
-        isBinary: result.isBinary,
-        fallbackPatch: result.fallbackPatch,
       });
       setOpenAnchor(null);
     },
@@ -721,8 +662,6 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
                         maxLaneCount={maxLaneCount}
                         gridTemplate={gridTemplate}
                         onClick={handleRowClick}
-                        onHover={scheduleHoverPrefetch}
-                        onLeave={cancelHoverPrefetch}
                       />
                     </div>
                   );
@@ -798,7 +737,7 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
                   return (
                     <CommitDetail
                       commit={commit}
-                      filesEntry={filesByCommit.get(openAnchor.sha) ?? null}
+                      filesEntry={openFilesEntry}
                       remoteWeb={remoteWeb}
                       onCopySha={copyToClipboard}
                       onOpenFile={handleFileOpen}
@@ -830,8 +769,6 @@ type CommitRowProps = {
   maxLaneCount: number;
   gridTemplate: string;
   onClick: (sha: string, event: React.MouseEvent<HTMLElement>) => void;
-  onHover: (sha: string) => void;
-  onLeave: () => void;
 };
 
 const CommitRow = memo(function CommitRow({
@@ -842,8 +779,6 @@ const CommitRow = memo(function CommitRow({
   maxLaneCount,
   gridTemplate,
   onClick,
-  onHover,
-  onLeave,
 }: CommitRowProps) {
   const date = compactDate(commit.timestampSecs);
   const initials = authorInitials(commit.author);
@@ -852,8 +787,6 @@ const CommitRow = memo(function CommitRow({
     <button
       type="button"
       onClick={(event) => onClick(commit.sha, event)}
-      onMouseEnter={() => onHover(commit.sha)}
-      onMouseLeave={onLeave}
       className={cn(
         "group relative grid h-full w-full cursor-pointer items-center gap-3 border-l-2 border-transparent pr-3 text-left transition-colors",
         active ? "border-l-primary/70 bg-accent/45" : "hover:bg-accent/25",
