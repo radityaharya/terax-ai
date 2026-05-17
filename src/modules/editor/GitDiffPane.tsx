@@ -29,8 +29,42 @@ const READONLY_EXT = [
   EditorView.editable.of(false),
 ];
 const DIFF_THEME = EditorView.theme({
-  ".cm-changedText": {
-    background: "#88ff881a !important",
+  "&.cm-merge-b .cm-changedText, .cm-changedText": {
+    background: "rgba(110, 200, 120, 0.20) !important",
+    borderRadius: "3px",
+    padding: "0 1px",
+  },
+  ".cm-deletedChunk .cm-deletedText, &.cm-merge-b .cm-deletedText": {
+    background: "rgba(220, 90, 90, 0.22) !important",
+    borderRadius: "3px",
+    padding: "0 1px",
+  },
+  // Faint line-level wash for added / changed lines.
+  "&.cm-merge-b .cm-changedLine, .cm-changedLine, .cm-inlineChangedLine": {
+    backgroundColor: "rgba(110, 200, 120, 0.05) !important",
+  },
+  ".cm-deletedChunk": {
+    backgroundColor: "rgba(220, 90, 90, 0.05) !important",
+    paddingTop: "1px",
+    paddingBottom: "1px",
+  },
+  // Slim, muted left stripe markers (override the bright `#8f8` default).
+  "&.cm-merge-b .cm-changedLineGutter, .cm-changedLineGutter": {
+    background: "rgba(110, 200, 120, 0.55) !important",
+  },
+  ".cm-deletedLineGutter, &.cm-merge-a .cm-changedLineGutter": {
+    background: "rgba(220, 90, 90, 0.5) !important",
+  },
+  ".cm-changeGutter": {
+    width: "2px !important",
+    paddingLeft: "0 !important",
+  },
+  ".cm-collapsedLines": {
+    backgroundColor: "transparent",
+    color: "var(--muted-foreground, #9ca3af)",
+    fontSize: "10.5px",
+    padding: "2px 8px",
+    opacity: 0.7,
   },
 });
 
@@ -102,10 +136,7 @@ export function GitDiffPane({
     };
   }, [useFallback, path, initialLang]);
 
-  const stats = useMemo(
-    () => countDiffLines(fallbackPatch),
-    [fallbackPatch],
-  );
+  const stats = useMemo(() => countDiffLines(fallbackPatch), [fallbackPatch]);
 
   return (
     <div className="flex h-full min-h-0 flex-col rounded-md border border-border/60 bg-background">
@@ -148,8 +179,7 @@ export function GitDiffPane({
         {useFallback ? (
           <ScrollArea className="h-full">
             <pre className="min-h-full whitespace-pre-wrap wrap-break-word p-4 font-mono text-[12px] leading-relaxed text-muted-foreground">
-              {fallbackPatch ||
-                "Diff preview is not available for this file."}
+              {fallbackPatch || "Diff preview is not available for this file."}
             </pre>
           </ScrollArea>
         ) : (

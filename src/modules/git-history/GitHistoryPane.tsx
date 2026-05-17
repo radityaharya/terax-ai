@@ -5,7 +5,6 @@ import {
   PopoverAnchor,
   PopoverContent,
 } from "@/components/ui/popover";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -23,10 +22,10 @@ import {
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
   Cancel01Icon,
-  Clock01Icon,
   Copy01Icon,
   File02Icon,
   GitBranchIcon,
+  GitCommitHorizontalIcon,
   LinkSquare02Icon,
   Refresh01Icon,
   Search01Icon,
@@ -56,8 +55,8 @@ import {
 } from "./lib/remoteWebUrl";
 
 const RAIL_RESERVED_PX = railWidth(MAX_VISIBLE_LANES);
-// rail | sha | subject(capped) | spacer(absorbs slack) | changes | author(hugs) | date
-const GRID_TEMPLATE = `${RAIL_RESERVED_PX + 4}px 60px minmax(0, 560px) minmax(12px, 1fr) 116px minmax(140px, max-content) 96px`;
+// rail | sha | subject(capped) | spacer(absorbs slack) | author(hugs) | date | changes
+const GRID_TEMPLATE = `${RAIL_RESERVED_PX + 4}px 60px minmax(0, 560px) minmax(12px, 1fr) minmax(140px, max-content) 96px 116px`;
 
 const PAGE_SIZE = 30;
 const ROW_HEIGHT = 32;
@@ -209,8 +208,10 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
   const deferredSearch = useDeferredValue(searchInput.trim());
   const [openAnchor, setOpenAnchor] = useState<{
     sha: string;
-    x: number;
-    y: number;
+    top: number;
+    left: number;
+    width: number;
+    height: number;
   } | null>(null);
   const [remoteWeb, setRemoteWeb] = useState<RemoteWebInfo | null>(null);
   const [filesByCommit, setFilesByCommit] = useState<Map<string, FilesEntry>>(
@@ -348,6 +349,7 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    setOpenAnchor((prev) => (prev ? null : prev));
     if (deferredSearch) return;
     const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (remaining < NEAR_BOTTOM_PX) {
@@ -441,10 +443,18 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
         setOpenAnchor(null);
         return;
       }
+      // Anchor at the cursor so the popover opens where the user clicked,
+      // but clamp X so it never gets pushed off-screen on the right.
+      const POPOVER_WIDTH = 420;
+      const PADDING = 16;
+      const maxLeft = window.innerWidth - POPOVER_WIDTH - PADDING;
+      const left = Math.max(PADDING, Math.min(event.clientX, maxLeft));
       setOpenAnchor({
         sha,
-        x: event.clientX,
-        y: event.clientY,
+        top: event.clientY,
+        left,
+        width: 1,
+        height: 1,
       });
       void fetchFiles(sha);
     },
@@ -550,13 +560,13 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
         <header className="flex shrink-0 items-center gap-2 border-b border-border/55 bg-card/65 px-3 py-2 backdrop-blur">
           <div className="flex shrink-0 items-center gap-1.5">
             <HugeiconsIcon
-              icon={Clock01Icon}
+              icon={GitCommitHorizontalIcon}
               size={14}
               strokeWidth={1.85}
               className="text-muted-foreground"
             />
             <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/85">
-              History
+              Git Graph
             </span>
             {branch ? (
               <div className="ml-1 inline-flex items-center gap-1 rounded-md border border-border/55 bg-background/70 px-1.5 py-0.5 text-[11px] font-medium leading-none text-foreground">
@@ -672,9 +682,9 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
               <div className="pl-px">SHA</div>
               <div className="min-w-0">Subject</div>
               <div />
-              <div className="text-right">Changes</div>
               <div className="ml-2">Author</div>
               <div className="text-right">Date</div>
+              <div className="text-right">Changes</div>
             </div>
             <div
               ref={scrollRef}
@@ -760,10 +770,10 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
                     aria-hidden
                     style={{
                       position: "fixed",
-                      top: openAnchor?.y ?? -9999,
-                      left: openAnchor?.x ?? -9999,
-                      width: 0,
-                      height: 0,
+                      top: openAnchor?.top ?? -9999,
+                      left: openAnchor?.left ?? -9999,
+                      width: openAnchor?.width ?? 0,
+                      height: openAnchor?.height ?? 0,
                       pointerEvents: "none",
                     }}
                   />
@@ -774,12 +784,12 @@ export function GitHistoryPane({ repoRoot, branch, onOpenCommitFile }: Props) {
           <PopoverContent
             side="bottom"
             align="start"
-            sideOffset={0}
+            sideOffset={4}
             alignOffset={0}
             collisionPadding={16}
             avoidCollisions
             onOpenAutoFocus={(e) => e.preventDefault()}
-            className="w-[380px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden rounded-xl p-0 shadow-xl"
+            className="flex w-[420px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden rounded-xl p-0 shadow-xl"
           >
             {openAnchor
               ? (() => {
@@ -836,7 +846,6 @@ const CommitRow = memo(function CommitRow({
   onLeave,
 }: CommitRowProps) {
   const date = compactDate(commit.timestampSecs);
-  const absolute = absoluteTime(commit.timestampSecs);
   const initials = authorInitials(commit.author);
   const totalStat = commit.insertions + commit.deletions;
   return (
@@ -879,6 +888,25 @@ const CommitRow = memo(function CommitRow({
         )}
       </span>
       <span aria-hidden />
+      <span
+        className="ml-2 inline-flex h-[18px] max-w-full min-w-0 items-center gap-1.5 justify-self-start self-center overflow-hidden rounded-md bg-foreground/6 pl-1 pr-1.5 text-[10.5px] font-medium text-foreground/85"
+        title={commit.authorEmail || commit.author}
+      >
+        <span
+          className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-[3px] font-mono text-[8.5px] font-bold uppercase tabular-nums text-background"
+          style={{
+            backgroundColor: authorTint(commit.authorEmail || commit.author),
+          }}
+        >
+          {initials}
+        </span>
+        <span className="min-w-0 truncate">
+          {commit.author ? highlight(commit.author, query) : "Unknown"}
+        </span>
+      </span>
+      <span className="text-right font-mono text-[10.5px] tabular-nums text-muted-foreground/75">
+        {date}
+      </span>
       <span className="flex min-w-0 items-center justify-end gap-1.5 font-mono text-[10px] tabular-nums">
         {commit.filesChanged > 0 ? (
           <span
@@ -917,32 +945,6 @@ const CommitRow = memo(function CommitRow({
           <span className="text-muted-foreground/40">—</span>
         ) : null}
       </span>
-      <span
-        className="ml-2 inline-flex h-[18px] max-w-full min-w-0 items-center gap-1.5 justify-self-start self-center overflow-hidden rounded-md bg-foreground/6 pl-1 pr-1.5 text-[10.5px] font-medium text-foreground/85"
-        title={commit.authorEmail || commit.author}
-      >
-        <span
-          className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-[3px] font-mono text-[8.5px] font-bold uppercase tabular-nums text-background"
-          style={{
-            backgroundColor: authorTint(commit.authorEmail || commit.author),
-          }}
-        >
-          {initials}
-        </span>
-        <span className="min-w-0 truncate">
-          {commit.author ? highlight(commit.author, query) : "Unknown"}
-        </span>
-      </span>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="text-right font-mono text-[10.5px] tabular-nums text-muted-foreground/75">
-            {date}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="left" className="text-[10.5px]">
-          {absolute}
-        </TooltipContent>
-      </Tooltip>
     </button>
   );
 });
@@ -978,8 +980,8 @@ function CommitDetail({
   }, [copied]);
 
   return (
-    <div className="flex flex-col">
-      <div className="border-b border-border/45 p-3">
+    <div className="flex max-h-[60vh] min-h-0 flex-col">
+      <div className="shrink-0 border-b border-border/45 p-3">
         <div className="flex items-start gap-2">
           <span className="mt-px shrink-0 rounded bg-muted/65 px-1.5 py-0.5 font-mono text-[10.5px] leading-none tabular-nums text-muted-foreground">
             {commit.shortSha}
@@ -1035,7 +1037,7 @@ function CommitDetail({
         </div>
       </div>
 
-      <div className="max-h-70 overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <CommitFiles
           commit={commit}
           filesEntry={filesEntry}
@@ -1092,14 +1094,14 @@ function CommitFiles({
     );
   }
   return (
-    <>
-      <div className="flex items-center justify-between px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/85">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center justify-between px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/85">
         <span>Files</span>
         <span className="rounded-sm bg-muted/55 px-1 py-px text-[9.5px] tabular-nums text-muted-foreground/85 normal-case tracking-normal">
           {filesEntry.files.length}
         </span>
       </div>
-      <ScrollArea className="max-h-60">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]">
         <ul className="space-y-px px-1.5 pb-2">
           {filesEntry.files.map((file) => (
             <li key={file.path}>
@@ -1110,8 +1112,8 @@ function CommitFiles({
             </li>
           ))}
         </ul>
-      </ScrollArea>
-    </>
+      </div>
+    </div>
   );
 }
 

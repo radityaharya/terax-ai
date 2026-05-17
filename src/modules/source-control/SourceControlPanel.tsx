@@ -1,4 +1,3 @@
-import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -9,6 +8,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -17,27 +17,26 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 import { IS_MAC } from "@/lib/platform";
+import { cn } from "@/lib/utils";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  AddSquareIcon,
+  AiContentGenerator02Icon,
   Alert02Icon,
   ArrowDown01Icon,
-  ArrowDownDoubleIcon,
   ArrowRight01Icon,
   ArrowUp01Icon,
   CheckmarkCircle01Icon,
-  Clock01Icon,
-  CloudDownloadIcon,
-  Eraser01Icon,
-  GitBranchIcon,
-  MagicWand02Icon,
+  Download01Icon,
+  FolderCloudIcon,
+  FolderGitTwoIcon,
   MinusSignIcon,
-  PlusSignIcon,
   Refresh01Icon,
+  RemoveSquareIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   memo,
   useCallback,
@@ -67,14 +66,13 @@ type Props = {
     fallbackPatch: string;
     title?: string;
   }) => void;
-  onOpenHistory?: () => void;
 };
 
 const SOURCE_CONTROL_TOOLTIP_CLASS =
   "border border-border/70 bg-zinc-950 text-zinc-100 shadow-lg shadow-black/30 dark:border-border/60 dark:bg-zinc-950 dark:text-zinc-100";
 
 const ROW_HEIGHTS = {
-  banner: 56,
+  banner: 32,
   groupHeader: 28,
   entry: 30,
   emptyPlaceholder: 24,
@@ -111,38 +109,19 @@ function upstreamBadgeLabel(upstream: string | null | undefined): string {
 }
 
 function statusTone(code: string): string {
-  // Slightly desaturated tones — calmer than full-strength 600/400.
   switch (code) {
     case "A":
-      return "text-emerald-700/90 dark:text-emerald-300/90";
+      return "text-emerald-600/80 dark:text-emerald-400/85";
     case "U":
-      return "text-teal-700/90 dark:text-teal-300/90";
+      return "text-teal-600/80 dark:text-teal-400/85";
     case "M":
-      return "text-amber-700/90 dark:text-amber-300/90";
+      return "text-amber-600/85 dark:text-amber-400/90";
     case "D":
-      return "text-rose-700/90 dark:text-rose-300/90";
+      return "text-rose-600/80 dark:text-rose-400/85";
     case "R":
-      return "text-sky-700/90 dark:text-sky-300/90";
+      return "text-sky-600/80 dark:text-sky-400/85";
     default:
-      return "text-muted-foreground";
-  }
-}
-
-function statusChip(code: string): string {
-  // Subtle soft pill, no ring — paired with statusTone for text color.
-  switch (code) {
-    case "A":
-      return "bg-emerald-500/10";
-    case "U":
-      return "bg-teal-500/10";
-    case "M":
-      return "bg-amber-500/12";
-    case "D":
-      return "bg-rose-500/10";
-    case "R":
-      return "bg-sky-500/10";
-    default:
-      return "bg-muted/45";
+      return "text-muted-foreground/75";
   }
 }
 
@@ -167,7 +146,6 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   open,
   sourceControl,
   onOpenDiff,
-  onOpenHistory,
 }: Props) {
   const scm = useSourceControlPanel(open, sourceControl, onOpenDiff);
   const refreshAnimationRef = useRef<number | null>(null);
@@ -226,13 +204,15 @@ export const SourceControlPanel = memo(function SourceControlPanel({
     !isDiverged &&
     !scm.actionBusy &&
     !sourceControl.busyAction;
-  const canFetch =
-    hasUpstream && !scm.actionBusy && !sourceControl.busyAction;
+  const canFetch = hasUpstream && !scm.actionBusy && !sourceControl.busyAction;
 
   const footerFeedback = useMemo(() => {
-    if (scm.actionError) return { tone: "error", message: scm.actionError } as const;
-    if (scm.remoteError) return { tone: "error", message: scm.remoteError } as const;
-    if (scm.actionMessage) return { tone: "success", message: scm.actionMessage } as const;
+    if (scm.actionError)
+      return { tone: "error", message: scm.actionError } as const;
+    if (scm.remoteError)
+      return { tone: "error", message: scm.remoteError } as const;
+    if (scm.actionMessage)
+      return { tone: "success", message: scm.actionMessage } as const;
     return null;
   }, [scm.actionError, scm.actionMessage, scm.remoteError]);
 
@@ -283,21 +263,14 @@ export const SourceControlPanel = memo(function SourceControlPanel({
       result.push({ kind: "banner-diverged", key: "banner-diverged" });
     }
 
-    result.push({
-      kind: "group-header",
-      key: "header-staged",
-      group: "staged",
-      count: stagedCount,
-    });
-    if (stagedOpen) {
-      if (stagedCount === 0) {
-        result.push({
-          kind: "empty",
-          key: "empty-staged",
-          group: "staged",
-          text: scm.stagedEmptyText,
-        });
-      } else {
+    if (stagedCount > 0) {
+      result.push({
+        kind: "group-header",
+        key: "header-staged",
+        group: "staged",
+        count: stagedCount,
+      });
+      if (stagedOpen) {
         for (const entry of scm.stagedEntries) {
           result.push({
             kind: "entry",
@@ -309,21 +282,14 @@ export const SourceControlPanel = memo(function SourceControlPanel({
       }
     }
 
-    result.push({
-      kind: "group-header",
-      key: "header-unstaged",
-      group: "unstaged",
-      count: unstagedCount,
-    });
-    if (unstagedOpen) {
-      if (unstagedCount === 0) {
-        result.push({
-          kind: "empty",
-          key: "empty-unstaged",
-          group: "unstaged",
-          text: scm.unstagedEmptyText,
-        });
-      } else {
+    if (unstagedCount > 0) {
+      result.push({
+        kind: "group-header",
+        key: "header-unstaged",
+        group: "unstaged",
+        count: unstagedCount,
+      });
+      if (unstagedOpen) {
         for (const entry of scm.unstagedEntries) {
           result.push({
             kind: "entry",
@@ -338,9 +304,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
     return result;
   }, [
     isDiverged,
-    scm.stagedEmptyText,
     scm.stagedEntries,
-    scm.unstagedEmptyText,
     scm.unstagedEntries,
     stagedCount,
     stagedOpen,
@@ -399,9 +363,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
     (direction: 1 | -1) => {
       if (focusableIndices.length === 0) return;
       const currentIndex =
-        focusedRowKey === null
-          ? -1
-          : rowKeyToIndex.get(focusedRowKey) ?? -1;
+        focusedRowKey === null ? -1 : (rowKeyToIndex.get(focusedRowKey) ?? -1);
       let pos = focusableIndices.findIndex((i) => i === currentIndex);
       if (pos === -1) pos = direction > 0 ? -1 : focusableIndices.length;
       let nextPos = pos + direction;
@@ -513,7 +475,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
           <div className="flex min-w-0 items-center gap-1.5">
             <div className="inline-flex min-w-0 items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-[11.5px] font-medium leading-none text-foreground transition-colors hover:bg-foreground/10">
               <HugeiconsIcon
-                icon={GitBranchIcon}
+                icon={FolderGitTwoIcon}
                 size={12}
                 strokeWidth={1.9}
                 className="shrink-0 text-muted-foreground"
@@ -561,7 +523,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                 <Spinner className="size-3" />
               ) : (
                 <HugeiconsIcon
-                  icon={CloudDownloadIcon}
+                  icon={FolderCloudIcon}
                   size={14}
                   strokeWidth={1.85}
                 />
@@ -587,7 +549,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                 <Spinner className="size-3" />
               ) : (
                 <HugeiconsIcon
-                  icon={ArrowDownDoubleIcon}
+                  icon={Download01Icon}
                   size={14}
                   strokeWidth={1.9}
                 />
@@ -655,34 +617,53 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                   placeholder="Commit message"
                   rows={3}
                   className={cn(
-                    "min-h-[72px] resize-none rounded-lg border-0 bg-transparent px-3 pb-7 pt-2.5 text-[12.5px] leading-snug shadow-none placeholder:text-muted-foreground/65 focus-visible:ring-0",
+                    "min-h-[72px] border-  resize-none rounded-lg  bg-transparent px-3 pb-7 pt-2.5 text-[12.5px] leading-snug shadow-none placeholder:text-muted-foreground/65 focus-visible:ring-0 focus:border-0",
                   )}
                 />
-                <div className="pointer-events-none absolute inset-x-2 bottom-1.5 flex items-center justify-between gap-2 text-[10px] text-muted-foreground/65">
-                  <span className="truncate">
-                    {commitShortcut} to commit
-                  </span>
-                  <span className="tabular-nums">
-                    {scm.commitMessage.length > 0 ? scm.commitMessage.length : ""}
-                  </span>
+                <div className="pointer-events-none absolute inset-x-3 bottom-1.5 flex items-center justify-between p-1 gap-2 text-[10px] tabular-nums text-muted-foreground/55">
+                  {scm.commitMessage.length > 0 ? (
+                    <span>Ch: {scm.commitMessage.length}</span>
+                  ) : (
+                    <span className="flex gap-2 items-center">
+                      {commitShortcut} <p>to commit</p>
+                    </span>
+                  )}
                 </div>
-                <div className="absolute right-1.5 top-1.5">
-                  <IconActionButton
-                    label={`${scm.generateCommitMessageHint} (${generateShortcut})`}
-                    disabled={!scm.canGenerateCommitMessage}
-                    side="left"
-                    onClick={() => void scm.generateCommitMessage()}
-                  >
-                    {scm.actionBusy === "generate-message" ? (
-                      <Spinner className="size-3" />
-                    ) : (
-                      <HugeiconsIcon
-                        icon={MagicWand02Icon}
-                        size={13}
-                        strokeWidth={1.85}
-                      />
-                    )}
-                  </IconActionButton>
+                <div className="absolute right-1 top-1">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={`${scm.generateCommitMessageHint} (${generateShortcut})`}
+                        disabled={!scm.canGenerateCommitMessage}
+                        onClick={() => void scm.generateCommitMessage()}
+                        className={cn(
+                          "inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/65 transition-colors",
+                          "hover:bg-foreground/[0.06] hover:text-foreground",
+                          "disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/65",
+                        )}
+                      >
+                        {scm.actionBusy === "generate-message" ? (
+                          <Spinner className="size-3" />
+                        ) : (
+                          <HugeiconsIcon
+                            icon={AiContentGenerator02Icon}
+                            size={14}
+                            strokeWidth={1.75}
+                          />
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="left"
+                      className={cn(
+                        SOURCE_CONTROL_TOOLTIP_CLASS,
+                        "text-[10.5px]",
+                      )}
+                    >
+                      {`${scm.generateCommitMessageHint} (${generateShortcut})`}
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
               </div>
 
@@ -707,12 +688,12 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                 </span>
               </div>
 
-              <div className="flex w-full gap-1.5">
+              <div className="grid w-full grid-cols-2 gap-1.5">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
                       size="xs"
-                      className="h-7 flex-[2] cursor-pointer text-[11.5px] font-semibold tracking-tight shadow-sm disabled:cursor-not-allowed disabled:shadow-none"
+                      className="h-7 cursor-pointer text-[11.5px] font-semibold tracking-tight shadow-sm disabled:cursor-not-allowed disabled:shadow-none"
                       disabled={!canCommit}
                       onClick={() => void scm.commit()}
                     >
@@ -721,7 +702,10 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                   </TooltipTrigger>
                   <TooltipContent
                     side="bottom"
-                    className={cn(SOURCE_CONTROL_TOOLTIP_CLASS, "text-[10.5px]")}
+                    className={cn(
+                      SOURCE_CONTROL_TOOLTIP_CLASS,
+                      "text-[10.5px]",
+                    )}
                   >
                     {commitHint}
                   </TooltipContent>
@@ -731,7 +715,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                     <Button
                       size="xs"
                       variant="secondary"
-                      className="h-7 flex-1 cursor-pointer text-[11.5px] font-medium disabled:cursor-not-allowed"
+                      className="h-7 cursor-pointer text-[11.5px] font-medium disabled:cursor-not-allowed"
                       disabled={!scm.canPush || !!scm.actionBusy}
                       onClick={() => void scm.push()}
                     >
@@ -816,13 +800,6 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                 </div>
               </div>
             </div>
-
-            <HistoryFooter
-              ahead={scm.status.ahead}
-              behind={scm.status.behind}
-              upstream={scm.status.upstream}
-              onOpenHistory={onOpenHistory}
-            />
           </>
         ) : null}
       </aside>
@@ -898,65 +875,6 @@ function CleanTreeHint({ repoLabel }: { repoLabel: string }) {
   );
 }
 
-function HistoryFooter({
-  ahead,
-  behind,
-  upstream,
-  onOpenHistory,
-}: {
-  ahead: number;
-  behind: number;
-  upstream: string | null;
-  onOpenHistory?: () => void;
-}) {
-  const summary = useMemo(() => {
-    const parts: string[] = [];
-    if (ahead > 0) parts.push(`${ahead} ahead`);
-    if (behind > 0) parts.push(`${behind} behind`);
-    if (parts.length === 0) {
-      return upstream
-        ? `In sync with ${upstream}`
-        : "Local branch · no upstream";
-    }
-    return parts.join(" · ");
-  }, [ahead, behind, upstream]);
-
-  return (
-    <div className="shrink-0 border-t border-border/45 bg-card/60 px-2 py-1.5">
-      <button
-        type="button"
-        onClick={onOpenHistory}
-        disabled={!onOpenHistory}
-        className={cn(
-          "group flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left transition-colors",
-          onOpenHistory
-            ? "cursor-pointer hover:bg-accent/40"
-            : "cursor-not-allowed opacity-70",
-        )}
-      >
-        <HugeiconsIcon
-          icon={Clock01Icon}
-          size={14}
-          strokeWidth={1.85}
-          className="shrink-0 text-muted-foreground group-hover:text-foreground"
-        />
-        <span className="truncate text-[11.5px] font-medium text-foreground/90 group-hover:text-foreground">
-          History
-        </span>
-        <span className="ml-auto truncate text-[10.5px] tabular-nums text-muted-foreground/70">
-          {onOpenHistory ? summary : "—"}
-        </span>
-        <HugeiconsIcon
-          icon={ArrowRight01Icon}
-          size={11}
-          strokeWidth={2}
-          className="shrink-0 text-muted-foreground/55 transition-transform group-hover:translate-x-0.5 group-hover:text-muted-foreground"
-        />
-      </button>
-    </div>
-  );
-}
-
 type RowRendererProps = {
   row: RowDescriptor;
   focused: boolean;
@@ -996,19 +914,17 @@ const RowRenderer = memo(function RowRenderer(props: RowRendererProps) {
 
 function DivergedBanner() {
   return (
-    <div className="mx-2 mt-1 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] leading-snug text-amber-700 dark:text-amber-200">
+    <div className="mx-2 mt-1 flex h-7 items-center gap-1.5 rounded-md border border-amber-500/25 bg-amber-500/[0.07] px-2 text-[10.5px] leading-none text-amber-700 dark:text-amber-200">
       <HugeiconsIcon
         icon={Alert02Icon}
-        size={13}
+        size={11}
         strokeWidth={1.9}
-        className="mt-px shrink-0"
+        className="shrink-0"
       />
-      <div className="min-w-0 flex-1">
-        <div className="font-medium">Branch diverged from upstream</div>
-        <div className="opacity-80">
-          Open a terminal to merge or rebase before syncing.
-        </div>
-      </div>
+      <span className="min-w-0 flex-1 truncate">
+        <span className="font-medium">Diverged from upstream</span>
+        <span className="ml-1 opacity-75">— resolve in terminal</span>
+      </span>
     </div>
   );
 }
@@ -1070,7 +986,7 @@ function GroupHeader({
                 <Spinner className="size-3" />
               ) : (
                 <HugeiconsIcon
-                  icon={Eraser01Icon}
+                  icon={RemoveSquareIcon}
                   size={12}
                   strokeWidth={1.85}
                 />
@@ -1084,7 +1000,7 @@ function GroupHeader({
               {actionBusy === "stage:all" ? (
                 <Spinner className="size-3" />
               ) : (
-                <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={2} />
+                <HugeiconsIcon icon={AddSquareIcon} size={12} strokeWidth={2} />
               )}
             </IconActionButton>
           </>
@@ -1126,7 +1042,6 @@ const EntryRow = memo(function EntryRow({
   const iconUrl = fileIconUrl(fileName);
   const pathLabel = entryPathLabel(entry);
   const actionType = row.group === "staged" ? "unstage" : "stage";
-  const actionIcon = actionType === "stage" ? PlusSignIcon : MinusSignIcon;
   const actionLabel = actionType === "stage" ? "Stage" : "Unstage";
   const onAction =
     actionType === "stage"
@@ -1209,7 +1124,7 @@ const EntryRow = memo(function EntryRow({
               <Spinner className="size-3" />
             ) : (
               <HugeiconsIcon
-                icon={Eraser01Icon}
+                icon={RemoveSquareIcon}
                 size={11}
                 strokeWidth={1.9}
               />
@@ -1225,15 +1140,14 @@ const EntryRow = memo(function EntryRow({
           {isBusy ? (
             <Spinner className="size-3" />
           ) : (
-            <HugeiconsIcon icon={actionIcon} size={12} strokeWidth={2} />
+            <HugeiconsIcon icon={AddSquareIcon} size={12} strokeWidth={2} />
           )}
         </IconActionButton>
       </div>
 
       <span
         className={cn(
-          "inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-md px-1 font-mono text-[10px] font-bold leading-none tabular-nums",
-          statusChip(entry.statusCode),
+          "inline-flex w-3.5 shrink-0 justify-center font-mono text-[10.5px] font-semibold leading-none tabular-nums",
           statusTone(entry.statusCode),
         )}
         title={entry.statusLabel}
@@ -1261,9 +1175,9 @@ function IconActionButton({
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
-          size="icon-xs"
+          size="icon-sm"
           variant="ghost"
-          className="size-7 cursor-pointer rounded-md text-muted-foreground hover:text-foreground disabled:cursor-not-allowed"
+          className="size-6 p-3 cursor-pointer rounded-md text-muted-foreground hover:text-foreground disabled:cursor-not-allowed"
           aria-label={label}
           disabled={disabled}
           onClick={onClick}
@@ -1317,9 +1231,7 @@ function CommitFeedback({
     <div
       className={cn(
         "pointer-events-none absolute inset-x-3 top-[calc(100%-0.25rem)] z-20 flex min-w-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] leading-snug shadow-lg shadow-black/15 backdrop-blur transition-all duration-200",
-        isVisible
-          ? "translate-y-0 opacity-100"
-          : "-translate-y-1 opacity-0",
+        isVisible ? "translate-y-0 opacity-100" : "-translate-y-1 opacity-0",
         isError
           ? "border-destructive/30 bg-card/95 text-destructive"
           : "border-border/70 bg-card/95 text-muted-foreground",

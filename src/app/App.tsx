@@ -358,7 +358,6 @@ export default function App() {
   const [newEditorOpen, setNewEditorOpen] = useState(false);
   const miniOpen = useChatStore((s) => s.mini.open);
   const openMini = useChatStore((s) => s.openMini);
-  const toggleMini = useChatStore((s) => s.toggleMini);
   const focusInput = useChatStore((s) => s.focusInput);
   const openPanel = useChatStore((s) => s.openPanel);
   const panelOpen = useChatStore((s) => s.panelOpen);
@@ -1140,15 +1139,6 @@ export default function App() {
                         open
                         sourceControl={sourceControl}
                         onOpenDiff={openGitDiffTab}
-                        onOpenHistory={
-                          sourceControl.repo
-                            ? () =>
-                                openCommitHistoryTab({
-                                  repoRoot: sourceControl.repo!.repoRoot,
-                                  branch: sourceControl.status?.branch ?? null,
-                                })
-                            : undefined
-                        }
                       />
                     ) : (
                       <ExtensionsView />
@@ -1159,8 +1149,15 @@ export default function App() {
                     onSelectView={persistSidebarView}
                     changedCount={sourceControl.changedCount}
                     onOpenCommandPalette={() => setShortcutsOpen(true)}
-                    onToggleMiniWindow={toggleMini}
-                    miniOpen={miniOpen}
+                    onOpenGitGraph={
+                      sourceControl.repo
+                        ? () =>
+                            openCommitHistoryTab({
+                              repoRoot: sourceControl.repo!.repoRoot,
+                              branch: sourceControl.status?.branch ?? null,
+                            })
+                        : undefined
+                    }
                   />
                 </div>
               </ResizablePanel>

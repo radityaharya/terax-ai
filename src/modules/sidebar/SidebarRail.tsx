@@ -6,15 +6,18 @@ import {
 import { cn } from "@/lib/utils";
 import {
   CommandIcon,
+  FolderGitTwoIcon,
   FolderTreeIcon,
-  Message01Icon,
+  GitForkIcon,
   PuzzleIcon,
-  SourceCodeCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { SidebarViewId } from "./types";
 
 export const SIDEBAR_RAIL_HEIGHT = 48;
+
+const RAIL_TOOLTIP_CLASS =
+  "border border-border/60 bg-zinc-950 text-zinc-100 shadow-lg shadow-black/30 dark:bg-zinc-950 dark:text-zinc-100";
 
 type RailSlot =
   | {
@@ -30,6 +33,8 @@ type RailSlot =
       label: string;
       icon: Parameters<typeof HugeiconsIcon>[0]["icon"];
       onTrigger: () => void;
+      disabled?: boolean;
+      active?: boolean;
     };
 
 type Props = {
@@ -37,8 +42,7 @@ type Props = {
   onSelectView: (view: SidebarViewId) => void;
   changedCount: number;
   onOpenCommandPalette: () => void;
-  onToggleMiniWindow: () => void;
-  miniOpen: boolean;
+  onOpenGitGraph?: () => void;
 };
 
 export function SidebarRail({
@@ -46,8 +50,7 @@ export function SidebarRail({
   onSelectView,
   changedCount,
   onOpenCommandPalette,
-  onToggleMiniWindow,
-  miniOpen,
+  onOpenGitGraph,
 }: Props) {
   const slots: RailSlot[] = [
     {
@@ -60,21 +63,22 @@ export function SidebarRail({
       kind: "view",
       id: "source-control",
       label: "Source Control",
-      icon: SourceCodeCircleIcon,
+      icon: FolderGitTwoIcon,
       badge: changedCount,
+    },
+    {
+      kind: "action",
+      id: "git-graph",
+      label: "Git Graph",
+      icon: GitForkIcon,
+      onTrigger: () => onOpenGitGraph?.(),
+      disabled: !onOpenGitGraph,
     },
     {
       kind: "view",
       id: "extensions",
       label: "Extensions",
       icon: PuzzleIcon,
-    },
-    {
-      kind: "action",
-      id: "ai-mini",
-      label: miniOpen ? "Hide AI conversation" : "Open AI conversation",
-      icon: Message01Icon,
-      onTrigger: onToggleMiniWindow,
     },
     {
       kind: "action",
@@ -93,7 +97,8 @@ export function SidebarRail({
       {slots.map((slot) => {
         const isActive = slot.kind === "view" && slot.id === activeView;
         const isAction = slot.kind === "action";
-        const isMiniOpen = slot.kind === "action" && slot.id === "ai-mini" && miniOpen;
+        const isActionActive = isAction && slot.active === true;
+        const isDisabled = isAction && slot.disabled === true;
         const showBadge =
           slot.kind === "view" && !!slot.badge && slot.badge > 0;
         return (
@@ -103,6 +108,7 @@ export function SidebarRail({
                 type="button"
                 aria-label={slot.label}
                 aria-pressed={isActive || undefined}
+                disabled={isDisabled}
                 onClick={() => {
                   if (slot.kind === "view") onSelectView(slot.id);
                   else slot.onTrigger();
@@ -110,9 +116,10 @@ export function SidebarRail({
                 className={cn(
                   "group relative inline-flex size-9 cursor-pointer items-center justify-center rounded-lg border outline-none transition-[background-color,border-color,color,box-shadow] duration-150",
                   "focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-0",
+                  "disabled:cursor-not-allowed disabled:opacity-40",
                   isActive
                     ? "border-border/70 bg-foreground/[0.07] text-foreground shadow-[inset_0_0_0_1px_rgba(255,255,255,0.02)] dark:bg-foreground/[0.09]"
-                    : isMiniOpen
+                    : isActionActive
                       ? "border-border/60 bg-foreground/[0.06] text-foreground hover:bg-foreground/[0.08] dark:bg-foreground/[0.08]"
                       : isAction
                         ? "border-transparent bg-foreground/[0.025] text-muted-foreground hover:border-border/60 hover:bg-foreground/[0.06] hover:text-foreground dark:bg-foreground/[0.04]"
@@ -126,7 +133,12 @@ export function SidebarRail({
                   className="transition-[stroke-width] duration-150"
                 />
                 {showBadge ? (
-                  <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[8.5px] font-semibold leading-none text-primary-foreground shadow-sm ring-2 ring-card">
+                  <span
+                    className={cn(
+                      "pointer-events-none absolute -right-1 -top-1 inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full border px-1 text-[8.5px] font-semibold leading-none tabular-nums",
+                      "border-border/70 bg-card text-muted-foreground/95 ring-2 ring-card",
+                    )}
+                  >
                     {slot.badge! > 99 ? "99+" : slot.badge}
                   </span>
                 ) : null}
@@ -135,7 +147,11 @@ export function SidebarRail({
                 ) : null}
               </button>
             </TooltipTrigger>
-            <TooltipContent side="top" className="text-[10.5px]">
+            <TooltipContent
+              side="top"
+              sideOffset={8}
+              className={cn(RAIL_TOOLTIP_CLASS, "text-[10.5px]")}
+            >
               {slot.label}
             </TooltipContent>
           </Tooltip>
