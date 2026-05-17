@@ -136,7 +136,7 @@ mod unix {
                     Ok(zdotdir) => {
                         // Guard against Terax-in-Terax :)
                         if let Ok(user_zd) = std::env::var("ZDOTDIR") {
-                            if PathBuf::from(&user_zd) != zdotdir {
+                            if Path::new(&user_zd) != zdotdir.as_path() {
                                 cmd.env("TERAX_USER_ZDOTDIR", user_zd);
                             }
                         }

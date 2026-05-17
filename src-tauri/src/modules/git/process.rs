@@ -95,9 +95,8 @@ fn version_meets_minimum(found: &str, required: &str) -> bool {
     };
     let f = parse(found);
     let r = parse(required);
-    for i in 0..r.len() {
+    for (i, &b) in r.iter().enumerate() {
         let a = f.get(i).copied().unwrap_or(0);
-        let b = r[i];
         if a > b {
             return true;
         }
