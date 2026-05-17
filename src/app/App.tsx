@@ -37,6 +37,7 @@ import {
   NewEditorDialog,
   type EditorPaneHandle,
 } from "@/modules/editor";
+import { GitHistoryStack } from "@/modules/git-history";
 import { useZoom } from "@/lib/useZoom";
 import { FileExplorer, type FileExplorerHandle } from "@/modules/explorer";
 import {
@@ -148,6 +149,8 @@ export default function App() {
     openAiDiffTab,
     closeAiDiffTab,
     openGitDiffTab,
+    openCommitHistoryTab,
+    openCommitFileDiffTab,
     closeTab,
     updateTab,
     selectByIndex,
@@ -355,6 +358,7 @@ export default function App() {
   const [newEditorOpen, setNewEditorOpen] = useState(false);
   const miniOpen = useChatStore((s) => s.mini.open);
   const openMini = useChatStore((s) => s.openMini);
+  const toggleMini = useChatStore((s) => s.toggleMini);
   const focusInput = useChatStore((s) => s.focusInput);
   const openPanel = useChatStore((s) => s.openPanel);
   const panelOpen = useChatStore((s) => s.panelOpen);
@@ -420,7 +424,9 @@ export default function App() {
   const isEditorTab = activeTab?.kind === "editor";
   const isPreviewTab = activeTab?.kind === "preview";
   const isAiDiffTab = activeTab?.kind === "ai-diff";
-  const isGitDiffTab = activeTab?.kind === "git-diff";
+  const isGitDiffTab =
+    activeTab?.kind === "git-diff" || activeTab?.kind === "git-commit-file";
+  const isGitHistoryTab = activeTab?.kind === "git-history";
 
   // When an AI diff is approved (write_file applied to disk), reload any
   // open editor tabs for that path so the user sees the new content. We
@@ -743,10 +749,21 @@ export default function App() {
         null)
       : null;
 
-  const activeFilePath =
-    activeTab?.kind === "editor" || activeTab?.kind === "git-diff"
-      ? activeTab.path
-      : null;
+  const activeFilePath = (() => {
+    if (activeTab?.kind === "editor") return activeTab.path;
+    if (activeTab?.kind === "git-diff") {
+      if (/^([A-Za-z]:|\/|\\)/.test(activeTab.path)) return activeTab.path;
+      const root = activeTab.repoRoot.replace(/[\\/]+$/, "");
+      const rel = activeTab.path.replace(/^[\\/]+/, "");
+      return `${root}/${rel}`;
+    }
+    if (activeTab?.kind === "git-commit-file") {
+      const root = activeTab.repoRoot.replace(/[\\/]+$/, "");
+      const rel = activeTab.path.replace(/^[\\/]+/, "");
+      return `${root}/${rel}`;
+    }
+    return null;
+  })();
   const workspaceFallbackPath = launchCwdResolved
     ? (launchCwd ?? home ?? null)
     : null;
@@ -756,6 +773,8 @@ export default function App() {
     }
     if (activeTab?.kind === "editor") return dirname(activeTab.path);
     if (activeTab?.kind === "git-diff") return activeTab.repoRoot;
+    if (activeTab?.kind === "git-commit-file") return activeTab.repoRoot;
+    if (activeTab?.kind === "git-history") return activeTab.repoRoot;
     return explorerRoot ?? workspaceFallbackPath;
   })();
   const sourceControl = useSourceControl(sourceControlContextPath, true);
@@ -1045,6 +1064,19 @@ export default function App() {
       >
         <GitDiffStack tabs={tabs} activeId={activeId} />
       </div>
+      <div
+        className={cn(
+          "absolute inset-0",
+          !isGitHistoryTab && "invisible pointer-events-none",
+        )}
+        aria-hidden={!isGitHistoryTab}
+      >
+        <GitHistoryStack
+          tabs={tabs}
+          activeId={activeId}
+          onOpenCommitFile={openCommitFileDiffTab}
+        />
+      </div>
     </div>
   );
 
@@ -1108,6 +1140,15 @@ export default function App() {
                         open
                         sourceControl={sourceControl}
                         onOpenDiff={openGitDiffTab}
+                        onOpenHistory={
+                          sourceControl.repo
+                            ? () =>
+                                openCommitHistoryTab({
+                                  repoRoot: sourceControl.repo!.repoRoot,
+                                  branch: sourceControl.status?.branch ?? null,
+                                })
+                            : undefined
+                        }
                       />
                     ) : (
                       <ExtensionsView />
@@ -1118,6 +1159,8 @@ export default function App() {
                     onSelectView={persistSidebarView}
                     changedCount={sourceControl.changedCount}
                     onOpenCommandPalette={() => setShortcutsOpen(true)}
+                    onToggleMiniWindow={toggleMini}
+                    miniOpen={miniOpen}
                   />
                 </div>
               </ResizablePanel>

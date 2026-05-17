@@ -8,9 +8,9 @@ use crate::modules::git::process::{
     read_text_file, run_git,
 };
 use crate::modules::git::types::{
-    DiscardEntry, GitCommitResult, GitDiffContentResult, GitDiffResult, GitOutput,
-    GitPanelSnapshot, GitPushResult, GitRepoInfo, GitStatusSnapshot, TextSource,
-    DEFAULT_TIMEOUT_SECS, NETWORK_TIMEOUT_SECS,
+    DiscardEntry, GitCommitFileChange, GitCommitResult, GitDiffContentResult, GitDiffResult,
+    GitLogEntry, GitOutput, GitPanelSnapshot, GitPushResult, GitRepoInfo, GitStatusSnapshot,
+    TextSource, DEFAULT_TIMEOUT_SECS, NETWORK_TIMEOUT_SECS,
 };
 use crate::modules::git::utils::{
     authorized_repo_root, canonical_dir, display_path, resolve_within_repo, split_upstream,
@@ -367,6 +367,356 @@ pub fn push(registry: &WorkspaceRegistry, repo_root: &str) -> Result<GitPushResu
         branch,
         pushed: true,
     })
+}
+
+const LOG_FORMAT: &str = "%H%x1f%an%x1f%ae%x1f%at%x1f%s";
+const MAX_LOG_LIMIT: u32 = 200;
+
+pub fn log(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    limit: u32,
+    before_sha: Option<&str>,
+) -> Result<Vec<GitLogEntry>> {
+    let repo_root = authorized_repo_root(registry, repo_root)?;
+    ensure_git_available()?;
+    let bounded = limit.clamp(1, MAX_LOG_LIMIT);
+    let count_arg = format!("--max-count={bounded}");
+    let format_arg = format!("--format={LOG_FORMAT}");
+    let cursor = match before_sha {
+        Some(sha) if !sha.is_empty() => {
+            if !sha_is_safe(sha) {
+                return Err(GitError::command("git log", "invalid cursor sha"));
+            }
+            Some(format!("{sha}^"))
+        }
+        _ => None,
+    };
+    let mut args: Vec<&OsStr> = vec![
+        OsStr::new("log"),
+        OsStr::new("--no-color"),
+        OsStr::new("-z"),
+        OsStr::new(&count_arg),
+        OsStr::new(&format_arg),
+    ];
+    if let Some(spec) = cursor.as_deref() {
+        args.push(OsStr::new(spec));
+    }
+    let output = run_git(Some(&repo_root), args, DEFAULT_TIMEOUT_SECS)?;
+    if output.timed_out {
+        return Err(GitError::TimedOut("git log"));
+    }
+    if output.exit_code != Some(0) {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+        if stderr.contains("does not have any commits yet")
+            || stderr.contains("bad default revision")
+            || stderr.contains("unknown revision")
+            || stderr.contains("ambiguous argument 'head'")
+        {
+            return Ok(Vec::new());
+        }
+        return ensure_success(&output, "git log failed").map(|_| Vec::new());
+    }
+    let stdout = std::str::from_utf8(&output.stdout).unwrap_or("");
+    let mut entries = Vec::with_capacity(bounded as usize);
+    for record in stdout.split('\0') {
+        if record.is_empty() {
+            continue;
+        }
+        let mut fields = record.splitn(5, '\x1f');
+        let sha = fields.next().unwrap_or("").to_string();
+        if sha.is_empty() {
+            continue;
+        }
+        let author = fields.next().unwrap_or("").to_string();
+        let author_email = fields.next().unwrap_or("").to_string();
+        let timestamp = fields.next().unwrap_or("0").parse::<i64>().unwrap_or(0);
+        let subject = fields.next().unwrap_or("").to_string();
+        let short_sha = sha.chars().take(7).collect::<String>();
+        entries.push(GitLogEntry {
+            sha,
+            short_sha,
+            author,
+            author_email,
+            timestamp_secs: timestamp,
+            subject,
+        });
+    }
+    Ok(entries)
+}
+
+pub fn show_commit_diff(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    sha: &str,
+) -> Result<GitDiffResult> {
+    let repo_root = authorized_repo_root(registry, repo_root)?;
+    ensure_git_available()?;
+    if !sha_is_safe(sha) {
+        return Err(GitError::command("git show", "invalid commit identifier"));
+    }
+    let output = run_git(
+        Some(&repo_root),
+        [
+            OsStr::new("show"),
+            OsStr::new("--no-color"),
+            OsStr::new("--no-ext-diff"),
+            OsStr::new("--patch-with-stat"),
+            OsStr::new(sha),
+            OsStr::new("--"),
+        ],
+        DEFAULT_TIMEOUT_SECS,
+    )?;
+    ensure_success(&output, "git show failed")?;
+    let diff_text = match String::from_utf8(output.stdout) {
+        Ok(text) => text,
+        Err(e) => String::from_utf8_lossy(&e.into_bytes()).into_owned(),
+    };
+    Ok(GitDiffResult {
+        diff_text,
+        truncated: output.truncated,
+    })
+}
+
+fn sha_is_safe(sha: &str) -> bool {
+    !sha.is_empty()
+        && sha.len() <= 64
+        && sha.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+pub fn commit_files(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    sha: &str,
+) -> Result<Vec<GitCommitFileChange>> {
+    let repo_root = authorized_repo_root(registry, repo_root)?;
+    ensure_git_available()?;
+    if !sha_is_safe(sha) {
+        return Err(GitError::command("git diff-tree", "invalid commit sha"));
+    }
+
+    let name_status_output = run_git(
+        Some(&repo_root),
+        [
+            OsStr::new("diff-tree"),
+            OsStr::new("--no-commit-id"),
+            OsStr::new("-r"),
+            OsStr::new("-z"),
+            OsStr::new("--name-status"),
+            OsStr::new(sha),
+        ],
+        DEFAULT_TIMEOUT_SECS,
+    )?;
+    ensure_success(&name_status_output, "git diff-tree --name-status failed")?;
+
+    let numstat_output = run_git(
+        Some(&repo_root),
+        [
+            OsStr::new("diff-tree"),
+            OsStr::new("--no-commit-id"),
+            OsStr::new("-r"),
+            OsStr::new("-z"),
+            OsStr::new("--numstat"),
+            OsStr::new(sha),
+        ],
+        DEFAULT_TIMEOUT_SECS,
+    )?;
+    ensure_success(&numstat_output, "git diff-tree --numstat failed")?;
+
+    let mut files = parse_diff_tree_name_status(&name_status_output.stdout);
+    apply_numstat(&mut files, &numstat_output.stdout);
+    Ok(files)
+}
+
+pub fn commit_file_diff(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    sha: &str,
+    path: &str,
+    original_path: Option<&str>,
+) -> Result<GitDiffContentResult> {
+    let repo_root = authorized_repo_root(registry, repo_root)?;
+    ensure_git_available()?;
+    if !sha_is_safe(sha) {
+        return Err(GitError::command("git show", "invalid commit sha"));
+    }
+    let resolved = resolve_within_repo(&repo_root, path)?;
+    let rel = resolved
+        .strip_prefix(&repo_root)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.replace('\\', "/"));
+
+    let original_rel = match original_path {
+        Some(orig) if !orig.is_empty() => {
+            let resolved_orig = resolve_within_repo(&repo_root, orig)?;
+            resolved_orig
+                .strip_prefix(&repo_root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| orig.replace('\\', "/"))
+        }
+        _ => rel.clone(),
+    };
+
+    let parent = git_stdout_line_opt(&repo_root, ["rev-parse", &format!("{sha}^")])?;
+    let original = match parent.as_deref() {
+        Some(p) => git_show_text(&repo_root, &format!("{p}:{original_rel}"))?,
+        None => TextSource::Missing,
+    };
+    let modified = git_show_text(&repo_root, &format!("{sha}:{rel}"))?;
+
+    let mut diff_args: Vec<&OsStr> = vec![
+        OsStr::new("show"),
+        OsStr::new("--no-color"),
+        OsStr::new("--no-ext-diff"),
+        OsStr::new("--format="),
+        OsStr::new("-m"),
+        OsStr::new("--first-parent"),
+        OsStr::new(sha),
+        OsStr::new("--"),
+    ];
+    let modified_path_os = rel.clone();
+    diff_args.push(OsStr::new(&modified_path_os));
+    let original_path_os;
+    if original_rel != rel {
+        original_path_os = original_rel.clone();
+        diff_args.push(OsStr::new(&original_path_os));
+    }
+    let patch_output = run_git(Some(&repo_root), diff_args, DEFAULT_TIMEOUT_SECS)?;
+    ensure_success(&patch_output, "git show <commit> -- <path> failed")?;
+    let patch_text = match String::from_utf8(patch_output.stdout) {
+        Ok(text) => text,
+        Err(e) => String::from_utf8_lossy(&e.into_bytes()).into_owned(),
+    };
+
+    let is_binary =
+        matches!(original, TextSource::Binary) || matches!(modified, TextSource::Binary);
+
+    Ok(GitDiffContentResult {
+        original_content: original.into_text(),
+        modified_content: modified.into_text(),
+        is_binary,
+        fallback_patch: patch_text,
+        truncated: patch_output.truncated,
+    })
+}
+
+pub fn remote_url(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    name: &str,
+) -> Result<Option<String>> {
+    let repo_root = authorized_repo_root(registry, repo_root)?;
+    ensure_git_available()?;
+    if name.is_empty() || name.len() > 64 || !name.chars().all(is_remote_name_char) {
+        return Ok(None);
+    }
+    git_stdout_line_opt(
+        &repo_root,
+        ["config", "--get", &format!("remote.{name}.url")],
+    )
+}
+
+fn is_remote_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
+}
+
+fn parse_diff_tree_name_status(bytes: &[u8]) -> Vec<GitCommitFileChange> {
+    let s = std::str::from_utf8(bytes).unwrap_or("");
+    let mut tokens = s.split('\0').filter(|t| !t.is_empty());
+    let mut files: Vec<GitCommitFileChange> = Vec::new();
+    while let Some(status_tok) = tokens.next() {
+        let status_char = status_tok.chars().next().unwrap_or(' ');
+        if status_char == 'R' || status_char == 'C' {
+            let original = match tokens.next() {
+                Some(v) => v.to_string(),
+                None => break,
+            };
+            let new_path = match tokens.next() {
+                Some(v) => v.to_string(),
+                None => break,
+            };
+            files.push(GitCommitFileChange {
+                path: new_path,
+                original_path: Some(original),
+                status: status_char.to_string(),
+                status_label: status_label_for(status_char),
+                added: 0,
+                removed: 0,
+                is_binary: false,
+            });
+        } else {
+            let path = match tokens.next() {
+                Some(v) => v.to_string(),
+                None => break,
+            };
+            files.push(GitCommitFileChange {
+                path,
+                original_path: None,
+                status: status_char.to_string(),
+                status_label: status_label_for(status_char),
+                added: 0,
+                removed: 0,
+                is_binary: false,
+            });
+        }
+    }
+    files
+}
+
+fn apply_numstat(files: &mut [GitCommitFileChange], bytes: &[u8]) {
+    let s = std::str::from_utf8(bytes).unwrap_or("");
+    let tokens: Vec<&str> = s.split('\0').filter(|t| !t.is_empty()).collect();
+    let mut idx = 0;
+    while idx < tokens.len() {
+        let header = tokens[idx];
+        idx += 1;
+        let mut cols = header.splitn(3, '\t');
+        let added_raw = cols.next().unwrap_or("0");
+        let removed_raw = cols.next().unwrap_or("0");
+        let inline_path = cols.next().unwrap_or("");
+        let is_binary = added_raw == "-" && removed_raw == "-";
+        let added: u32 = if is_binary { 0 } else { added_raw.parse().unwrap_or(0) };
+        let removed: u32 = if is_binary { 0 } else { removed_raw.parse().unwrap_or(0) };
+
+        let (path, original) = if inline_path.is_empty() {
+            let original = tokens.get(idx).map(|s| s.to_string()).unwrap_or_default();
+            idx += 1;
+            let new_path = tokens.get(idx).map(|s| s.to_string()).unwrap_or_default();
+            idx += 1;
+            (new_path, Some(original))
+        } else {
+            (inline_path.to_string(), None)
+        };
+
+        if path.is_empty() {
+            continue;
+        }
+        if let Some(file) = files.iter_mut().find(|f| f.path == path) {
+            file.added = added;
+            file.removed = removed;
+            file.is_binary = is_binary;
+            if file.original_path.is_none() {
+                if let Some(orig) = original {
+                    if !orig.is_empty() && orig != file.path {
+                        file.original_path = Some(orig);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn status_label_for(c: char) -> String {
+    match c {
+        'A' => "Added".into(),
+        'M' => "Modified".into(),
+        'D' => "Deleted".into(),
+        'R' => "Renamed".into(),
+        'C' => "Copied".into(),
+        'T' => "Type changed".into(),
+        'U' => "Unmerged".into(),
+        _ => format!("Status {c}"),
+    }
 }
 
 pub fn fetch(registry: &WorkspaceRegistry, repo_root: &str) -> Result<()> {

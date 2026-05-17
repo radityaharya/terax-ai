@@ -90,6 +90,25 @@ export type GitPushResult = {
   pushed: boolean;
 };
 
+export type GitLogEntry = {
+  sha: string;
+  shortSha: string;
+  author: string;
+  authorEmail: string;
+  timestampSecs: number;
+  subject: string;
+};
+
+export type GitCommitFileChange = {
+  path: string;
+  originalPath: string | null;
+  status: string;
+  statusLabel: string;
+  added: number;
+  removed: number;
+  isBinary: boolean;
+};
+
 export type GitPanelSnapshot = {
   repo: GitRepoInfo | null;
   status: GitStatusSnapshot | null;
@@ -252,4 +271,28 @@ export const native = {
     invoke<void>("git_pull_ff_only", { repoRoot }),
   gitPush: (repoRoot: string) =>
     invoke<GitPushResult>("git_push", { repoRoot }),
+  gitLog: (repoRoot: string, options?: { limit?: number; beforeSha?: string }) =>
+    invoke<GitLogEntry[]>("git_log", {
+      repoRoot,
+      limit: options?.limit ?? null,
+      beforeSha: options?.beforeSha ?? null,
+    }),
+  gitShowCommit: (repoRoot: string, sha: string) =>
+    invoke<GitDiffResult>("git_show_commit", { repoRoot, sha }),
+  gitCommitFiles: (repoRoot: string, sha: string) =>
+    invoke<GitCommitFileChange[]>("git_commit_files", { repoRoot, sha }),
+  gitCommitFileDiff: (
+    repoRoot: string,
+    sha: string,
+    path: string,
+    originalPath?: string | null,
+  ) =>
+    invoke<GitDiffContentResult>("git_commit_file_diff", {
+      repoRoot,
+      sha,
+      path,
+      originalPath: originalPath ?? null,
+    }),
+  gitRemoteUrl: (repoRoot: string, name?: string) =>
+    invoke<string | null>("git_remote_url", { repoRoot, name: name ?? null }),
 };

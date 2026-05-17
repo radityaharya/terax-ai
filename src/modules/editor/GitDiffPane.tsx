@@ -18,6 +18,7 @@ type Props = {
   modifiedContent: string;
   isBinary: boolean;
   fallbackPatch: string;
+  chipLabel?: string;
 };
 
 const LARGE_FILE_THRESHOLD = 256 * 1024;
@@ -55,6 +56,7 @@ export function GitDiffPane({
   modifiedContent,
   isBinary,
   fallbackPatch,
+  chipLabel,
 }: Props) {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
   const editorThemeId = usePreferencesStore((s) => s.editorTheme);
@@ -113,7 +115,7 @@ export function GitDiffPane({
             variant="outline"
             className="text-[10px] uppercase tracking-wide"
           >
-            {mode}
+            {chipLabel ?? mode}
           </Badge>
           {isBinary ? (
             <Badge variant="secondary" className="text-[10px]">

@@ -77,7 +77,37 @@ export type GitDiffTab = {
   fallbackPatch: string;
 };
 
-export type Tab = TerminalTab | EditorTab | PreviewTab | AiDiffTab | GitDiffTab;
+export type GitHistoryTab = {
+  id: number;
+  kind: "git-history";
+  title: string;
+  repoRoot: string;
+};
+
+export type GitCommitFileDiffTab = {
+  id: number;
+  kind: "git-commit-file";
+  title: string;
+  repoRoot: string;
+  sha: string;
+  shortSha: string;
+  subject: string;
+  path: string;
+  originalPath: string | null;
+  originalContent: string;
+  modifiedContent: string;
+  isBinary: boolean;
+  fallbackPatch: string;
+};
+
+export type Tab =
+  | TerminalTab
+  | EditorTab
+  | PreviewTab
+  | AiDiffTab
+  | GitDiffTab
+  | GitHistoryTab
+  | GitCommitFileDiffTab;
 
 export type TabPatch = Partial<{
   title: string;
@@ -351,6 +381,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       modifiedContent: string;
       isBinary: boolean;
       fallbackPatch: string;
+      title?: string;
     }) => {
       const curr = tabsRef.current;
       const existing = curr.find(
@@ -360,13 +391,15 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           t.path === input.path &&
           t.mode === input.mode,
       );
+      const computedTitle =
+        input.title ?? `${basename(input.path)} (${input.mode})`;
 
       if (existing) {
         const nextTabs = curr.map((t) =>
           t.id === existing.id
             ? {
                 ...t,
-                title: `${basename(input.path)} (${input.mode})`,
+                title: computedTitle,
                 originalContent: input.originalContent,
                 modifiedContent: input.modifiedContent,
                 isBinary: input.isBinary,
@@ -386,7 +419,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         {
           id,
           kind: "git-diff",
-          title: `${basename(input.path)} (${input.mode})`,
+          title: computedTitle,
           path: input.path,
           repoRoot: input.repoRoot,
           mode: input.mode,
@@ -395,6 +428,111 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           isBinary: input.isBinary,
           fallbackPatch: input.fallbackPatch,
         } satisfies GitDiffTab,
+      ];
+      tabsRef.current = nextTabs;
+      setTabs(nextTabs);
+      setActiveId(id);
+      return id;
+    },
+    [],
+  );
+
+  const openCommitHistoryTab = useCallback(
+    (input: { repoRoot: string; branch?: string | null }) => {
+      const curr = tabsRef.current;
+      const existing = curr.find(
+        (t) => t.kind === "git-history" && t.repoRoot === input.repoRoot,
+      );
+      const title = input.branch
+        ? `History · ${input.branch}`
+        : "Git History";
+      if (existing) {
+        const nextTabs = curr.map((t) =>
+          t.id === existing.id ? { ...t, title } : t,
+        );
+        tabsRef.current = nextTabs;
+        setTabs(nextTabs);
+        setActiveId(existing.id);
+        return existing.id;
+      }
+      const id = nextIdRef.current++;
+      const nextTabs = [
+        ...curr,
+        {
+          id,
+          kind: "git-history",
+          title,
+          repoRoot: input.repoRoot,
+        } satisfies GitHistoryTab,
+      ];
+      tabsRef.current = nextTabs;
+      setTabs(nextTabs);
+      setActiveId(id);
+      return id;
+    },
+    [],
+  );
+
+  const openCommitFileDiffTab = useCallback(
+    (input: {
+      repoRoot: string;
+      sha: string;
+      shortSha: string;
+      subject: string;
+      path: string;
+      originalPath: string | null;
+      originalContent: string;
+      modifiedContent: string;
+      isBinary: boolean;
+      fallbackPatch: string;
+    }) => {
+      const curr = tabsRef.current;
+      const existing = curr.find(
+        (t) =>
+          t.kind === "git-commit-file" &&
+          t.repoRoot === input.repoRoot &&
+          t.sha === input.sha &&
+          t.path === input.path,
+      );
+      const title = `${basename(input.path)} @ ${input.shortSha}`;
+      if (existing) {
+        const nextTabs = curr.map((t) =>
+          t.id === existing.id
+            ? {
+                ...t,
+                title,
+                subject: input.subject,
+                originalPath: input.originalPath,
+                originalContent: input.originalContent,
+                modifiedContent: input.modifiedContent,
+                isBinary: input.isBinary,
+                fallbackPatch: input.fallbackPatch,
+              }
+            : t,
+        );
+        tabsRef.current = nextTabs;
+        setTabs(nextTabs);
+        setActiveId(existing.id);
+        return existing.id;
+      }
+      const id = nextIdRef.current++;
+      const nextTabs = [
+        ...curr,
+        {
+          id,
+          kind: "git-commit-file",
+          title,
+          repoRoot: input.repoRoot,
+          sha: input.sha,
+          shortSha: input.shortSha,
+          subject: input.subject,
+          path: input.path,
+          originalPath: input.originalPath,
+          originalContent: input.originalContent,
+          modifiedContent: input.modifiedContent,
+          isBinary: input.isBinary,
+          fallbackPatch: input.fallbackPatch,
+        } satisfies GitCommitFileDiffTab,
       ];
       tabsRef.current = nextTabs;
       setTabs(nextTabs);
@@ -645,6 +783,8 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newPreviewTab,
     openAiDiffTab,
     openGitDiffTab,
+    openCommitHistoryTab,
+    openCommitFileDiffTab,
     setAiDiffStatus,
     closeAiDiffTab,
     closeTab,

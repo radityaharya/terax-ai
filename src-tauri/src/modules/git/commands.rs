@@ -1,7 +1,7 @@
 use crate::modules::git::operations;
 use crate::modules::git::types::{
-    DiscardEntry, GitCommitResult, GitDiffContentResult, GitDiffResult, GitPanelSnapshot,
-    GitPushResult, GitRepoInfo, GitStatusSnapshot,
+    DiscardEntry, GitCommitFileChange, GitCommitResult, GitDiffContentResult, GitDiffResult,
+    GitLogEntry, GitPanelSnapshot, GitPushResult, GitRepoInfo, GitStatusSnapshot,
 };
 use crate::modules::workspace::WorkspaceRegistry;
 
@@ -109,4 +109,66 @@ pub async fn git_push(
     registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<GitPushResult, String> {
     operations::push(&registry, &repo_root).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn git_log(
+    repo_root: String,
+    limit: Option<u32>,
+    before_sha: Option<String>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<Vec<GitLogEntry>, String> {
+    operations::log(
+        &registry,
+        &repo_root,
+        limit.unwrap_or(30),
+        before_sha.as_deref(),
+    )
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn git_show_commit(
+    repo_root: String,
+    sha: String,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<GitDiffResult, String> {
+    operations::show_commit_diff(&registry, &repo_root, &sha).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn git_commit_files(
+    repo_root: String,
+    sha: String,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<Vec<GitCommitFileChange>, String> {
+    operations::commit_files(&registry, &repo_root, &sha).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn git_commit_file_diff(
+    repo_root: String,
+    sha: String,
+    path: String,
+    original_path: Option<String>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<GitDiffContentResult, String> {
+    operations::commit_file_diff(
+        &registry,
+        &repo_root,
+        &sha,
+        &path,
+        original_path.as_deref(),
+    )
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn git_remote_url(
+    repo_root: String,
+    name: Option<String>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<Option<String>, String> {
+    let remote = name.unwrap_or_else(|| "origin".to_string());
+    operations::remote_url(&registry, &repo_root, &remote).map_err(Into::into)
 }

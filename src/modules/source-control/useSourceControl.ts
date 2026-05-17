@@ -3,7 +3,7 @@ import {
   type GitRepoInfo,
   type GitStatusSnapshot,
 } from "@/modules/ai/lib/native";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const AUTO_FETCH_THROTTLE_MS = 5 * 60_000;
 const AUTO_FETCH_LRU_LIMIT = 16;
@@ -375,20 +375,23 @@ export function useSourceControl(
     };
   }, [refresh, enabled]);
 
-  return {
-    repo: state.repo,
-    status: state.status,
-    changedCount: state.status?.changedFiles.length ?? 0,
-    upstream: state.status?.upstream ?? state.repo?.upstream ?? null,
-    ahead: state.status?.ahead ?? 0,
-    behind: state.status?.behind ?? 0,
-    hasRepo: state.hasRepo,
-    isLoading: state.isLoading,
-    localError: state.localError,
-    busyAction: state.busyAction,
-    lastRemoteError: state.lastRemoteError,
-    applyStatus,
-    refresh,
-    runRemoteAction,
-  };
+  return useMemo<SourceControlSummary>(
+    () => ({
+      repo: state.repo,
+      status: state.status,
+      changedCount: state.status?.changedFiles.length ?? 0,
+      upstream: state.status?.upstream ?? state.repo?.upstream ?? null,
+      ahead: state.status?.ahead ?? 0,
+      behind: state.status?.behind ?? 0,
+      hasRepo: state.hasRepo,
+      isLoading: state.isLoading,
+      localError: state.localError,
+      busyAction: state.busyAction,
+      lastRemoteError: state.lastRemoteError,
+      applyStatus,
+      refresh,
+      runRemoteAction,
+    }),
+    [state, applyStatus, refresh, runRemoteAction],
+  );
 }
