@@ -3,7 +3,11 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { SearchAddon } from "@xterm/addon-search";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { DormantRing } from "./dormantRing";
-import { registerCwdHandler, registerPromptTracker } from "./osc-handlers";
+import {
+  createShellIntegrationState,
+  registerCwdHandler,
+  registerPromptTracker,
+} from "./osc-handlers";
 import { openPty, type PtySession } from "./pty-bridge";
 import {
   acquireSlot,
@@ -156,12 +160,21 @@ function bindLeafToSlot(leafId: number, s: Session): void {
       s.rows = rows;
     },
     registerOsc: (term) => {
-      const prompt = registerPromptTracker(term);
-      const cwd = registerCwdHandler(term, (next) => {
-        if (s.lastCwd === next) return;
-        s.lastCwd = next;
-        s.callbacks.onCwd?.(next);
-      });
+      // Shared in-command flag — see osc-handlers.ts. The prompt tracker
+      // flips it on OSC 133 B/C/D/A; the cwd handler reads it to ignore OSC
+      // 7 emitted by untrusted command output (remote SSH, `cat` of an
+      // attacker file, etc.).
+      const shellState = createShellIntegrationState();
+      const prompt = registerPromptTracker(term, shellState);
+      const cwd = registerCwdHandler(
+        term,
+        (next) => {
+          if (s.lastCwd === next) return;
+          s.lastCwd = next;
+          s.callbacks.onCwd?.(next);
+        },
+        shellState,
+      );
       return [prompt.dispose, cwd];
     },
     onSearchReady: (addon) => s.callbacks.onSearchReady?.(addon),
