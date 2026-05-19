@@ -908,15 +908,20 @@ export default function App() {
     ],
   );
 
-  // Editor undo/redo handlers must not fire while a non-editor tab is active,
-  // otherwise Ctrl+Z would steal SIGTSTP from the terminal and Ctrl+Y would
-  // steal Yank. Returning true here makes useGlobalShortcuts skip the handler
-  // and never call preventDefault, leaving the keypress to the focused
-  // surface.
   const shortcutsDisabled = useCallback(
-    (id: ShortcutId, _e: KeyboardEvent) => {
+    (id: ShortcutId, e: KeyboardEvent) => {
       if (id === "editor.undo" || id === "editor.redo") {
         return activeTab?.kind !== "editor";
+      }
+      if (id === "ai.askSelection") {
+        const target =
+          (e.target as HTMLElement | null) ?? document.activeElement;
+        const inTerminal = !!(target as HTMLElement | null)?.closest?.(
+          ".xterm",
+        );
+        if (!inTerminal) return false;
+        const sel = captureActiveSelection();
+        return !sel || !sel.trim();
       }
       return false;
     },
