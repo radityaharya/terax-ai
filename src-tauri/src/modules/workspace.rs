@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -117,11 +117,26 @@ pub async fn workspace_current_dir(
     Ok(canonical.to_string_lossy().replace('\\', "/"))
 }
 
-// Raw `current_dir()` is a launcher artifact under `tauri dev` (cargo runs from
-// `src-tauri/`) and bundled launches (`/` or inside `.app`). All three signal
-// "no real user-chosen cwd", so fall back to $HOME and let the source-control
-// panel + new-tab default stay neutral instead of pinning to the dev repo.
+// Snapshotted once at app startup so the live `current_dir()` drifting later
+// (file dialogs, plugin chdir) can't shift the value seen by IPC or spawn.
+static LAUNCH_CWD: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+pub fn init_launch_cwd() {
+    LAUNCH_CWD.get_or_init(|| {
+        std::env::current_dir()
+            .ok()
+            .filter(|p| is_usable_launch_dir(p))
+    });
+}
+
+pub fn launch_cwd_snapshot() -> Option<PathBuf> {
+    LAUNCH_CWD.get().and_then(|o| o.clone())
+}
+
 fn resolve_launch_dir() -> PathBuf {
+    if let Some(cwd) = launch_cwd_snapshot() {
+        return cwd;
+    }
     if let Some(cwd) = std::env::current_dir().ok().filter(|p| is_usable_launch_dir(p)) {
         return cwd;
     }

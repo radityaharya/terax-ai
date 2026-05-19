@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use portable_pty::CommandBuilder;
 
-use crate::modules::workspace::WorkspaceEnv;
+use crate::modules::workspace::{self, WorkspaceEnv};
 
 #[cfg(windows)]
 const BASHRC_SCRIPT: &str = include_str!("scripts/bashrc.bash");
@@ -88,11 +88,10 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>) {
     cmd.env("TERAX_TERMINAL", "1");
     ensure_utf8_locale(cmd);
 
-    // Caller (workspace_current_dir) is responsible for picking the launch dir;
-    // we only fall back to $HOME when the explicit cwd is missing/invalid.
     let resolved_cwd = cwd
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
+        .or_else(|| workspace::launch_cwd_snapshot().filter(|p| p.is_dir()))
         .or_else(|| dirs::home_dir().filter(|p| p.is_dir()));
     if let Some(cwd) = resolved_cwd {
         #[cfg(windows)]
