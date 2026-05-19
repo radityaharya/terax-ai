@@ -78,11 +78,19 @@ pub fn fs_read_file(path: String, workspace: Option<WorkspaceEnv>) -> Result<Rea
 
 /// Atomic write: stage into a sibling temp file, then rename over the target.
 /// Prevents partial writes from leaving a half-saved file on crash/power loss.
+#[derive(Serialize, Clone)]
+struct FileWrittenEvent {
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+}
+
 #[tauri::command]
 pub fn fs_write_file(
     path: String,
     content: String,
     workspace: Option<WorkspaceEnv>,
+    source: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let workspace = WorkspaceEnv::from_option(workspace);
@@ -120,8 +128,13 @@ pub fn fs_write_file(
         e.to_string()
     })?;
 
-    // Emit event to notify frontend that file was modified
-    let _ = app.emit("fs:file-written", path.clone());
+    let _ = app.emit(
+        "fs:file-written",
+        FileWrittenEvent {
+            path: path.clone(),
+            source,
+        },
+    );
 
     Ok(())
 }

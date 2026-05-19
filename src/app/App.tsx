@@ -453,20 +453,17 @@ export default function App() {
     }
   }, [tabs]);
 
-  // Listen for file write events from the backend (when AI modifies files)
-  // and reload any open editor tabs for that path.
   useEffect(() => {
-    const unlistenPromise = getCurrentWebviewWindow().listen<string>(
+    type FileWrittenPayload = { path: string; source?: string };
+    const unlistenPromise = getCurrentWebviewWindow().listen<FileWrittenPayload>(
       "fs:file-written",
       (event) => {
-        const filePath = event.payload;
-        // Normalize path for comparison (handle Windows backslashes)
-        const normalizedPath = filePath.replace(/\\/g, "/");
+        if (event.payload.source === "editor") return;
+        const normalizedPath = event.payload.path.replace(/\\/g, "/");
         const currentTabs = tabsRef.current;
         for (const t of currentTabs) {
           if (t.kind !== "editor") continue;
-          const tabPath = t.path.replace(/\\/g, "/");
-          if (tabPath === normalizedPath) {
+          if (t.path.replace(/\\/g, "/") === normalizedPath) {
             editorRefs.current.get(t.id)?.reload();
           }
         }
