@@ -201,7 +201,6 @@ export type AcquireParams = {
   searchQuery: string | null;
   cols: number;
   rows: number;
-  onScopeChange: (cols: number, rows: number) => void;
   registerOsc: (term: Terminal) => (() => void)[];
   onSearchReady: (addon: SearchAddon) => void;
 };
@@ -276,7 +275,7 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
   slot.lastW = p.container.clientWidth;
   slot.lastH = p.container.clientHeight;
   if (slot.lastCols !== p.cols || slot.lastRows !== p.rows) {
-    p.onScopeChange(slot.lastCols, slot.lastRows);
+    // resizePty updates session.cols/rows + pty backend; no separate scope call.
     adapter?.resolveLeaf(p.leafId)?.resizePty(slot.lastCols, slot.lastRows);
   }
 
@@ -323,7 +322,6 @@ function rewireSlot(slot: Slot, p: AcquireParams): void {
   slot.lastW = p.container.clientWidth;
   slot.lastH = p.container.clientHeight;
   if (slot.term.cols !== p.cols || slot.term.rows !== p.rows) {
-    p.onScopeChange(slot.term.cols, slot.term.rows);
     adapter?.resolveLeaf(p.leafId)?.resizePty(slot.term.cols, slot.term.rows);
   }
   slot.lastCols = slot.term.cols;
@@ -346,9 +344,7 @@ function setupResizeObserver(slot: Slot, p: AcquireParams): void {
       return;
     slot.lastCols = slot.term.cols;
     slot.lastRows = slot.term.rows;
-    const bridge = adapter?.resolveLeaf(p.leafId);
-    bridge?.resizePty(slot.term.cols, slot.term.rows);
-    p.onScopeChange(slot.lastCols, slot.lastRows);
+    adapter?.resolveLeaf(p.leafId)?.resizePty(slot.lastCols, slot.lastRows);
   };
 
   slot.observer = new ResizeObserver(() => {

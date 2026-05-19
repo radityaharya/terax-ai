@@ -155,10 +155,6 @@ function bindLeafToSlot(leafId: number, s: Session): void {
     searchQuery: s.searchQuery,
     cols: s.cols,
     rows: s.rows,
-    onScopeChange: (cols, rows) => {
-      s.cols = cols;
-      s.rows = rows;
-    },
     registerOsc: (term) => {
       // Shared in-command flag — see osc-handlers.ts. The prompt tracker
       // flips it on OSC 133 B/C/D/A; the cwd handler reads it to ignore OSC

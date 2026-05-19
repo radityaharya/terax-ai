@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-const CANONICAL_TTL: Duration = Duration::from_secs(5);
+// Short TTL keeps the auth-check TOCTOU window tight while still coalescing the
+// burst of canonicalize calls within a single panel refresh (~100ms).
+const CANONICAL_TTL: Duration = Duration::from_secs(1);
 const CANONICAL_CACHE_CAP: usize = 256;
 
 struct CanonicalEntry {

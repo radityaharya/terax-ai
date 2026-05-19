@@ -11,9 +11,9 @@ use super::da_filter::DaFilter;
 use super::shell_init;
 use crate::modules::workspace::WorkspaceEnv;
 
-// Reader signals flusher on every data push. The fallback cap exists only so a
-// missed signal (or end-of-stream race) can't strand bytes for long.
-const FLUSH_MIN_INTERVAL: Duration = Duration::from_millis(4);
+// Flusher coalesces a short window after first-byte arrival so we send chunks,
+// not single bytes. MAX_IDLE is only a safety net for missed signals.
+const FLUSH_COALESCE: Duration = Duration::from_millis(4);
 const FLUSH_MAX_IDLE: Duration = Duration::from_millis(50);
 const READ_BUF: usize = 16 * 1024;
 // Cap on buffered-but-not-yet-flushed bytes. On overflow we discard the
@@ -56,6 +56,9 @@ impl Drop for Session {
         }
     }
 }
+// Windows ConPTY has a documented race when two `CreatePseudoConsole` calls
+// interleave. Unix openpty/fork is fine in parallel.
+#[cfg(windows)]
 static SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
 struct ChildKillGuard {
@@ -88,6 +91,7 @@ pub fn spawn(
     on_data: Channel<Response>,
     on_exit: Channel<i32>,
 ) -> Result<(Arc<Session>, PtySize), String> {
+    #[cfg(windows)]
     let _spawn_guard = SPAWN_LOCK.lock().unwrap();
 
     let pty_system = native_pty_system();
@@ -150,7 +154,6 @@ pub fn spawn(
             let mut da_filter = DaFilter::new();
             let mut dropped_bytes: u64 = 0;
             let mut logged_first = false;
-            let mut last_signal = Instant::now() - FLUSH_MIN_INTERVAL;
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -176,10 +179,7 @@ pub fn spawn(
                             g.extend_from_slice(OVERFLOW_NOTICE);
                         }
                         g.extend_from_slice(&filtered);
-                        if last_signal.elapsed() >= FLUSH_MIN_INTERVAL {
-                            last_signal = Instant::now();
-                            cv.notify_one();
-                        }
+                        cv.notify_one();
                     }
                     Err(e) => {
                         log::debug!("pty reader ended: {e}");
@@ -187,7 +187,6 @@ pub fn spawn(
                     }
                 }
             }
-            // Final wake so flusher exits on EOF.
             pending_r.1.notify_one();
             if dropped_bytes > 0 {
                 log::warn!("pty backpressure: dropped {dropped_bytes} bytes (cap {MAX_PENDING})");
@@ -203,7 +202,7 @@ pub fn spawn(
         .spawn(move || {
             let (lock, cv) = &*pending_f;
             loop {
-                let chunk = {
+                {
                     let mut g = lock.lock().unwrap();
                     while g.is_empty() {
                         if done_f.load(Ordering::Acquire) {
@@ -212,8 +211,13 @@ pub fn spawn(
                         let (next, _) = cv.wait_timeout(g, FLUSH_MAX_IDLE).unwrap();
                         g = next;
                     }
-                    std::mem::take(&mut *g)
-                };
+                }
+                // Coalesce a short window so a burst flushes as one chunk.
+                thread::sleep(FLUSH_COALESCE);
+                let chunk = std::mem::take(&mut *lock.lock().unwrap());
+                if chunk.is_empty() {
+                    continue;
+                }
                 if let Err(e) = on_data_flush.send(Response::new(chunk)) {
                     log::debug!("pty flusher exiting, channel closed: {e}");
                     break;
