@@ -86,6 +86,7 @@ import {
   type WorkspaceEnv,
 } from "@/modules/workspace";
 import { homeDir } from "@tauri-apps/api/path";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { SearchAddon } from "@xterm/addon-search";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -451,6 +452,30 @@ export default function App() {
       }
     }
   }, [tabs]);
+
+  // Listen for file write events from the backend (when AI modifies files)
+  // and reload any open editor tabs for that path.
+  useEffect(() => {
+    const unlistenPromise = getCurrentWebviewWindow().listen<string>(
+      "fs:file-written",
+      (event) => {
+        const filePath = event.payload;
+        // Normalize path for comparison (handle Windows backslashes)
+        const normalizedPath = filePath.replace(/\\/g, "/");
+        const currentTabs = tabsRef.current;
+        for (const t of currentTabs) {
+          if (t.kind !== "editor") continue;
+          const tabPath = t.path.replace(/\\/g, "/");
+          if (tabPath === normalizedPath) {
+            editorRefs.current.get(t.id)?.reload();
+          }
+        }
+      },
+    );
+    return () => {
+      void unlistenPromise.then((un) => un());
+    };
+  }, []);
 
   const { explorerRoot, inheritedCwdForNewTab } = useWorkspaceCwd(
     activeTab,

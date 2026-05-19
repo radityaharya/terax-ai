@@ -2,6 +2,7 @@ use std::io::Write;
 use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
+use tauri::Emitter;
 
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
 
@@ -82,6 +83,7 @@ pub fn fs_write_file(
     path: String,
     content: String,
     workspace: Option<WorkspaceEnv>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     let workspace = WorkspaceEnv::from_option(workspace);
     let target = resolve_path(&path, &workspace);
@@ -117,6 +119,9 @@ pub fn fs_write_file(
         let _ = std::fs::remove_file(&tmp);
         e.to_string()
     })?;
+
+    // Emit event to notify frontend that file was modified
+    let _ = app.emit("fs:file-written", path.clone());
 
     Ok(())
 }
