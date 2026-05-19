@@ -9,9 +9,10 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Serialize;
+use shared_child::SharedChild;
 
 use crate::modules::workspace::{authorize_spawn_cwd, WorkspaceEnv, WorkspaceRegistry};
 #[cfg(windows)]
@@ -23,7 +24,6 @@ use session::{SessionRunOutput, ShellSession};
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 300;
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Serialize)]
 pub struct CommandOutput {
@@ -98,34 +98,39 @@ fn run_blocking(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| {
+    let child = Arc::new(SharedChild::spawn(&mut cmd).map_err(|e| {
         log::warn!("shell_run_command spawn failed: {e}");
         e.to_string()
+    })?);
+    let mut stdout_pipe = child.take_stdout().ok_or_else(|| {
+        let _ = child.kill();
+        "no stdout pipe".to_string()
+    })?;
+    let mut stderr_pipe = child.take_stderr().ok_or_else(|| {
+        let _ = child.kill();
+        "no stderr pipe".to_string()
     })?;
 
-    let mut stdout_pipe = child.stdout.take().ok_or("no stdout pipe")?;
-    let mut stderr_pipe = child.stderr.take().ok_or("no stderr pipe")?;
-
-    // Drain stdout/stderr on background threads so a full pipe buffer can't
-    // deadlock the child.
     let stdout_handle = thread::spawn(move || drain(&mut stdout_pipe));
     let stderr_handle = thread::spawn(move || drain(&mut stderr_pipe));
 
-    let started = Instant::now();
-    let mut timed_out = false;
-    let exit_code: Option<i32> = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.code(),
-            Ok(None) => {}
-            Err(e) => return Err(e.to_string()),
-        }
-        if started.elapsed() >= dur {
+    let (tx, rx) = mpsc::channel();
+    let waiter = Arc::clone(&child);
+    thread::spawn(move || {
+        let _ = tx.send(waiter.wait());
+    });
+
+    let (exit_code, timed_out) = match rx.recv_timeout(dur) {
+        Ok(Ok(status)) => (status.code(), false),
+        Ok(Err(e)) => return Err(e.to_string()),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
             let _ = child.kill();
             let _ = child.wait();
-            timed_out = true;
-            break None;
+            (None, true)
         }
-        thread::sleep(POLL_INTERVAL);
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("shell wait thread disconnected".into());
+        }
     };
 
     let (stdout_bytes, stdout_truncated) = stdout_handle.join().unwrap_or((Vec::new(), false));

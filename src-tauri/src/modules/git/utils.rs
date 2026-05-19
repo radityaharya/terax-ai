@@ -25,12 +25,18 @@ fn normalize_git_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-pub fn canonical_dir(path: &str, workspace: &WorkspaceEnv) -> Result<ResolvedGitDirectory> {
+pub fn canonical_dir(
+    registry: &WorkspaceRegistry,
+    path: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<ResolvedGitDirectory> {
     let candidate = resolve_path(path, workspace);
     if !candidate.is_dir() {
         return Err(GitError::NotADirectory(path.to_string()));
     }
-    let local_path = std::fs::canonicalize(&candidate).map_err(GitError::Io)?;
+    let local_path = registry
+        .canonicalize_cached(&candidate)
+        .map_err(GitError::Io)?;
     let git_path = if workspace.is_wsl() {
         normalize_git_path(path)
     } else {
@@ -48,7 +54,7 @@ pub fn authorized_repo_root(
     path: &str,
     workspace: &WorkspaceEnv,
 ) -> Result<ResolvedGitDirectory> {
-    let canonical = canonical_dir(path, workspace)?;
+    let canonical = canonical_dir(registry, path, workspace)?;
     if !registry.is_authorized(&canonical.local_path) {
         return Err(GitError::PathOutsideWorkspace(canonical.local_path.clone()));
     }

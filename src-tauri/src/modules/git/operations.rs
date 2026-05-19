@@ -22,7 +22,7 @@ pub fn resolve_repo(
     cwd: &str,
     workspace: &WorkspaceEnv,
 ) -> Result<Option<GitRepoInfo>> {
-    let cwd = canonical_dir(cwd, workspace)?;
+    let cwd = canonical_dir(registry, cwd, workspace)?;
     if !registry.is_authorized(&cwd.local_path) {
         return Err(GitError::PathOutsideWorkspace(cwd.local_path));
     }
@@ -42,7 +42,7 @@ fn resolve_repo_in_authorized(
     else {
         return Ok(None);
     };
-    let canonical_root = canonical_dir(&root_line, &cwd.workspace)?;
+    let canonical_root = canonical_dir(registry, &root_line, &cwd.workspace)?;
     let _ = registry.authorize(&canonical_root.local_path);
 
     let basics = git_stdout_lines(
@@ -74,7 +74,7 @@ pub fn panel_snapshot(
     cwd: &str,
     workspace: &WorkspaceEnv,
 ) -> Result<GitPanelSnapshot> {
-    let cwd = canonical_dir(cwd, workspace)?;
+    let cwd = canonical_dir(registry, cwd, workspace)?;
     if !registry.is_authorized(&cwd.local_path) {
         return Err(GitError::PathOutsideWorkspace(cwd.local_path));
     }
@@ -90,7 +90,7 @@ pub fn panel_snapshot(
             status: None,
         });
     };
-    let canonical_root = canonical_dir(&root_line, &cwd.workspace)?;
+    let canonical_root = canonical_dir(registry, &root_line, &cwd.workspace)?;
     let _ = registry.authorize(&canonical_root.local_path);
 
     let status = status_inner(&canonical_root)?;

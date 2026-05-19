@@ -1,12 +1,22 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+
+const CANONICAL_TTL: Duration = Duration::from_secs(5);
+const CANONICAL_CACHE_CAP: usize = 256;
+
+struct CanonicalEntry {
+    canonical: PathBuf,
+    inserted_at: Instant,
+}
 
 #[derive(Default)]
 pub struct WorkspaceRegistry {
     roots: Mutex<HashSet<PathBuf>>,
+    canonical_cache: Mutex<HashMap<PathBuf, CanonicalEntry>>,
 }
 
 impl WorkspaceRegistry {
@@ -21,6 +31,35 @@ impl WorkspaceRegistry {
         let set = self.roots.lock().expect("workspace registry poisoned");
         set.iter().any(|root| target.starts_with(root))
     }
+
+    pub fn canonicalize_cached<P: AsRef<Path>>(&self, path: P) -> std::io::Result<PathBuf> {
+        let key = path.as_ref().to_path_buf();
+        {
+            let cache = self.canonical_cache.lock().expect("canonical cache poisoned");
+            if let Some(entry) = cache.get(&key) {
+                if entry.inserted_at.elapsed() < CANONICAL_TTL {
+                    return Ok(entry.canonical.clone());
+                }
+            }
+        }
+        let canonical = std::fs::canonicalize(&key)?;
+        let mut cache = self.canonical_cache.lock().expect("canonical cache poisoned");
+        if cache.len() >= CANONICAL_CACHE_CAP {
+            cache.retain(|_, entry| entry.inserted_at.elapsed() < CANONICAL_TTL);
+            if cache.len() >= CANONICAL_CACHE_CAP {
+                cache.clear();
+            }
+        }
+        cache.insert(
+            key,
+            CanonicalEntry {
+                canonical: canonical.clone(),
+                inserted_at: Instant::now(),
+            },
+        );
+        Ok(canonical)
+    }
+
 }
 
 // `None` means "use bootstrapped default". `Some` is canonicalized to defeat
