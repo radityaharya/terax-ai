@@ -55,6 +55,28 @@ impl Drop for Session {
 }
 static SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
+struct ChildKillGuard {
+    killer: Option<Box<dyn ChildKiller + Send + Sync>>,
+}
+
+impl ChildKillGuard {
+    fn new(killer: Box<dyn ChildKiller + Send + Sync>) -> Self {
+        Self { killer: Some(killer) }
+    }
+
+    fn disarm(&mut self) {
+        self.killer = None;
+    }
+}
+
+impl Drop for ChildKillGuard {
+    fn drop(&mut self) {
+        if let Some(mut k) = self.killer.take() {
+            let _ = k.kill();
+        }
+    }
+}
+
 pub fn spawn(
     cols: u16,
     rows: u16,
@@ -78,11 +100,15 @@ pub fn spawn(
     let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
 
+    // Kill the child if any of the pipe setup below fails so the spawned shell
+    // can't outlive an aborted pty_open.
+    let mut guard = ChildKillGuard::new(child.clone_killer());
     let killer = child.clone_killer();
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(
         pair.master.take_writer().map_err(|e| e.to_string())?,
     ));
+    guard.disarm();
 
     #[cfg(windows)]
     let job = match child.process_id() {

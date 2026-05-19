@@ -88,12 +88,11 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>) {
     cmd.env("TERAX_TERMINAL", "1");
     ensure_utf8_locale(cmd);
 
+    // Caller (workspace_current_dir) is responsible for picking the launch dir;
+    // we only fall back to $HOME when the explicit cwd is missing/invalid.
     let resolved_cwd = cwd
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
-        // In `tauri dev`, inherit the repo cwd so explorer/source-control
-        // point at the project the user launched from instead of `$HOME`.
-        .or_else(|| std::env::current_dir().ok().filter(|p| p.is_dir()))
         .or_else(|| dirs::home_dir().filter(|p| p.is_dir()));
     if let Some(cwd) = resolved_cwd {
         #[cfg(windows)]
