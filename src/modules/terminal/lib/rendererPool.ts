@@ -83,7 +83,8 @@ function getRecycler(): HTMLDivElement {
 function termOptions() {
   const prefs = usePreferencesStore.getState();
   return {
-    fontFamily: detectMonoFontFamily(),
+    fontFamily: prefs.terminalFontFamily || detectMonoFontFamily(),
+    letterSpacing: prefs.terminalLetterSpacing,
     fontSize: Math.max(4, Math.round(prefs.terminalFontSize * prefs.zoomLevel)),
     theme: buildTerminalTheme(),
     cursorBlink: false,
@@ -555,6 +556,29 @@ export function applyFontSize(size: number): void {
   for (const slot of slots) {
     if (slot.term.options.fontSize === size) continue;
     slot.term.options.fontSize = size;
+    slot.fitAddon.fit();
+    if (slot.currentLeafId !== null) {
+      slot.lastCols = slot.term.cols;
+      slot.lastRows = slot.term.rows;
+      const bridge = adapter?.resolveLeaf(slot.currentLeafId);
+      bridge?.resizePty(slot.term.cols, slot.term.rows);
+    }
+  }
+}
+
+export function applyLetterSpacing(spacing: number): void {
+  for (const slot of slots) {
+    if (slot.term.options.letterSpacing === spacing) continue;
+    slot.term.options.letterSpacing = spacing;
+    slot.fitAddon.fit();
+  }
+}
+
+export function applyFontFamily(family: string): void {
+  const resolved = family || detectMonoFontFamily();
+  for (const slot of slots) {
+    if (slot.term.options.fontFamily === resolved) continue;
+    slot.term.options.fontFamily = resolved;
     slot.fitAddon.fit();
     if (slot.currentLeafId !== null) {
       slot.lastCols = slot.term.cols;
