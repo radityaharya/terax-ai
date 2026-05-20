@@ -37,7 +37,10 @@ import {
   NewEditorDialog,
   type EditorPaneHandle,
 } from "@/modules/editor";
-import { GitHistoryStack } from "@/modules/git-history";
+import {
+  GitHistoryStack,
+  type GitHistorySearchHandle,
+} from "@/modules/git-history";
 import { getLaunchDir } from "@/lib/launchDir";
 import { useZoom } from "@/lib/useZoom";
 import { FileExplorer, type FileExplorerHandle } from "@/modules/explorer";
@@ -57,11 +60,7 @@ import {
   type ShortcutHandlers,
   type ShortcutId,
 } from "@/modules/shortcuts";
-import {
-  ExtensionsView,
-  SidebarRail,
-  type SidebarViewId,
-} from "@/modules/sidebar";
+import { SidebarRail, type SidebarViewId } from "@/modules/sidebar";
 import {
   SourceControlPanel,
   useSourceControl,
@@ -128,12 +127,7 @@ function readSidebarWidth(): number {
 function readSidebarView(): SidebarViewId {
   try {
     const stored = window.localStorage.getItem(SIDEBAR_VIEW_STORAGE_KEY);
-    if (
-      stored === "explorer" ||
-      stored === "source-control" ||
-      stored === "extensions"
-    )
-      return stored;
+    if (stored === "explorer" || stored === "source-control") return stored;
   } catch {
     // ignore
   }
@@ -188,6 +182,8 @@ export default function App() {
   const previewRefs = useRef<Map<number, PreviewPaneHandle>>(new Map());
   const [activeEditorHandle, setActiveEditorHandle] =
     useState<EditorPaneHandle | null>(null);
+  const [gitHistoryHandle, setGitHistoryHandle] =
+    useState<GitHistorySearchHandle | null>(null);
   const { zoomIn, zoomOut, zoomReset } = useZoom();
   const explorerRef = useRef<FileExplorerHandle>(null);
   const explorerReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -1039,13 +1035,21 @@ export default function App() {
         handle: activeEditorHandle,
         focus: () => activeEditorHandle.focus(),
       };
+    if (isGitHistoryTab && gitHistoryHandle)
+      return {
+        kind: "git-history",
+        handle: gitHistoryHandle,
+        focus: () => {},
+      };
     return null;
   }, [
     isTerminalTab,
     isEditorTab,
+    isGitHistoryTab,
     activeLeafId,
     activeSearchAddon,
     activeEditorHandle,
+    gitHistoryHandle,
   ]);
 
   const activeCwd = activeTerminalLeafCwd;
@@ -1190,6 +1194,7 @@ export default function App() {
           tabs={tabs}
           activeId={activeId}
           onOpenCommitFile={openCommitFileDiffTab}
+          onSearchHandle={setGitHistoryHandle}
         />
       </div>
     </div>
@@ -1207,6 +1212,7 @@ export default function App() {
             onNewPrivate={openNewPrivateTab}
             onNewPreview={() => openPreviewTab("")}
             onNewEditor={() => setNewEditorOpen(true)}
+            onNewGitGraph={openGitGraphFromContext}
             onClose={handleClose}
             onPin={pinTab}
             onToggleSidebar={toggleSidebar}
@@ -1251,22 +1257,19 @@ export default function App() {
                         onAttachToAgent={handleAttachFileToAgent}
                         onOpenMarkdownPreview={openMarkdownPreview}
                       />
-                    ) : sidebarView === "source-control" ? (
+                    ) : (
                       <SourceControlPanel
                         open
                         sourceControl={sourceControl}
                         onOpenDiff={openGitDiffTab}
+                        onOpenGitGraph={openGitGraphFromContext}
                       />
-                    ) : (
-                      <ExtensionsView />
                     )}
                   </div>
                   <SidebarRail
                     activeView={sidebarView}
                     onSelectView={persistSidebarView}
                     changedCount={sourceControl.changedCount}
-                    onOpenCommandPalette={() => setShortcutsOpen(true)}
-                    onOpenGitGraph={openGitGraphFromContext}
                   />
                 </div>
               </ResizablePanel>
