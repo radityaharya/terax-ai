@@ -12,7 +12,8 @@ export type ProviderId =
   | "openrouter"
   | "openai-compatible"
   | "lmstudio"
-  | "mlx";
+  | "mlx"
+  | "ollama";
 
 export type ProviderInfo = {
   id: ProviderId;
@@ -109,6 +110,13 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     keyringAccount: "",
     keyPrefix: null,
     consoleUrl: "https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md",
+  },
+  {
+    id: "ollama",
+    label: "Ollama",
+    keyringAccount: "",
+    keyPrefix: null,
+    consoleUrl: "https://ollama.com/download",
   },
 ] as const;
 
@@ -576,6 +584,16 @@ export const MODELS = [
     description: "Apple-silicon models via mlx_lm.server.",
     capabilities: { intelligence: 3, speed: 3, cost: 5 },
   },
+
+  // ── Ollama (local; model id is user-supplied at runtime) ──────────────────
+  {
+    id: "ollama-local",
+    provider: "ollama",
+    label: "Ollama",
+    hint: "Local",
+    description: "Local models via Ollama.",
+    capabilities: { intelligence: 3, speed: 3, cost: 5 },
+  },
 ] as const satisfies readonly ModelInfo[];
 
 export type ModelId = (typeof MODELS)[number]["id"];
@@ -635,6 +653,7 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "openai-compatible-custom": 128_000,
   "lmstudio-local": 32_000,
   "mlx-local": 32_000,
+  "ollama-local": 32_000,
   "mistral-large-latest": 131_072,
   "mistral-medium-latest": 32_768,
   "codestral-latest": 256_000,
@@ -697,6 +716,7 @@ export function estimateCost(
 export const KEYLESS_PROVIDERS: readonly ProviderId[] = [
   "lmstudio",
   "mlx",
+  "ollama",
   "openai-compatible",
 ] as const;
 
@@ -739,6 +759,7 @@ export function getAutocompleteEligibleModels(): readonly ModelInfo[] {
 
 export const LMSTUDIO_DEFAULT_BASE_URL = "http://localhost:1234/v1";
 export const MLX_DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1";
+export const OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1";
 export const OPENAI_COMPATIBLE_DEFAULT_BASE_URL = "";
 export const MAX_AGENT_STEPS = 24;
 export const TERMINAL_BUFFER_LINES = 300;

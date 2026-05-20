@@ -50,6 +50,8 @@ type Deps = {
   getLmstudioModelId?: () => string | undefined;
   getMlxBaseURL?: () => string | undefined;
   getMlxModelId?: () => string | undefined;
+  getOllamaBaseURL?: () => string | undefined;
+  getOllamaModelId?: () => string | undefined;
   getOpenaiCompatibleBaseURL?: () => string | undefined;
   getOpenaiCompatibleModelId?: () => string | undefined;
   getOpenaiCompatibleContextLimit?: () => number | undefined;
@@ -88,6 +90,8 @@ export function createContextAwareTransport(deps: Deps) {
       lmstudioModelId: deps.getLmstudioModelId?.(),
       mlxBaseURL: deps.getMlxBaseURL?.(),
       mlxModelId: deps.getMlxModelId?.(),
+      ollamaBaseURL: deps.getOllamaBaseURL?.(),
+      ollamaModelId: deps.getOllamaModelId?.(),
       openaiCompatibleBaseURL: deps.getOpenaiCompatibleBaseURL?.(),
       openaiCompatibleModelId: deps.getOpenaiCompatibleModelId?.(),
       openaiCompatibleContextLimit: deps.getOpenaiCompatibleContextLimit?.(),

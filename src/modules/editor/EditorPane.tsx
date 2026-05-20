@@ -75,7 +75,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
       let cancelled = false;
       const refresh = async () => {
         const provider = usePreferencesStore.getState().autocompleteProvider;
-        if (provider === "lmstudio" || provider === "mlx") {
+        if (provider === "lmstudio" || provider === "mlx" || provider === "ollama") {
           apiKeyRef.current = null;
           return;
         }
@@ -134,12 +134,26 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
         inlineCompletion({
           getPrefs: () => {
             const s = usePreferencesStore.getState();
+            const p = s.autocompleteProvider;
+            const modelId =
+              p === "lmstudio"
+                ? s.lmstudioModelId
+                : p === "mlx"
+                  ? s.mlxModelId
+                  : p === "ollama"
+                    ? s.ollamaModelId
+                    : p === "openai-compatible"
+                      ? s.openaiCompatibleModelId
+                      : s.autocompleteModelId;
             return {
               enabled: s.autocompleteEnabled,
-              provider: s.autocompleteProvider,
-              modelId: s.autocompleteModelId,
+              provider: p,
+              modelId,
               apiKey: apiKeyRef.current,
               lmstudioBaseURL: s.lmstudioBaseURL,
+              mlxBaseURL: s.mlxBaseURL,
+              ollamaBaseURL: s.ollamaBaseURL,
+              openaiCompatibleBaseURL: s.openaiCompatibleBaseURL,
             };
           },
           getPath: () => pathRef.current,

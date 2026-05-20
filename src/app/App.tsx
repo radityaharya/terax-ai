@@ -372,6 +372,8 @@ export default function App() {
   const lmstudioBaseURL = usePreferencesStore((s) => s.lmstudioBaseURL);
   const mlxModelId = usePreferencesStore((s) => s.mlxModelId);
   const mlxBaseURL = usePreferencesStore((s) => s.mlxBaseURL);
+  const ollamaModelId = usePreferencesStore((s) => s.ollamaModelId);
+  const ollamaBaseURL = usePreferencesStore((s) => s.ollamaBaseURL);
   const openaiCompatibleModelId = usePreferencesStore(
     (s) => s.openaiCompatibleModelId,
   );
@@ -381,6 +383,7 @@ export default function App() {
   const hasLocalModel =
     (lmstudioBaseURL.trim().length > 0 && lmstudioModelId.trim().length > 0) ||
     (mlxBaseURL.trim().length > 0 && mlxModelId.trim().length > 0) ||
+    (ollamaBaseURL.trim().length > 0 && ollamaModelId.trim().length > 0) ||
     (openaiCompatibleBaseURL.trim().length > 0 &&
       openaiCompatibleModelId.trim().length > 0);
   const hasComposer = hasAnyKey(apiKeys) || hasLocalModel;

@@ -3,6 +3,7 @@ import {
   DEFAULT_MODEL_ID,
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
+  OLLAMA_DEFAULT_BASE_URL,
   OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
   type AutocompleteProviderId,
   type ModelId,
@@ -53,6 +54,8 @@ export type Preferences = {
   lmstudioModelId: string;
   mlxBaseURL: string;
   mlxModelId: string;
+  ollamaBaseURL: string;
+  ollamaModelId: string;
   openaiCompatibleBaseURL: string;
   openaiCompatibleModelId: string;
   openaiCompatibleContextLimit: number;
@@ -84,6 +87,8 @@ const KEY_LMSTUDIO_BASE_URL = "lmstudioBaseURL";
 const KEY_LMSTUDIO_MODEL_ID = "lmstudioModelId";
 const KEY_MLX_BASE_URL = "mlxBaseURL";
 const KEY_MLX_MODEL_ID = "mlxModelId";
+const KEY_OLLAMA_BASE_URL = "ollamaBaseURL";
+const KEY_OLLAMA_MODEL_ID = "ollamaModelId";
 const KEY_OPENAI_COMPAT_BASE_URL = "openaiCompatibleBaseURL";
 const KEY_OPENAI_COMPAT_MODEL_ID = "openaiCompatibleModelId";
 const KEY_OPENAI_COMPAT_CONTEXT_LIMIT = "openaiCompatibleContextLimit";
@@ -130,6 +135,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   lmstudioModelId: "",
   mlxBaseURL: MLX_DEFAULT_BASE_URL,
   mlxModelId: "",
+  ollamaBaseURL: OLLAMA_DEFAULT_BASE_URL,
+  ollamaModelId: "",
   openaiCompatibleBaseURL: OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
   openaiCompatibleModelId: "",
   openaiCompatibleContextLimit: 128_000,
@@ -197,6 +204,10 @@ export async function loadPreferences(): Promise<Preferences> {
       get<string>(KEY_MLX_BASE_URL) ?? DEFAULT_PREFERENCES.mlxBaseURL,
     mlxModelId:
       get<string>(KEY_MLX_MODEL_ID) ?? DEFAULT_PREFERENCES.mlxModelId,
+    ollamaBaseURL:
+      get<string>(KEY_OLLAMA_BASE_URL) ?? DEFAULT_PREFERENCES.ollamaBaseURL,
+    ollamaModelId:
+      get<string>(KEY_OLLAMA_MODEL_ID) ?? DEFAULT_PREFERENCES.ollamaModelId,
     openaiCompatibleBaseURL:
       get<string>(KEY_OPENAI_COMPAT_BASE_URL) ??
       DEFAULT_PREFERENCES.openaiCompatibleBaseURL,
@@ -294,6 +305,14 @@ export async function setMlxBaseURL(value: string): Promise<void> {
 
 export async function setMlxModelId(value: string): Promise<void> {
   await writePref(KEY_MLX_MODEL_ID, value);
+}
+
+export async function setOllamaBaseURL(value: string): Promise<void> {
+  await writePref(KEY_OLLAMA_BASE_URL, value);
+}
+
+export async function setOllamaModelId(value: string): Promise<void> {
+  await writePref(KEY_OLLAMA_MODEL_ID, value);
 }
 
 export async function setOpenaiCompatibleBaseURL(value: string): Promise<void> {
@@ -404,6 +423,8 @@ export async function onPreferencesChange(
     [KEY_LMSTUDIO_MODEL_ID]: "lmstudioModelId",
     [KEY_MLX_BASE_URL]: "mlxBaseURL",
     [KEY_MLX_MODEL_ID]: "mlxModelId",
+    [KEY_OLLAMA_BASE_URL]: "ollamaBaseURL",
+    [KEY_OLLAMA_MODEL_ID]: "ollamaModelId",
     [KEY_OPENAI_COMPAT_BASE_URL]: "openaiCompatibleBaseURL",
     [KEY_OPENAI_COMPAT_MODEL_ID]: "openaiCompatibleModelId",
     [KEY_OPENAI_COMPAT_CONTEXT_LIMIT]: "openaiCompatibleContextLimit",

@@ -374,6 +374,7 @@ export function useSourceControlPanel(
   });
   const lmstudioModelId = usePreferencesStore((state) => state.lmstudioModelId);
   const mlxModelId = usePreferencesStore((state) => state.mlxModelId);
+  const ollamaModelId = usePreferencesStore((state) => state.ollamaModelId);
   const openaiCompatibleBaseURL = usePreferencesStore(
     (state) => state.openaiCompatibleBaseURL,
   );
@@ -474,6 +475,9 @@ export function useSourceControlPanel(
     if (selectedModel.id === "mlx-local" && !mlxModelId.trim()) {
       return "Connect an AI provider to generate commit messages";
     }
+    if (selectedModel.id === "ollama-local" && !ollamaModelId.trim()) {
+      return "Connect an AI provider to generate commit messages";
+    }
     if (
       selectedModel.id === "openai-compatible-custom" &&
       (!openaiCompatibleBaseURL.trim() || !openaiCompatibleModelId.trim())
@@ -485,6 +489,7 @@ export function useSourceControlPanel(
     hasApiKeyForSelected,
     lmstudioModelId,
     mlxModelId,
+    ollamaModelId,
     openaiCompatibleBaseURL,
     openaiCompatibleModelId,
     selectedModel,
@@ -861,12 +866,16 @@ export function useSourceControlPanel(
       const model = await buildConfiguredLanguageModel(
         selectedModelId,
         chatState.apiKeys,
-        prefs.lmstudioBaseURL,
-        lmstudioModelId,
-        openaiCompatibleBaseURL,
-        openaiCompatibleModelId,
-        prefs.mlxBaseURL,
-        mlxModelId,
+        {
+          lmstudioBaseURL: prefs.lmstudioBaseURL,
+          lmstudioModelId,
+          mlxBaseURL: prefs.mlxBaseURL,
+          mlxModelId,
+          ollamaBaseURL: prefs.ollamaBaseURL,
+          ollamaModelId,
+          openaiCompatibleBaseURL,
+          openaiCompatibleModelId,
+        },
       );
       const result = await generateText({
         model,
@@ -903,6 +912,7 @@ export function useSourceControlPanel(
     aiBusy,
     lmstudioModelId,
     mlxModelId,
+    ollamaModelId,
     openaiCompatibleBaseURL,
     openaiCompatibleModelId,
     repo,
