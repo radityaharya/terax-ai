@@ -298,9 +298,8 @@ pub(crate) fn build_oneshot_command(
     }
     #[cfg(unix)]
     {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let mut cmd = Command::new(shell);
-        cmd.arg("-lc").arg(command);
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg(command);
         Ok(cmd)
     }
     #[cfg(windows)]
