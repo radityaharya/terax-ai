@@ -29,17 +29,19 @@ import {
   setDefaultModel,
   setLmstudioBaseURL,
   setLmstudioModelId,
+  setMlxBaseURL,
+  setMlxModelId,
   setOpenaiCompatibleBaseURL,
   setOpenaiCompatibleContextLimit,
   setOpenaiCompatibleModelId,
 } from "@/modules/settings/store";
-import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowDown01Icon,
-  CheckmarkCircle02Icon,
   Cancel01Icon,
+  CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useState } from "react";
 import { ProviderIcon } from "../components/ProviderIcon";
 import { ProviderKeyCard } from "../components/ProviderKeyCard";
@@ -51,6 +53,7 @@ export function ModelsSection() {
   const [keys, setKeys] = useState<KeysMap | null>(null);
   const defaultModel = usePreferencesStore((s) => s.defaultModelId);
   const lmstudioModelId = usePreferencesStore((s) => s.lmstudioModelId);
+  const mlxModelId = usePreferencesStore((s) => s.mlxModelId);
   const openaiCompatModelId = usePreferencesStore(
     (s) => s.openaiCompatibleModelId,
   );
@@ -77,7 +80,9 @@ export function ModelsSection() {
 
   const cloudProviders = PROVIDERS.filter(
     (p) =>
-      providerNeedsKey(p.id) && p.id !== "lmstudio" && p.id !== "openai-compatible",
+      providerNeedsKey(p.id) &&
+      p.id !== "lmstudio" &&
+      p.id !== "openai-compatible",
   );
   const configuredCount = cloudProviders.filter((p) => !!keys[p.id]).length;
 
@@ -92,6 +97,7 @@ export function ModelsSection() {
         defaultModel={defaultModel}
         keys={keys}
         lmstudioModelId={lmstudioModelId}
+        mlxModelId={mlxModelId}
         openaiCompatModelId={openaiCompatModelId}
       />
 
@@ -132,17 +138,20 @@ function DefaultModelBlock({
   defaultModel,
   keys,
   lmstudioModelId,
+  mlxModelId,
   openaiCompatModelId,
 }: {
   defaultModel: ModelId;
   keys: KeysMap;
   lmstudioModelId: string;
+  mlxModelId: string;
   openaiCompatModelId: string;
 }) {
   const m = getModel(defaultModel);
 
   const isAvailable = (modelId: string, providerId: ProviderId): boolean => {
     if (modelId === "lmstudio-local") return !!lmstudioModelId.trim();
+    if (modelId === "mlx-local") return !!mlxModelId.trim();
     if (modelId === "openai-compatible-custom")
       return !!openaiCompatModelId.trim();
     return providerNeedsKey(providerId) ? !!keys[providerId] : true;
@@ -227,8 +236,70 @@ function DefaultModelBlock({
 }
 
 function LocalModelsBlock() {
-  const baseURL = usePreferencesStore((s) => s.lmstudioBaseURL);
-  const modelId = usePreferencesStore((s) => s.lmstudioModelId);
+  const lmstudioBaseURL = usePreferencesStore((s) => s.lmstudioBaseURL);
+  const lmstudioModelId = usePreferencesStore((s) => s.lmstudioModelId);
+  const mlxBaseURL = usePreferencesStore((s) => s.mlxBaseURL);
+  const mlxModelId = usePreferencesStore((s) => s.mlxModelId);
+
+  return (
+    <>
+      <LocalServerBlock
+        title="Local: LM Studio"
+        description="Run any GGUF model on your machine via LM Studio's HTTP server. Enable the server in LM Studio → Developer tab."
+        baseURL={lmstudioBaseURL}
+        modelId={lmstudioModelId}
+        setBaseURL={setLmstudioBaseURL}
+        setModelId={setLmstudioModelId}
+        urlPlaceholder="http://localhost:1234/v1"
+        modelPlaceholder="qwen2.5-coder-7b-instruct"
+        missingModelHint={
+          <>
+            Enter the model id that's loaded in LM Studio: e.g. the one shown on
+            the server's <span className="font-mono">/v1/models</span> page.
+          </>
+        }
+      />
+      <LocalServerBlock
+        title="Local: MLX"
+        description="Run Apple-silicon models locally via mlx_lm.server. Start it with mlx_lm.server --port 8080 (pip install mlx-lm)."
+        baseURL={mlxBaseURL}
+        modelId={mlxModelId}
+        setBaseURL={setMlxBaseURL}
+        setModelId={setMlxModelId}
+        urlPlaceholder="http://127.0.0.1:8080/v1"
+        modelPlaceholder="mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+        missingModelHint={
+          <>
+            Enter the model id served by mlx_lm.server: e.g. the Hugging Face
+            repo path you launched it with.
+          </>
+        }
+      />
+    </>
+  );
+}
+
+function LocalServerBlock({
+  title,
+  description,
+  baseURL,
+  modelId,
+  setBaseURL,
+  setModelId,
+  urlPlaceholder,
+  modelPlaceholder,
+  missingModelHint,
+}: {
+  title: string;
+  description: React.ReactNode;
+  baseURL: string;
+  modelId: string;
+  setBaseURL: (v: string) => Promise<void>;
+  setModelId: (v: string) => Promise<void>;
+  urlPlaceholder: string;
+  modelPlaceholder: string;
+  missingModelHint: React.ReactNode;
+}) {
   const [urlDraft, setUrlDraft] = useState(baseURL);
   const [modelDraft, setModelDraft] = useState(modelId);
   const [testStatus, setTestStatus] = useState<
@@ -238,14 +309,13 @@ function LocalModelsBlock() {
   useEffect(() => setUrlDraft(baseURL), [baseURL]);
   useEffect(() => setModelDraft(modelId), [modelId]);
 
-  const dirty =
-    urlDraft.trim() !== baseURL || modelDraft.trim() !== modelId;
+  const dirty = urlDraft.trim() !== baseURL || modelDraft.trim() !== modelId;
 
   const save = async () => {
     const u = urlDraft.trim();
     const m = modelDraft.trim();
-    if (u && u !== baseURL) await setLmstudioBaseURL(u);
-    if (m !== modelId) await setLmstudioModelId(m);
+    if (u && u !== baseURL) await setBaseURL(u);
+    if (m !== modelId) await setModelId(m);
   };
 
   const test = async () => {
@@ -263,10 +333,9 @@ function LocalModelsBlock() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-0.5">
-        <Label>Local — LM Studio</Label>
+        <Label>{title}</Label>
         <span className="text-[10.5px] leading-relaxed text-muted-foreground">
-          Run any GGUF model on your machine via LM Studio's HTTP server. Enable
-          the server in LM Studio → Developer tab.
+          {description}
         </span>
       </div>
 
@@ -278,9 +347,9 @@ function LocalModelsBlock() {
               onChange={(e) => setUrlDraft(e.target.value)}
               onBlur={() => {
                 const v = urlDraft.trim();
-                if (v && v !== baseURL) void setLmstudioBaseURL(v);
+                if (v && v !== baseURL) void setBaseURL(v);
               }}
-              placeholder="http://localhost:1234/v1"
+              placeholder={urlPlaceholder}
               spellCheck={false}
               className="h-8 flex-1 font-mono text-[11.5px]"
             />
@@ -310,9 +379,9 @@ function LocalModelsBlock() {
             onChange={(e) => setModelDraft(e.target.value)}
             onBlur={() => {
               const v = modelDraft.trim();
-              if (v !== modelId) void setLmstudioModelId(v);
+              if (v !== modelId) void setModelId(v);
             }}
-            placeholder="qwen2.5-coder-7b-instruct"
+            placeholder={modelPlaceholder}
             spellCheck={false}
             className="h-8 font-mono text-[11.5px]"
           />
@@ -322,8 +391,7 @@ function LocalModelsBlock() {
 
         {!modelId.trim() ? (
           <p className="text-[10.5px] leading-relaxed text-amber-600 dark:text-amber-400">
-            Enter the model id that's loaded in LM Studio — e.g. the one shown
-            on the server's <span className="font-mono">/v1/models</span> page.
+            {missingModelHint}
           </p>
         ) : null}
       </div>

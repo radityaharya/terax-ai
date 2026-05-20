@@ -13,6 +13,7 @@ import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import {
   Add01Icon,
   AiBookIcon,
+  AppleIcon,
   ArrowDown01Icon,
   ArrowUpIcon,
   BrainIcon,
@@ -68,6 +69,7 @@ const PROVIDER_ICON = {
   openrouter: GlobeIcon,
   "openai-compatible": PlugIcon,
   lmstudio: ComputerIcon,
+  mlx: AppleIcon,
 } as const satisfies Record<ProviderId, typeof ChatGptIcon>;
 
 export function AiOpenButton({ onOpen }: { onOpen: () => void }) {

@@ -48,6 +48,8 @@ type Deps = {
   getLive: () => LiveSnapshot;
   getLmstudioBaseURL?: () => string | undefined;
   getLmstudioModelId?: () => string | undefined;
+  getMlxBaseURL?: () => string | undefined;
+  getMlxModelId?: () => string | undefined;
   getOpenaiCompatibleBaseURL?: () => string | undefined;
   getOpenaiCompatibleModelId?: () => string | undefined;
   getOpenaiCompatibleContextLimit?: () => number | undefined;
@@ -84,6 +86,8 @@ export function createContextAwareTransport(deps: Deps) {
       onFinishMeta: deps.onFinishMeta,
       lmstudioBaseURL: deps.getLmstudioBaseURL?.(),
       lmstudioModelId: deps.getLmstudioModelId?.(),
+      mlxBaseURL: deps.getMlxBaseURL?.(),
+      mlxModelId: deps.getMlxModelId?.(),
       openaiCompatibleBaseURL: deps.getOpenaiCompatibleBaseURL?.(),
       openaiCompatibleModelId: deps.getOpenaiCompatibleModelId?.(),
       openaiCompatibleContextLimit: deps.getOpenaiCompatibleContextLimit?.(),

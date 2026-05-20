@@ -1,5 +1,6 @@
 import type { ProviderId } from "@/modules/ai/config";
 import {
+  AppleIcon,
   ChatGptIcon,
   ClaudeIcon,
   ComputerIcon,
@@ -26,6 +27,7 @@ const ICON_BY_PROVIDER = {
   openrouter: GlobeIcon,
   "openai-compatible": PlugIcon,
   lmstudio: ComputerIcon,
+  mlx: AppleIcon,
 } as const satisfies Record<ProviderId, typeof ChatGptIcon>;
 
 type Props = {

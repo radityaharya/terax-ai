@@ -373,6 +373,7 @@ export function useSourceControlPanel(
     return !providerNeedsKey(model.provider) || !!state.apiKeys[model.provider];
   });
   const lmstudioModelId = usePreferencesStore((state) => state.lmstudioModelId);
+  const mlxModelId = usePreferencesStore((state) => state.mlxModelId);
   const openaiCompatibleBaseURL = usePreferencesStore(
     (state) => state.openaiCompatibleBaseURL,
   );
@@ -470,6 +471,9 @@ export function useSourceControlPanel(
     if (selectedModel.id === "lmstudio-local" && !lmstudioModelId.trim()) {
       return "Connect an AI provider to generate commit messages";
     }
+    if (selectedModel.id === "mlx-local" && !mlxModelId.trim()) {
+      return "Connect an AI provider to generate commit messages";
+    }
     if (
       selectedModel.id === "openai-compatible-custom" &&
       (!openaiCompatibleBaseURL.trim() || !openaiCompatibleModelId.trim())
@@ -480,6 +484,7 @@ export function useSourceControlPanel(
   }, [
     hasApiKeyForSelected,
     lmstudioModelId,
+    mlxModelId,
     openaiCompatibleBaseURL,
     openaiCompatibleModelId,
     selectedModel,
@@ -860,6 +865,8 @@ export function useSourceControlPanel(
         lmstudioModelId,
         openaiCompatibleBaseURL,
         openaiCompatibleModelId,
+        prefs.mlxBaseURL,
+        mlxModelId,
       );
       const result = await generateText({
         model,
@@ -895,6 +902,7 @@ export function useSourceControlPanel(
     aiUnavailableReason,
     aiBusy,
     lmstudioModelId,
+    mlxModelId,
     openaiCompatibleBaseURL,
     openaiCompatibleModelId,
     repo,

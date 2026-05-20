@@ -247,6 +247,8 @@ function makeChat(sessionId: string): Chat<UIMessage> {
     getPlanMode: () => usePlanStore.getState().active,
     getLmstudioBaseURL: () => usePreferencesStore.getState().lmstudioBaseURL,
     getLmstudioModelId: () => usePreferencesStore.getState().lmstudioModelId,
+    getMlxBaseURL: () => usePreferencesStore.getState().mlxBaseURL,
+    getMlxModelId: () => usePreferencesStore.getState().mlxModelId,
     getOpenaiCompatibleBaseURL: () =>
       usePreferencesStore.getState().openaiCompatibleBaseURL,
     getOpenaiCompatibleModelId: () =>

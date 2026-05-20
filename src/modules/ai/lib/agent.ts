@@ -11,6 +11,7 @@ import {
   getModel,
   getModelContextLimit,
   LMSTUDIO_DEFAULT_BASE_URL,
+  MLX_DEFAULT_BASE_URL,
   MAX_AGENT_STEPS,
   providerNeedsKey,
   selectSystemPrompt,
@@ -60,6 +61,7 @@ function ellipsize(s: string, max: number): string {
 export type BuildModelOptions = {
   modelIdOverride?: string;
   lmstudioBaseURL?: string;
+  mlxBaseURL?: string;
   openaiCompatibleBaseURL?: string;
 };
 
@@ -78,8 +80,9 @@ export async function buildLanguageModel(
   }
   const key = keys[provider] ?? "";
   const lmstudioURL = options.lmstudioBaseURL ?? LMSTUDIO_DEFAULT_BASE_URL;
+  const mlxURL = options.mlxBaseURL ?? MLX_DEFAULT_BASE_URL;
   const compatURL = options.openaiCompatibleBaseURL ?? "";
-  const cacheKey = `${provider} ${key} ${resolvedModelId} ${lmstudioURL} ${compatURL}`;
+  const cacheKey = `${provider} ${key} ${resolvedModelId} ${lmstudioURL} ${mlxURL} ${compatURL}`;
   const hit = modelCache.get(cacheKey);
   if (hit) return hit;
 
@@ -175,6 +178,16 @@ export async function buildLanguageModel(
       })(resolvedModelId);
       break;
     }
+    case "mlx": {
+      const { createOpenAICompatible } =
+        await import("@ai-sdk/openai-compatible");
+      built = createOpenAICompatible({
+        name: "mlx",
+        baseURL: mlxURL,
+        fetch: localProxyFetch,
+      })(resolvedModelId);
+      break;
+    }
     default: {
       const _exhaustive: never = provider;
       throw new Error(`Unsupported provider: ${_exhaustive as ProviderId}`);
@@ -191,6 +204,8 @@ export function buildConfiguredLanguageModel(
   lmstudioModelId?: string,
   openaiCompatibleBaseURL?: string,
   openaiCompatibleModelId?: string,
+  mlxBaseURL?: string,
+  mlxModelId?: string,
 ): Promise<LanguageModel> {
   const m = getModel(modelId);
   let resolvedId: string = m.id;
@@ -201,6 +216,13 @@ export function buildConfiguredLanguageModel(
       );
     }
     resolvedId = lmstudioModelId.trim();
+  } else if (m.id === "mlx-local") {
+    if (!mlxModelId?.trim()) {
+      throw new Error(
+        "MLX: no model id set. Open Settings → Models and enter the model id served by mlx_lm.server.",
+      );
+    }
+    resolvedId = mlxModelId.trim();
   } else if (m.id === "openai-compatible-custom") {
     if (!openaiCompatibleModelId?.trim()) {
       throw new Error(
@@ -211,6 +233,7 @@ export function buildConfiguredLanguageModel(
   }
   return buildLanguageModel(m.provider, keys, resolvedId, {
     lmstudioBaseURL,
+    mlxBaseURL,
     openaiCompatibleBaseURL,
   });
 }
@@ -289,6 +312,8 @@ export type RunAgentOptions = {
   onFinishMeta?: (info: { hitStepCap: boolean; finishReason: string }) => void;
   lmstudioBaseURL?: string;
   lmstudioModelId?: string;
+  mlxBaseURL?: string;
+  mlxModelId?: string;
   openaiCompatibleBaseURL?: string;
   openaiCompatibleModelId?: string;
   openaiCompatibleContextLimit?: number;
@@ -307,6 +332,8 @@ export async function runAgentStream(opts: RunAgentOptions) {
     opts.lmstudioModelId,
     opts.openaiCompatibleBaseURL,
     opts.openaiCompatibleModelId,
+    opts.mlxBaseURL,
+    opts.mlxModelId,
   );
   const provider = getModel(modelId).provider;
 

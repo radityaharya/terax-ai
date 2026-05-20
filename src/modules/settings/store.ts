@@ -2,6 +2,7 @@ import {
   DEFAULT_AUTOCOMPLETE_MODEL,
   DEFAULT_MODEL_ID,
   LMSTUDIO_DEFAULT_BASE_URL,
+  MLX_DEFAULT_BASE_URL,
   OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
   type AutocompleteProviderId,
   type ModelId,
@@ -50,6 +51,8 @@ export type Preferences = {
   autocompleteModelId: string;
   lmstudioBaseURL: string;
   lmstudioModelId: string;
+  mlxBaseURL: string;
+  mlxModelId: string;
   openaiCompatibleBaseURL: string;
   openaiCompatibleModelId: string;
   openaiCompatibleContextLimit: number;
@@ -79,6 +82,8 @@ const KEY_AUTOCOMPLETE_PROVIDER = "autocompleteProvider";
 const KEY_AUTOCOMPLETE_MODEL = "autocompleteModelId";
 const KEY_LMSTUDIO_BASE_URL = "lmstudioBaseURL";
 const KEY_LMSTUDIO_MODEL_ID = "lmstudioModelId";
+const KEY_MLX_BASE_URL = "mlxBaseURL";
+const KEY_MLX_MODEL_ID = "mlxModelId";
 const KEY_OPENAI_COMPAT_BASE_URL = "openaiCompatibleBaseURL";
 const KEY_OPENAI_COMPAT_MODEL_ID = "openaiCompatibleModelId";
 const KEY_OPENAI_COMPAT_CONTEXT_LIMIT = "openaiCompatibleContextLimit";
@@ -123,6 +128,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   autocompleteModelId: DEFAULT_AUTOCOMPLETE_MODEL.cerebras ?? "",
   lmstudioBaseURL: LMSTUDIO_DEFAULT_BASE_URL,
   lmstudioModelId: "",
+  mlxBaseURL: MLX_DEFAULT_BASE_URL,
+  mlxModelId: "",
   openaiCompatibleBaseURL: OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
   openaiCompatibleModelId: "",
   openaiCompatibleContextLimit: 128_000,
@@ -186,6 +193,10 @@ export async function loadPreferences(): Promise<Preferences> {
       get<string>(KEY_LMSTUDIO_BASE_URL) ?? DEFAULT_PREFERENCES.lmstudioBaseURL,
     lmstudioModelId:
       get<string>(KEY_LMSTUDIO_MODEL_ID) ?? DEFAULT_PREFERENCES.lmstudioModelId,
+    mlxBaseURL:
+      get<string>(KEY_MLX_BASE_URL) ?? DEFAULT_PREFERENCES.mlxBaseURL,
+    mlxModelId:
+      get<string>(KEY_MLX_MODEL_ID) ?? DEFAULT_PREFERENCES.mlxModelId,
     openaiCompatibleBaseURL:
       get<string>(KEY_OPENAI_COMPAT_BASE_URL) ??
       DEFAULT_PREFERENCES.openaiCompatibleBaseURL,
@@ -275,6 +286,14 @@ export async function setLmstudioBaseURL(value: string): Promise<void> {
 
 export async function setLmstudioModelId(value: string): Promise<void> {
   await writePref(KEY_LMSTUDIO_MODEL_ID, value);
+}
+
+export async function setMlxBaseURL(value: string): Promise<void> {
+  await writePref(KEY_MLX_BASE_URL, value);
+}
+
+export async function setMlxModelId(value: string): Promise<void> {
+  await writePref(KEY_MLX_MODEL_ID, value);
 }
 
 export async function setOpenaiCompatibleBaseURL(value: string): Promise<void> {
@@ -383,6 +402,8 @@ export async function onPreferencesChange(
     [KEY_AUTOCOMPLETE_MODEL]: "autocompleteModelId",
     [KEY_LMSTUDIO_BASE_URL]: "lmstudioBaseURL",
     [KEY_LMSTUDIO_MODEL_ID]: "lmstudioModelId",
+    [KEY_MLX_BASE_URL]: "mlxBaseURL",
+    [KEY_MLX_MODEL_ID]: "mlxModelId",
     [KEY_OPENAI_COMPAT_BASE_URL]: "openaiCompatibleBaseURL",
     [KEY_OPENAI_COMPAT_MODEL_ID]: "openaiCompatibleModelId",
     [KEY_OPENAI_COMPAT_CONTEXT_LIMIT]: "openaiCompatibleContextLimit",
