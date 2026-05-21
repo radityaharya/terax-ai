@@ -1,43 +1,50 @@
-/**
- * Runtime resolution of shadcn CSS custom properties into concrete rgb strings.
- *
- * globals.css declares tokens in oklch(), which xterm.js (WebGL) and
- * CodeMirror's static theme builder can't consume directly. We resolve each
- * token through the browser: setting `color: var(--x)` on a detached element
- * forces computation into rgb form, which both consumers accept.
- *
- * Tokens are read once per call. Callers that need to react to theme changes
- * (light/dark toggle) should re-invoke and rebuild their theme object.
- */
+export type TerminalTokens = {
+  background: string;
+  foreground: string;
+  cursor: string;
+  cursorAccent: string;
+  selection: string;
+  ansiBlack: string;
+  ansiRed: string;
+  ansiGreen: string;
+  ansiYellow: string;
+  ansiBlue: string;
+  ansiMagenta: string;
+  ansiCyan: string;
+  ansiWhite: string;
+  ansiBrightBlack: string;
+  ansiBrightRed: string;
+  ansiBrightGreen: string;
+  ansiBrightYellow: string;
+  ansiBrightBlue: string;
+  ansiBrightMagenta: string;
+  ansiBrightCyan: string;
+  ansiBrightWhite: string;
+};
 
-type TokenName =
-  | "background"
-  | "foreground"
-  | "card"
-  | "muted"
-  | "muted-foreground"
-  | "accent"
-  | "accent-foreground"
-  | "border"
-  | "primary"
-  | "destructive"
-  | "ring";
-
-export type AppTokens = Record<TokenName, string>;
-
-const TOKENS: TokenName[] = [
-  "background",
-  "foreground",
-  "card",
-  "muted",
-  "muted-foreground",
-  "accent",
-  "accent-foreground",
-  "border",
-  "primary",
-  "destructive",
-  "ring",
-];
+const VAR_BY_KEY: Record<keyof TerminalTokens, string> = {
+  background: "--background",
+  foreground: "--foreground",
+  cursor: "--terminal-cursor",
+  cursorAccent: "--terminal-cursor-accent",
+  selection: "--terminal-selection",
+  ansiBlack: "--terminal-ansi-black",
+  ansiRed: "--terminal-ansi-red",
+  ansiGreen: "--terminal-ansi-green",
+  ansiYellow: "--terminal-ansi-yellow",
+  ansiBlue: "--terminal-ansi-blue",
+  ansiMagenta: "--terminal-ansi-magenta",
+  ansiCyan: "--terminal-ansi-cyan",
+  ansiWhite: "--terminal-ansi-white",
+  ansiBrightBlack: "--terminal-ansi-bright-black",
+  ansiBrightRed: "--terminal-ansi-bright-red",
+  ansiBrightGreen: "--terminal-ansi-bright-green",
+  ansiBrightYellow: "--terminal-ansi-bright-yellow",
+  ansiBrightBlue: "--terminal-ansi-bright-blue",
+  ansiBrightMagenta: "--terminal-ansi-bright-magenta",
+  ansiBrightCyan: "--terminal-ansi-bright-cyan",
+  ansiBrightWhite: "--terminal-ansi-bright-white",
+};
 
 let probe: HTMLDivElement | null = null;
 
@@ -49,12 +56,14 @@ function resolve(varName: string): string {
     probe.style.pointerEvents = "none";
     document.body.appendChild(probe);
   }
-  probe.style.color = `var(--${varName})`;
+  probe.style.color = `var(${varName})`;
   return getComputedStyle(probe).color;
 }
 
-export function readAppTokens(): AppTokens {
-  const out = {} as AppTokens;
-  for (const name of TOKENS) out[name] = resolve(name);
+export function readTerminalTokens(): TerminalTokens {
+  const out = {} as TerminalTokens;
+  for (const key of Object.keys(VAR_BY_KEY) as (keyof TerminalTokens)[]) {
+    out[key] = resolve(VAR_BY_KEY[key]);
+  }
   return out;
 }

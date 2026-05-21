@@ -1,0 +1,51 @@
+import type { Theme } from "../types";
+
+export const caffeine: Theme = {
+  id: "caffeine",
+  name: "Caffeine",
+  description: "Late-night espresso. Brown-black with amber accents.",
+  editorTheme: { dark: "copilot" },
+  variants: {
+    dark: {
+      colors: {
+        background: "#1c150f",
+        foreground: "#f0e2cf",
+        card: "#241a13",
+        cardForeground: "#f0e2cf",
+        popover: "#241a13",
+        popoverForeground: "#f0e2cf",
+        primary: "#ffb454",
+        primaryForeground: "#1c150f",
+        secondary: "#2d2018",
+        secondaryForeground: "#f0e2cf",
+        muted: "#2d2018",
+        mutedForeground: "#b3a292",
+        accent: "#2d2018",
+        accentForeground: "#f0e2cf",
+        destructive: "#ff6b6b",
+        border: "rgba(240,226,207,0.10)",
+        input: "rgba(240,226,207,0.14)",
+        ring: "#ffb454",
+        sidebar: "#150f0a",
+        sidebarForeground: "#f0e2cf",
+        sidebarPrimary: "#ffb454",
+        sidebarPrimaryForeground: "#1c150f",
+        sidebarAccent: "#2d2018",
+        sidebarAccentForeground: "#f0e2cf",
+        sidebarBorder: "rgba(240,226,207,0.10)",
+        sidebarRing: "#ffb454",
+      },
+      terminal: {
+        cursor: "#ffb454",
+        cursorAccent: "#1c150f",
+        selection: "rgba(255,180,84,0.22)",
+        ansi: [
+          "#1c150f", "#e06c75", "#a9c980", "#ffb454",
+          "#7faaff", "#c594c5", "#56b6c2", "#d4c5a9",
+          "#5c4a3a", "#ff8a93", "#c1e29a", "#ffd28c",
+          "#a3c0ff", "#e1afe1", "#7fd0db", "#f0e2cf",
+        ],
+      },
+    },
+  },
+};

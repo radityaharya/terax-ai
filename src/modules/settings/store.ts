@@ -14,12 +14,17 @@ import { LazyStore } from "@tauri-apps/plugin-store";
 
 export type ThemePref = "system" | "light" | "dark";
 
+export const DEFAULT_THEME_ID = "terax-default";
+
+export type BackgroundKind = "none" | "image";
+
 export const EDITOR_THEMES = [
   "atomone",
   "aura",
   "copilot",
   "github-dark",
   "github-light",
+  "gruvbox-dark",
   "nord",
   "tokyo-night",
   "xcode-dark",
@@ -34,6 +39,7 @@ export const EDITOR_THEME_LABELS: Record<EditorThemeId, string> = {
   copilot: "Copilot",
   "github-dark": "GitHub Dark",
   "github-light": "GitHub Light",
+  "gruvbox-dark": "Gruvbox Dark",
   nord: "Nord",
   "tokyo-night": "Tokyo Night",
   "xcode-dark": "Xcode Dark",
@@ -42,6 +48,11 @@ export const EDITOR_THEME_LABELS: Record<EditorThemeId, string> = {
 
 export type Preferences = {
   theme: ThemePref;
+  themeId: string;
+  backgroundKind: BackgroundKind;
+  backgroundImageId: string | null;
+  backgroundOpacity: number;
+  backgroundBlur: number;
   defaultModelId: ModelId;
   editorTheme: EditorThemeId;
   customInstructions: string;
@@ -75,6 +86,11 @@ export type Preferences = {
 
 const STORE_PATH = "terax-settings.json";
 const KEY_THEME = "theme";
+const KEY_THEME_ID = "themeId";
+const KEY_BG_KIND = "backgroundKind";
+const KEY_BG_IMAGE_ID = "backgroundImageId";
+const KEY_BG_OPACITY = "backgroundOpacity";
+const KEY_BG_BLUR = "backgroundBlur";
 const KEY_DEFAULT_MODEL = "defaultModelId";
 const KEY_EDITOR_THEME = "editorTheme";
 const KEY_CUSTOM_INSTRUCTIONS = "customInstructions";
@@ -123,6 +139,11 @@ export const TERMINAL_SCROLLBACK_PRESETS = [
 
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: "system",
+  themeId: DEFAULT_THEME_ID,
+  backgroundKind: "none",
+  backgroundImageId: null,
+  backgroundOpacity: 0.7,
+  backgroundBlur: 16,
   defaultModelId: DEFAULT_MODEL_ID,
   editorTheme: "atomone",
   customInstructions: "",
@@ -176,6 +197,18 @@ export async function loadPreferences(): Promise<Preferences> {
   const get = <T>(k: string): T | undefined => map.get(k) as T | undefined;
   return {
     theme: get<ThemePref>(KEY_THEME) ?? DEFAULT_PREFERENCES.theme,
+    themeId: get<string>(KEY_THEME_ID) ?? DEFAULT_PREFERENCES.themeId,
+    backgroundKind:
+      get<BackgroundKind>(KEY_BG_KIND) ?? DEFAULT_PREFERENCES.backgroundKind,
+    backgroundImageId:
+      get<string | null>(KEY_BG_IMAGE_ID) ??
+      DEFAULT_PREFERENCES.backgroundImageId,
+    backgroundOpacity: clampBgOpacity(
+      get<number>(KEY_BG_OPACITY) ?? DEFAULT_PREFERENCES.backgroundOpacity,
+    ),
+    backgroundBlur: clampBlur(
+      get<number>(KEY_BG_BLUR) ?? DEFAULT_PREFERENCES.backgroundBlur,
+    ),
     defaultModelId:
       get<ModelId>(KEY_DEFAULT_MODEL) ?? DEFAULT_PREFERENCES.defaultModelId,
     editorTheme:
@@ -256,6 +289,41 @@ export async function loadPreferences(): Promise<Preferences> {
 export async function setTheme(value: ThemePref): Promise<void> {
   await writePref(KEY_THEME, value);
 }
+
+export async function setThemeId(value: string): Promise<void> {
+  await writePref(KEY_THEME_ID, value);
+}
+
+/** Slider stores 0..1. Actual rendered opacity is halved in SurfaceLayer
+ *  so the image never exceeds 50% — keeps UI/terminal readable at any setting. */
+export const BG_OPACITY_RENDER_FACTOR = 0.5;
+
+function clampBgOpacity(v: number): number {
+  if (!Number.isFinite(v)) return 0.7;
+  return Math.min(1, Math.max(0, v));
+}
+
+function clampBlur(v: number): number {
+  if (!Number.isFinite(v)) return 16;
+  return Math.min(64, Math.max(0, Math.round(v)));
+}
+
+export async function setBackgroundKind(value: BackgroundKind): Promise<void> {
+  await writePref(KEY_BG_KIND, value);
+}
+
+export async function setBackgroundImageId(value: string | null): Promise<void> {
+  await writePref(KEY_BG_IMAGE_ID, value);
+}
+
+export async function setBackgroundOpacity(value: number): Promise<void> {
+  await writePref(KEY_BG_OPACITY, clampBgOpacity(value));
+}
+
+export async function setBackgroundBlur(value: number): Promise<void> {
+  await writePref(KEY_BG_BLUR, clampBlur(value));
+}
+
 
 export async function setDefaultModel(value: ModelId): Promise<void> {
   await writePref(KEY_DEFAULT_MODEL, value);
@@ -411,6 +479,11 @@ export async function onPreferencesChange(
 ): Promise<UnlistenFn> {
   const map: Record<string, PrefKey> = {
     [KEY_THEME]: "theme",
+    [KEY_THEME_ID]: "themeId",
+    [KEY_BG_KIND]: "backgroundKind",
+    [KEY_BG_IMAGE_ID]: "backgroundImageId",
+    [KEY_BG_OPACITY]: "backgroundOpacity",
+    [KEY_BG_BLUR]: "backgroundBlur",
     [KEY_DEFAULT_MODEL]: "defaultModelId",
     [KEY_EDITOR_THEME]: "editorTheme",
     [KEY_CUSTOM_INSTRUCTIONS]: "customInstructions",
