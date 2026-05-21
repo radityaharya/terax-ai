@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -133,15 +134,22 @@ export function ThemeProvider({ children, defaultMode = "system" }: ThemeProvide
     root.classList.add(resolvedMode);
   }, [resolvedMode]);
 
+  const lastEditorPairRef = useRef<string | null>(null);
   useEffect(() => {
     if (themeId === DEFAULT_THEME_ID) {
       clearTheme();
+      lastEditorPairRef.current = null;
       return;
     }
     const theme = resolveTheme(themeId, customThemes);
     applyTheme(theme, resolvedMode);
     const editorPair = theme.editorTheme?.[resolvedMode];
-    if (editorPair && (EDITOR_THEMES as readonly string[]).includes(editorPair)) {
+    if (
+      editorPair &&
+      lastEditorPairRef.current !== editorPair &&
+      (EDITOR_THEMES as readonly string[]).includes(editorPair)
+    ) {
+      lastEditorPairRef.current = editorPair;
       void persistEditorTheme(editorPair as EditorThemeId);
     }
   }, [themeId, resolvedMode, customThemes]);

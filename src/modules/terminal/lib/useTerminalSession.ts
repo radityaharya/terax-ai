@@ -11,6 +11,7 @@ import {
 import { openPty, type PtySession } from "./pty-bridge";
 import {
   acquireSlot,
+  applyBackgroundActive,
   applyFontFamily,
   applyFontSize,
   applyLetterSpacing,
@@ -376,6 +377,13 @@ export function useTerminalSession({
   useEffect(() => {
     applyWebglPreference(webglPref);
   }, [webglPref]);
+
+  const bgActive = usePreferencesStore(
+    (p) => p.backgroundKind === "image" && !!p.backgroundImageId,
+  );
+  useEffect(() => {
+    applyBackgroundActive(bgActive);
+  }, [bgActive]);
 
   useEffect(() => {
     const s = sessions.get(leafId);

@@ -46,24 +46,31 @@ const VAR_BY_KEY: Record<keyof TerminalTokens, string> = {
   ansiBrightWhite: "--terminal-ansi-bright-white",
 };
 
+const KEYS = Object.keys(VAR_BY_KEY) as (keyof TerminalTokens)[];
+
 let probe: HTMLDivElement | null = null;
 
-function resolve(varName: string): string {
-  if (!probe) {
-    probe = document.createElement("div");
-    probe.style.position = "absolute";
-    probe.style.visibility = "hidden";
-    probe.style.pointerEvents = "none";
-    document.body.appendChild(probe);
-  }
-  probe.style.color = `var(${varName})`;
-  return getComputedStyle(probe).color;
+function getProbe(): HTMLDivElement {
+  if (probe && probe.isConnected) return probe;
+  const el = document.createElement("div");
+  el.setAttribute("aria-hidden", "true");
+  el.style.cssText =
+    "position:absolute;visibility:hidden;pointer-events:none;contain:strict;width:0;height:0;";
+  document.body.appendChild(el);
+  probe = el;
+  return el;
+}
+
+function resolve(el: HTMLDivElement, varName: string): string {
+  el.style.color = `var(${varName})`;
+  return getComputedStyle(el).color;
 }
 
 export function readTerminalTokens(): TerminalTokens {
+  const el = getProbe();
   const out = {} as TerminalTokens;
-  for (const key of Object.keys(VAR_BY_KEY) as (keyof TerminalTokens)[]) {
-    out[key] = resolve(VAR_BY_KEY[key]);
+  for (const k of KEYS) {
+    out[k] = resolve(el, VAR_BY_KEY[k]);
   }
   return out;
 }
