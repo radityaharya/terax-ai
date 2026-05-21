@@ -50,6 +50,14 @@ function parseTerminal(raw: unknown, path: string): TerminalPalette | string {
   if (raw === undefined) return {};
   if (!isObj(raw)) return `${path} must be an object`;
   const out: TerminalPalette = {};
+  if (raw.background !== undefined) {
+    if (!isStr(raw.background)) return `${path}.background must be a string`;
+    out.background = raw.background;
+  }
+  if (raw.foreground !== undefined) {
+    if (!isStr(raw.foreground)) return `${path}.foreground must be a string`;
+    out.foreground = raw.foreground;
+  }
   if (raw.cursor !== undefined) {
     if (!isStr(raw.cursor)) return `${path}.cursor must be a string`;
     out.cursor = raw.cursor;

@@ -16,7 +16,7 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { Prec } from "@codemirror/state";
+import { Prec, type Extension } from "@codemirror/state";
 import { vim } from "@replit/codemirror-vim";
 import {
   buildSharedExtensions,
@@ -190,12 +190,22 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
       let cancelled = false;
       const ext = path.split(".").pop()?.toLowerCase() ?? null;
       languageRef.current = ext;
-      resolveLanguage(path).then((ext) => {
+      const resolve = async (): Promise<Extension> => {
+        if (path.toLowerCase().endsWith(".terax-theme")) {
+          const [{ json }, { colorSwatches }] = await Promise.all([
+            import("@codemirror/lang-json"),
+            import("./lib/colorSwatches"),
+          ]);
+          return [json(), colorSwatches()];
+        }
+        return (await resolveLanguage(path)) ?? [];
+      };
+      void resolve().then((extension) => {
         if (cancelled) return;
         const view = cmRef.current?.view;
         if (!view) return;
         view.dispatch({
-          effects: languageCompartment.reconfigure(ext ?? []),
+          effects: languageCompartment.reconfigure(extension),
         });
       });
       return () => {

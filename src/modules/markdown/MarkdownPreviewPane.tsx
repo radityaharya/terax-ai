@@ -84,7 +84,7 @@ export function MarkdownPreviewPane({ path, visible }: Props) {
         )}
         {status.kind === "ready" && (
           <Streamdown
-            className="prose-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+            className="select-text prose-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
             components={components}
           >
             {status.content}

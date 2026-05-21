@@ -31,6 +31,8 @@ export type ThemeColors = Partial<{
 }>;
 
 export type TerminalPalette = Partial<{
+  background: string;
+  foreground: string;
   cursor: string;
   cursorAccent: string;
   selection: string;

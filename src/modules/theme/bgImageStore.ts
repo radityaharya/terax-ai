@@ -68,7 +68,7 @@ export async function deleteBgImage(id: string): Promise<void> {
   });
 }
 
-const MAX_DIM = 3840;
+const MAX_DIM = 2560;
 const JPEG_QUALITY = 0.88;
 const MAX_STATIC_BYTES = 30 * 1024 * 1024;
 const MAX_ANIMATED_BYTES = 10 * 1024 * 1024;

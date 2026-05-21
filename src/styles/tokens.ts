@@ -23,8 +23,8 @@ export type TerminalTokens = {
 };
 
 const VAR_BY_KEY: Record<keyof TerminalTokens, string> = {
-  background: "--background",
-  foreground: "--foreground",
+  background: "--terminal-background",
+  foreground: "--terminal-foreground",
   cursor: "--terminal-cursor",
   cursorAccent: "--terminal-cursor-accent",
   selection: "--terminal-selection",

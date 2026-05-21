@@ -138,6 +138,8 @@
 }
 
 :root {
+  --terminal-background: var(--background);
+  --terminal-foreground: var(--foreground);
   --terminal-cursor: var(--foreground);
   --terminal-cursor-accent: var(--background);
   --terminal-selection: var(--accent);
@@ -163,12 +165,8 @@
   --app-zoom: 1;
 }
 
-html[data-bg="on"] body {
-  background: transparent !important;
-}
-html[data-bg="on"][data-chrome="borderless"] #root,
-html[data-bg="on"][data-chrome="borderless"] #settings-root {
-  background: transparent !important;
+html[data-chrome="borderless"] .terax-bg-surface {
+  border-radius: 12px;
 }
 .zoom-content {
   zoom: var(--app-zoom);
@@ -238,6 +236,43 @@ html[data-chrome="borderless"] #settings-root {
   width: 0 !important;
   height: 0 !important;
   display: none !important;
+}
+
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+input,
+textarea,
+[contenteditable="true"],
+.cm-editor,
+.select-text,
+.select-text * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.cm-color-swatch {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-right: 0.35em;
+  border-radius: 3px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  vertical-align: middle;
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+}
+.cm-color-swatch-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
 }
 
 

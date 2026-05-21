@@ -1,11 +1,4 @@
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -23,13 +16,11 @@ import {
 import { deleteCustomTheme, saveCustomTheme } from "@/modules/theme/customThemes";
 import { listBuiltinThemes } from "@/modules/theme/themes";
 import { validateTheme } from "@/modules/theme/validateTheme";
-import { DEFAULT_THEME_ID, type Theme } from "@/modules/theme/types";
-import { json } from "@codemirror/lang-json";
-import { EditorView } from "@codemirror/view";
-import { color } from "@uiw/codemirror-extensions-color";
+import { deleteThemeFile, emitThemeEdit } from "@/modules/theme/themeFiles";
+import { DEFAULT_THEME_ID } from "@/modules/theme/types";
 import { Edit02Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import CodeMirror from "@uiw/react-codemirror";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useMemo, useRef, useState } from "react";
 import { SectionHeader } from "../components/SectionHeader";
 
@@ -50,48 +41,14 @@ export function ThemesSection() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const bgInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [editing, setEditing] = useState<Theme | null>(null);
-
   const onCreateTheme = () => {
-    const id = `my-theme-${crypto.randomUUID().slice(0, 8)}`;
-    const starter: Theme = {
-      id,
-      name: "My Theme",
-      description: "Custom theme.",
-      variants: {
-        dark: {
-          colors: {
-            background: "#0d0d10",
-            foreground: "#e8e8ea",
-            card: "#15151a",
-            cardForeground: "#e8e8ea",
-            popover: "#15151a",
-            popoverForeground: "#e8e8ea",
-            primary: "#7dd3fc",
-            primaryForeground: "#0d0d10",
-            muted: "#1c1c22",
-            mutedForeground: "#a0a0a8",
-            accent: "#1c1c22",
-            accentForeground: "#e8e8ea",
-            border: "rgba(255,255,255,0.08)",
-            input: "rgba(255,255,255,0.12)",
-            ring: "#7dd3fc",
-            sidebar: "#0a0a0d",
-            sidebarForeground: "#e8e8ea",
-            sidebarPrimary: "#7dd3fc",
-            sidebarAccent: "#1c1c22",
-            sidebarBorder: "rgba(255,255,255,0.08)",
-            sidebarRing: "#7dd3fc",
-          },
-          terminal: {
-            cursor: "#e8e8ea",
-            cursorAccent: "#0d0d10",
-            selection: "rgba(125,211,252,0.22)",
-          },
-        },
-      },
-    };
-    setEditing(starter);
+    void emitThemeEdit({ action: "create" });
+    void getCurrentWindow().hide();
+  };
+
+  const onEditTheme = (id: string) => {
+    void emitThemeEdit({ action: "edit", id });
+    void getCurrentWindow().hide();
   };
 
   const backgroundKind = usePreferencesStore((s) => s.backgroundKind);
@@ -127,6 +84,7 @@ export function ThemesSection() {
   const onRemoveCustomTheme = async (id: string) => {
     if (themeId === id) setThemeId(DEFAULT_THEME_ID);
     await deleteCustomTheme(id);
+    void deleteThemeFile(id);
   };
 
   const onPickBgFile = () => bgInputRef.current?.click();
@@ -271,7 +229,7 @@ export function ThemesSection() {
                       className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setEditing(t);
+                        onEditTheme(t.id);
                       }}
                     >
                       <HugeiconsIcon icon={Edit02Icon} size={12} strokeWidth={1.75} />
@@ -382,102 +340,7 @@ export function ThemesSection() {
           </p>
         )}
       </div>
-
-      <ThemeJsonEditor
-        theme={editing}
-        onClose={() => setEditing(null)}
-        onSaved={(newId) => {
-          setEditing(null);
-          setThemeId(newId);
-        }}
-      />
     </div>
-  );
-}
-
-function ThemeJsonEditor({
-  theme,
-  onClose,
-  onSaved,
-}: {
-  theme: Theme | null;
-  onClose: () => void;
-  onSaved: (id: string) => void;
-}) {
-  const [text, setText] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const lastThemeIdRef = useRef<string | null>(null);
-
-  if (theme && lastThemeIdRef.current !== theme.id) {
-    lastThemeIdRef.current = theme.id;
-    setText(JSON.stringify(theme, null, 2));
-    setError(null);
-  }
-
-  const extensions = useMemo(
-    () => [json(), color, EditorView.lineWrapping],
-    [],
-  );
-
-  const onSave = async () => {
-    setError(null);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "invalid JSON");
-      return;
-    }
-    const result = validateTheme(parsed);
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
-    const oldId = theme?.id;
-    await saveCustomTheme(result.theme);
-    if (oldId && oldId !== result.theme.id) {
-      await deleteCustomTheme(oldId);
-    }
-    onSaved(result.theme.id);
-  };
-
-  return (
-    <Dialog open={!!theme} onOpenChange={(o) => (!o ? onClose() : undefined)}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Edit theme</DialogTitle>
-        </DialogHeader>
-        <div className="rounded-md border border-border/60 bg-background">
-          <CodeMirror
-            value={text}
-            height="420px"
-            extensions={extensions}
-            onChange={(v) => setText(v)}
-            basicSetup={{
-              lineNumbers: true,
-              foldGutter: true,
-              highlightActiveLine: true,
-              indentOnInput: true,
-              bracketMatching: true,
-              closeBrackets: true,
-            }}
-          />
-        </div>
-        {error ? (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-[11.5px] text-destructive">
-            {error}
-          </div>
-        ) : null}
-        <DialogFooter>
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button size="sm" onClick={() => void onSave()}>
-            Save
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 

@@ -51,6 +51,8 @@ const ANSI_VARS: readonly string[] = [
 
 const ALL_VARS: readonly string[] = [
   ...Object.values(COLOR_VAR),
+  "--terminal-background",
+  "--terminal-foreground",
   "--terminal-cursor",
   "--terminal-cursor-accent",
   "--terminal-selection",
@@ -89,6 +91,8 @@ function writeColors(root: HTMLElement, c: ThemeColors): void {
 }
 
 function writeTerminal(root: HTMLElement, t: TerminalPalette): void {
+  if (t.background) root.style.setProperty("--terminal-background", t.background);
+  if (t.foreground) root.style.setProperty("--terminal-foreground", t.foreground);
   if (t.cursor) root.style.setProperty("--terminal-cursor", t.cursor);
   if (t.cursorAccent) root.style.setProperty("--terminal-cursor-accent", t.cursorAccent);
   if (t.selection) root.style.setProperty("--terminal-selection", t.selection);

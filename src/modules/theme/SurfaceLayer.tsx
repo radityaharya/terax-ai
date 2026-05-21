@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   readBgFastPath,
   usePreferencesStore,
 } from "@/modules/settings/preferences";
 import { BG_OPACITY_RENDER_FACTOR } from "@/modules/settings/store";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
-const RESIZE_IDLE_MS = 180;
+const OVERLAY_Z = 2147483646;
+const RESIZE_IDLE_MS = 280;
 const FADE_IN_MS = 200;
 
 export function SurfaceLayer() {
@@ -16,9 +17,6 @@ export function SurfaceLayer() {
   );
   const hydrated = usePreferencesStore((s) => s.hydrated);
   const active = hydrated ? storeActive : fastPath.active;
-  useEffect(() => {
-    if (!active) document.documentElement.dataset.bg = "off";
-  }, [active]);
   if (!active) return null;
   return <BackgroundImage fastImageId={fastPath.imageId} />;
 }
@@ -35,6 +33,7 @@ function BackgroundImage({ fastImageId }: { fastImageId: string | null }) {
   const [visible, setVisible] = useState(false);
   const lastUrlRef = useRef<string | null>(null);
   const resizing = useWindowResizing(RESIZE_IDLE_MS);
+  const docHidden = useDocumentHidden();
 
   useEffect(() => {
     if (!imageId) return;
@@ -69,31 +68,27 @@ function BackgroundImage({ fastImageId }: { fastImageId: string | null }) {
         URL.revokeObjectURL(lastUrlRef.current);
         lastUrlRef.current = null;
       }
-      document.documentElement.dataset.bg = "off";
     };
   }, []);
-
-  useEffect(() => {
-    if (state?.url) document.documentElement.dataset.bg = "on";
-  }, [state?.url]);
 
   if (!state || typeof document === "undefined") return null;
   const { url, animated } = state;
 
+  const suspendAnimated = animated && (resizing || docHidden);
   const blurActive = !animated && blur > 0 && !resizing;
-  const hideImage = animated && resizing;
   const renderedOpacity =
-    visible && !hideImage ? opacity * BG_OPACITY_RENDER_FACTOR : 0;
+    visible && !suspendAnimated ? opacity * BG_OPACITY_RENDER_FACTOR : 0;
 
   return createPortal(
     <div
       aria-hidden
+      className="terax-bg-surface"
       style={{
         position: "fixed",
         inset: 0,
-        zIndex: 0,
+        zIndex: OVERLAY_Z,
         pointerEvents: "none",
-        backgroundImage: hideImage ? "none" : `url(${url})`,
+        backgroundImage: suspendAnimated ? "none" : `url(${url})`,
         backgroundSize: "cover",
         backgroundPosition: "center",
         opacity: renderedOpacity,
@@ -130,4 +125,16 @@ function useWindowResizing(idleMs: number): boolean {
     };
   }, [idleMs]);
   return resizing;
+}
+
+function useDocumentHidden(): boolean {
+  const [hidden, setHidden] = useState(
+    () => typeof document !== "undefined" && document.hidden,
+  );
+  useEffect(() => {
+    const onChange = () => setHidden(document.hidden);
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+  return hidden;
 }
