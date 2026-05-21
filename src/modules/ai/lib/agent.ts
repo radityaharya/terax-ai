@@ -1,5 +1,6 @@
 import {
   convertToModelMessages,
+  pruneMessages,
   stepCountIs,
   streamText,
   type LanguageModel,
@@ -11,9 +12,9 @@ import {
   getModel,
   getModelContextLimit,
   LMSTUDIO_DEFAULT_BASE_URL,
+  MAX_AGENT_STEPS,
   MLX_DEFAULT_BASE_URL,
   OLLAMA_DEFAULT_BASE_URL,
-  MAX_AGENT_STEPS,
   providerNeedsKey,
   selectSystemPrompt,
   type ModelId,
@@ -374,9 +375,17 @@ export async function runAgentStream(opts: RunAgentOptions) {
   );
 
   const history = await convertToModelMessages(opts.uiMessages);
+  const prunedHistory = pruneMessages({
+    messages: history,
+    reasoning: "all",
+    emptyMessages: "remove",
+  });
   const compact = compactModelMessagesDetailed(
-    history,
-    getModelContextLimit(getModel(modelId).id, opts.openaiCompatibleContextLimit),
+    prunedHistory,
+    getModelContextLimit(
+      getModel(modelId).id,
+      opts.openaiCompatibleContextLimit,
+    ),
   );
   const compactedHistory = compact.messages;
   if (compact.compacted) {
