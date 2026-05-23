@@ -192,7 +192,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("a.bin");
         // Invalid UTF-8 with no null byte: must still classify as binary.
-        std::fs::write(&f, &[0xff, 0xfe, 0xfd, 0xfc]).unwrap();
+        std::fs::write(&f, [0xff, 0xfe, 0xfd, 0xfc]).unwrap();
         assert!(matches!(
             fs_read_file(f.to_string_lossy().into_owned(), None).unwrap(),
             ReadResult::Binary { .. }
