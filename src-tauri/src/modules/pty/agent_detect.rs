@@ -152,12 +152,8 @@ impl AgentDetector {
         };
         match ps {
             b"133" => self.handle_osc133(pt, emit),
-            b"9" => {
-                // OSC 9;4 is taskbar progress, not a notification.
-                if !pt.starts_with(b"4;") && pt != b"4" {
-                    self.generic_attention(emit);
-                }
-            }
+            // OSC 9;4 is taskbar progress, not a notification.
+            b"9" if !pt.starts_with(b"4;") && pt != b"4" => self.generic_attention(emit),
             b"777" => self.handle_osc777(pt, emit),
             _ => {}
         }
@@ -202,11 +198,9 @@ impl AgentDetector {
                     emit(Transition::Started { agent });
                 }
             }
-            Some(b'D') => {
-                if self.armed {
-                    self.disarm();
-                    emit(Transition::Exited);
-                }
+            Some(b'D') if self.armed => {
+                self.disarm();
+                emit(Transition::Exited);
             }
             _ => {}
         }
