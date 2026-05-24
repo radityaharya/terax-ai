@@ -158,3 +158,27 @@ pub fn pty_close(state: tauri::State<PtyState>, id: u32) -> Result<(), String> {
     }
     Ok(())
 }
+
+// A fresh webview load orphans the previous frontend's sessions in this still
+// running process; reap them on boot before any new tab spawns.
+#[tauri::command]
+pub fn pty_close_all(state: tauri::State<PtyState>) -> Result<usize, String> {
+    let drained: Vec<(u32, Arc<Session>)> = {
+        let mut sessions = state.sessions.write().unwrap();
+        sessions.drain().collect()
+    };
+    let count = drained.len();
+    for (id, s) in drained {
+        if let Err(e) = s.killer.lock().unwrap().kill() {
+            log::debug!("pty_close_all: kill id={id} returned {e}");
+        }
+        thread::Builder::new()
+            .name(format!("terax-pty-drop-{id}"))
+            .spawn(move || session::drop_session(s))
+            .expect("spawn pty drop thread");
+    }
+    if count > 0 {
+        log::info!("pty_close_all: reaped {count} orphaned session(s)");
+    }
+    Ok(count)
+}

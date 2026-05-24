@@ -69,3 +69,23 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --locked
+
+  rust-platforms:
+    name: rust-check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --all-targets --locked
