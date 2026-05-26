@@ -26,6 +26,7 @@ impl GitRepoFixture {
         run_git_in(&canonical, &["config", "user.email", "test@terax.local"]);
         run_git_in(&canonical, &["config", "user.name", "Terax Test"]);
         run_git_in(&canonical, &["config", "commit.gpgsign", "false"]);
+        run_git_in(&canonical, &["config", "core.autocrlf", "false"]);
 
         Self {
             registry,
