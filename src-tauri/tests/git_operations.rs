@@ -50,16 +50,17 @@ fn resolve_repo_returns_branch_for_real_repo() {
 }
 
 #[test]
-fn resolve_repo_errors_on_unborn_head() {
+fn resolve_repo_returns_branch_for_unborn_head() {
     if skip_if_no_git() {
         return;
     }
     let fx = GitRepoFixture::new();
-    match operations::resolve_repo(&fx.registry, &fx.repo_str(), &fx.workspace) {
-        Err(GitError::CommandFailed { .. }) => {}
-        Err(other) => panic!("expected CommandFailed on unborn HEAD, got {other}"),
-        Ok(_) => panic!("expected error on unborn HEAD"),
-    }
+    let info = operations::resolve_repo(&fx.registry, &fx.repo_str(), &fx.workspace)
+        .expect("resolve_repo")
+        .expect("repo present even without commits");
+    assert_eq!(info.branch, "main");
+    assert!(info.upstream.is_none());
+    assert!(!info.is_detached);
 }
 
 #[test]
