@@ -80,8 +80,10 @@ mod tests {
 
     #[test]
     fn create_for_invalid_pid_errors() {
-        let err = PtyJob::create_for(0xFFFFFFFE).expect_err("invalid pid must error");
-        let _ = err;
+        match PtyJob::create_for(0xFFFFFFFE) {
+            Err(_) => {}
+            Ok(_) => panic!("invalid pid must error"),
+        }
     }
 
     #[test]
