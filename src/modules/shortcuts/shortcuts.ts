@@ -170,7 +170,7 @@ export const SHORTCUTS: Shortcut[] = [
     id: "ai.askSelection",
     label: "Ask AI about selection",
     group: "AI",
-    defaultBindings: [{ [MOD_PROP]: true, key: "l" }],
+    defaultBindings: [{ [MOD_PROP]: true, key: "j" }],
   },
   {
     id: "sidebar.toggle",
