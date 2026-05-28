@@ -49,11 +49,14 @@ jobs:
           $bundleDir = "src-tauri/target/release/bundle"
           $stagingDir = "signpath-staging"
           New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
-          Get-ChildItem -Path "$bundleDir/nsis" -Filter "*.exe" -ErrorAction SilentlyContinue | Copy-Item -Destination $stagingDir
-          Get-ChildItem -Path "$bundleDir/msi"  -Filter "*.msi" -ErrorAction SilentlyContinue | Copy-Item -Destination $stagingDir
+          $exe = Get-ChildItem -Path "$bundleDir/nsis" -Filter "*.exe" -ErrorAction Stop | Select-Object -First 1
+          $msi = Get-ChildItem -Path "$bundleDir/msi"  -Filter "*.msi" -ErrorAction Stop | Select-Object -First 1
+          if (-not $exe) { throw "No .exe installer produced by Tauri" }
+          if (-not $msi) { throw "No .msi installer produced by Tauri" }
+          Copy-Item $exe.FullName -Destination "$stagingDir/terax-setup.exe"
+          Copy-Item $msi.FullName -Destination "$stagingDir/terax.msi"
           Write-Host "Staged files:"
           Get-ChildItem $stagingDir
-          if ((Get-ChildItem $stagingDir).Count -eq 0) { throw "No artifacts found to sign" }
           Compress-Archive -Path "$stagingDir/*" -DestinationPath "windows-unsigned.zip" -Force
 
       - name: Upload unsigned artifact
