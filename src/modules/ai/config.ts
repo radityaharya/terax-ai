@@ -120,6 +120,26 @@ export const PROVIDERS: readonly ProviderInfo[] = [
   },
 ] as const;
 
+export type CustomEndpoint = {
+  id: string;
+  name: string;
+  baseURL: string;
+  modelId: string;
+  contextLimit: number;
+};
+
+export function compatModelIdForEndpoint(endpointId: string): string {
+  return `compat-${endpointId}`;
+}
+
+export function isCompatModelId(modelId: string): boolean {
+  return modelId.startsWith("compat-");
+}
+
+export function endpointIdFromCompatModel(modelId: string): string {
+  return modelId.startsWith("compat-") ? modelId.slice(7) : "";
+}
+
 export function getProvider(id: ProviderId): ProviderInfo {
   const p = PROVIDERS.find((x) => x.id === id);
   if (!p) throw new Error(`Unknown provider: ${id}`);
@@ -489,6 +509,33 @@ export const MODELS = [
 
 export type ModelId = (typeof MODELS)[number]["id"];
 
+export function getCompatModelInfo(
+  modelId: string,
+  endpoints: readonly CustomEndpoint[],
+): ModelInfo {
+  const eid = endpointIdFromCompatModel(modelId);
+  const ep = endpoints.find((e) => e.id === eid);
+  const name = ep?.name || "Custom endpoint";
+  return {
+    id: modelId,
+    provider: "openai-compatible",
+    label: ep?.modelId || name,
+    hint: name,
+    description: ep ? `${name} — ${ep.baseURL}` : "Custom OpenAI-compatible endpoint",
+    capabilities: { intelligence: 3, speed: 3, cost: 3 },
+  };
+}
+
+export function resolveModel(
+  modelId: string,
+  endpoints: readonly CustomEndpoint[] = [],
+): ModelInfo {
+  if (isCompatModelId(modelId)) return getCompatModelInfo(modelId, endpoints);
+  const m = MODELS.find((x) => x.id === modelId);
+  if (!m) throw new Error(`Unknown model: ${modelId}`);
+  return m;
+}
+
 export function getModel(id: ModelId): ModelInfo {
   const m = MODELS.find((x) => x.id === id);
   if (!m) throw new Error(`Unknown model: ${id}`);
@@ -561,6 +608,7 @@ export function getModelContextLimit(
   compatOverride?: number,
 ): number {
   if (!modelId) return 128_000;
+  if (isCompatModelId(modelId)) return compatOverride ?? 128_000;
   if (modelId === "openai-compatible-custom" && compatOverride)
     return compatOverride;
   return MODEL_CONTEXT_LIMITS[modelId] ?? 128_000;
