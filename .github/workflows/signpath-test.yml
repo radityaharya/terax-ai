@@ -43,7 +43,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - name: Pack Windows artifacts into zip
+      - name: Stage Windows artifacts
         shell: pwsh
         run: |
           $bundleDir = "src-tauri/target/release/bundle"
@@ -57,14 +57,13 @@ jobs:
           Copy-Item $msi.FullName -Destination "$stagingDir/terax.msi"
           Write-Host "Staged files:"
           Get-ChildItem $stagingDir
-          Compress-Archive -Path "$stagingDir/*" -DestinationPath "windows-unsigned.zip" -Force
 
       - name: Upload unsigned artifact
         id: upload
         uses: actions/upload-artifact@v4
         with:
           name: windows-unsigned
-          path: windows-unsigned.zip
+          path: signpath-staging/
           if-no-files-found: error
 
       - name: Submit signing request to SignPath
@@ -82,7 +81,10 @@ jobs:
       - name: Verify signatures exist
         shell: pwsh
         run: |
-          Expand-Archive -Path "signed/windows-unsigned.zip" -DestinationPath "signed-extracted" -Force
+          $zip = Get-ChildItem "signed" -Filter "*.zip" | Select-Object -First 1
+          if (-not $zip) { throw "No signed zip returned from SignPath" }
+          Write-Host "Signed zip: $($zip.FullName)"
+          Expand-Archive -Path $zip.FullName -DestinationPath "signed-extracted" -Force
           $files = Get-ChildItem "signed-extracted" -Include *.exe,*.msi -Recurse
           if ($files.Count -eq 0) { throw "No signed files found" }
           foreach ($f in $files) {
