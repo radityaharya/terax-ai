@@ -29,7 +29,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion } from "motion/react";
 import { useEffect, useMemo } from "react";
-import { estimateCost, getModel, getModelContextLimit } from "../config";
+import { estimateCost, getModel, getModelContextLimit, type ModelId } from "../config";
 import type { ResizeDir } from "../lib/miniWindowGeometry";
 import type { SessionMeta } from "../lib/sessions";
 import { useMiniWindowGeometry } from "../lib/useMiniWindowGeometry";
