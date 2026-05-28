@@ -440,6 +440,7 @@ export default function App() {
     customEndpoints.some((e) => e.baseURL.trim().length > 0 && e.modelId.trim().length > 0);
   const hasComposer = hasAnyKey(apiKeys) || hasLocalModel;
 
+  const prefsHydrated = usePreferencesStore((s) => s.hydrated);
   const [keysLoaded, setKeysLoaded] = useState(false);
   useEffect(() => {
     let alive = true;
@@ -449,6 +450,7 @@ export default function App() {
         setApiKeys(keys);
         setKeysLoaded(true);
       });
+      if (!prefsHydrated) return;
       void getAllCustomEndpointKeys(
         usePreferencesStore.getState().customEndpoints,
       ).then((epKeys) => {
@@ -462,13 +464,12 @@ export default function App() {
       alive = false;
       void unlistenP.then((fn) => fn());
     };
-  }, [setApiKeys, setCustomEndpointKeys]);
+  }, [setApiKeys, setCustomEndpointKeys, prefsHydrated]);
 
   // Hydrate the cross-window preference store and mirror the default model
   // into chatStore so the dropdown reflects what the user picked in Settings.
   const initPrefs = usePreferencesStore((s) => s.init);
   const prefDefaultModel = usePreferencesStore((s) => s.defaultModelId);
-  const prefsHydrated = usePreferencesStore((s) => s.hydrated);
   useEffect(() => {
     void initPrefs();
   }, [initPrefs]);
