@@ -128,16 +128,33 @@ export type CustomEndpoint = {
   contextLimit: number;
 };
 
+const COMPAT_MODEL_PREFIX = "compat-";
+
 export function compatModelIdForEndpoint(endpointId: string): string {
-  return `compat-${endpointId}`;
+  return `${COMPAT_MODEL_PREFIX}${endpointId}`;
 }
 
 export function isCompatModelId(modelId: string): boolean {
-  return modelId.startsWith("compat-");
+  return modelId.startsWith(COMPAT_MODEL_PREFIX);
 }
 
 export function endpointIdFromCompatModel(modelId: string): string {
-  return modelId.startsWith("compat-") ? modelId.slice(7) : "";
+  return isCompatModelId(modelId)
+    ? modelId.slice(COMPAT_MODEL_PREFIX.length)
+    : "";
+}
+
+/** One-shot migration of the legacy single OpenAI-compatible config into the
+ *  named-endpoint list. Returns one endpoint when the old base URL + model id
+ *  were both set, else empty. `id` is supplied by the caller to stay pure. */
+export function migrateLegacyCompatEndpoint(
+  baseURL: string,
+  modelId: string,
+  contextLimit: number,
+  id: string,
+): CustomEndpoint[] {
+  if (!baseURL.trim() || !modelId.trim()) return [];
+  return [{ id, name: "Custom endpoint", baseURL, modelId, contextLimit }];
 }
 
 export function getProvider(id: ProviderId): ProviderInfo {
@@ -555,8 +572,7 @@ const FREEFORM_PROVIDERS: ReadonlySet<ProviderId> = new Set([
 ]);
 
 // Reasoning models reject tool-call turns whose reasoning was stripped; keep it.
-export function modelKeepsReasoning(id: ModelId): boolean {
-  const m = getModel(id);
+export function modelKeepsReasoning(m: ModelInfo): boolean {
   return (m.tags?.includes("reasoning") ?? false) || FREEFORM_PROVIDERS.has(m.provider);
 }
 

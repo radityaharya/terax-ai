@@ -9,7 +9,7 @@ import {
 } from "ai";
 import {
   DEFAULT_MODEL_ID,
-  getModel,
+  endpointIdFromCompatModel,
   getModelContextLimit,
   isCompatModelId,
   LMSTUDIO_DEFAULT_BASE_URL,
@@ -18,9 +18,9 @@ import {
   modelKeepsReasoning,
   OLLAMA_DEFAULT_BASE_URL,
   providerNeedsKey,
+  resolveModel,
   selectSystemPrompt,
   type CustomEndpoint,
-  type ModelId,
   type ProviderId,
 } from "../config";
 import { buildTools, type ToolContext } from "../tools/tools";
@@ -236,7 +236,7 @@ export function buildConfiguredLanguageModel(
   local: LocalProviderConfig = {},
 ): Promise<LanguageModel> {
   if (isCompatModelId(modelId)) {
-    const eid = modelId.slice(7);
+    const eid = endpointIdFromCompatModel(modelId);
     const ep = local.customEndpoints?.find((e) => e.id === eid);
     if (!ep) throw new Error(`Custom endpoint not found: ${eid}`);
     if (!ep.modelId.trim()) {
@@ -252,7 +252,7 @@ export function buildConfiguredLanguageModel(
       local.customEndpointKeys?.[eid],
     );
   }
-  const m = getModel(modelId as ModelId);
+  const m = resolveModel(modelId);
   let resolvedId: string = m.id;
   if (m.id === "lmstudio-local") {
     if (!local.lmstudioModelId?.trim()) {
@@ -307,10 +307,7 @@ function buildStableSystem(
   customInstructions: string | undefined,
   projectMemory: string | null,
 ): string {
-  const resolvedId = isCompatModelId(modelId)
-    ? "openai-compatible-custom"
-    : modelId;
-  const base = selectSystemPrompt(resolvedId as ModelId);
+  const base = selectSystemPrompt(modelId);
   const personaBlock = persona?.instructions.trim()
     ? `\n\n## ACTIVE AGENT — ${persona.name}\n${persona.instructions.trim()}`
     : "";
@@ -406,27 +403,27 @@ export async function runAgentStream(opts: RunAgentOptions) {
     customEndpoints: opts.customEndpoints,
     customEndpointKeys: opts.customEndpointKeys,
   });
-  const provider = isCompatModelId(modelId)
-    ? "openai-compatible" as ProviderId
-    : getModel(modelId as ModelId).provider;
+  const endpoints = opts.customEndpoints ?? [];
+  const info = resolveModel(modelId, endpoints);
+  const provider = info.provider;
 
   const stableSystem = buildStableSystem(
-    modelId as ModelId,
+    modelId,
     opts.agentPersona ?? null,
     opts.customInstructions,
     opts.projectMemory ?? null,
   );
 
   const history = await convertToModelMessages(opts.uiMessages);
-  const keepsReasoning = isCompatModelId(modelId)
-    || modelKeepsReasoning(modelId as ModelId);
+  const keepsReasoning = modelKeepsReasoning(info);
   const prunedHistory = pruneMessages({
     messages: history,
     reasoning: keepsReasoning ? "none" : "before-last-message",
     emptyMessages: "remove",
   });
   const compatCtxOverride = isCompatModelId(modelId)
-    ? opts.customEndpoints?.find((e) => e.id === modelId.slice(7))?.contextLimit
+    ? endpoints.find((e) => e.id === endpointIdFromCompatModel(modelId))
+        ?.contextLimit
     : opts.openaiCompatibleContextLimit;
   const compact = compactModelMessagesDetailed(
     prunedHistory,

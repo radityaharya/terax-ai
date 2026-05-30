@@ -6,6 +6,7 @@ import {
 import { create } from "zustand";
 import {
   DEFAULT_MODEL_ID,
+  endpointIdFromCompatModel,
   getModel,
   isCompatModelId,
   providerNeedsKey,
@@ -542,7 +543,7 @@ export function getAgentMeta(): AgentMeta {
 export function getActiveProviderKey(): string | null {
   const { selectedModelId, apiKeys, customEndpointKeys } = useChatStore.getState();
   if (isCompatModelId(selectedModelId)) {
-    const eid = selectedModelId.slice(7);
+    const eid = endpointIdFromCompatModel(selectedModelId);
     return customEndpointKeys[eid] ?? null;
   }
   return apiKeys[getModel(selectedModelId as ModelId).provider] ?? null;

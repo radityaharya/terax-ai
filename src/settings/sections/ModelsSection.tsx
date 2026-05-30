@@ -11,8 +11,10 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
+  DEFAULT_MODEL_ID,
   MODELS,
   PROVIDERS,
+  compatModelIdForEndpoint,
   getAutocompleteEligibleModels,
   getModel,
   getProvider,
@@ -31,6 +33,7 @@ import {
   setCustomEndpointKey,
   type CustomEndpointKeys,
 } from "@/modules/ai/lib/keyring";
+import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   emitKeysChanged,
@@ -39,6 +42,7 @@ import {
   setAutocompleteProvider,
   setCustomEndpoints,
   setDefaultModel,
+  setFavoriteModelIds,
   setLmstudioBaseURL,
   setLmstudioModelId,
   setMlxBaseURL,
@@ -49,6 +53,7 @@ import {
   setOpenaiCompatibleContextLimit,
   setOpenaiCompatibleModelId,
   setOpenrouterModelId,
+  setRecentModelIds,
 } from "@/modules/settings/store";
 import {
   Add01Icon,
@@ -203,7 +208,32 @@ export function ModelsSection() {
       delete next[id];
       return next;
     });
-    await setCustomEndpoints(customEndpoints.filter((e) => e.id !== id));
+
+    // Drop the now-dead model id from favorites/recents before touching the
+    // selection, so the recents push from a selection reset can't race it.
+    const deadModelId = compatModelIdForEndpoint(id);
+    const { favoriteModelIds, recentModelIds } = usePreferencesStore.getState();
+    if (favoriteModelIds.includes(deadModelId)) {
+      await setFavoriteModelIds(
+        favoriteModelIds.filter((m) => m !== deadModelId),
+      );
+    }
+    if (recentModelIds.includes(deadModelId)) {
+      await setRecentModelIds(recentModelIds.filter((m) => m !== deadModelId));
+    }
+
+    // If the deleted endpoint was the active model, the selection would dangle
+    // and the next send throws "Custom endpoint not found". Fall back to another
+    // endpoint when one remains, else the default model.
+    const remaining = customEndpoints.filter((e) => e.id !== id);
+    const { selectedModelId, setSelectedModelId } = useChatStore.getState();
+    if (selectedModelId === deadModelId) {
+      setSelectedModelId(
+        remaining[0] ? compatModelIdForEndpoint(remaining[0].id) : DEFAULT_MODEL_ID,
+      );
+    }
+
+    await setCustomEndpoints(remaining);
   };
 
   const localConfig = (id: ProviderId): LocalConfig | null => {

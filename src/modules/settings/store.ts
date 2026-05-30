@@ -5,6 +5,7 @@ import {
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
   OLLAMA_DEFAULT_BASE_URL,
+  migrateLegacyCompatEndpoint,
   OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
   type AutocompleteProviderId,
   type CustomEndpoint,
@@ -274,21 +275,12 @@ export async function loadPreferences(): Promise<Preferences> {
     customEndpoints: (() => {
       const stored = get<CustomEndpoint[]>(KEY_CUSTOM_ENDPOINTS);
       if (stored && stored.length > 0) return stored;
-      const oldURL = get<string>(KEY_OPENAI_COMPAT_BASE_URL) ?? "";
-      const oldModel = get<string>(KEY_OPENAI_COMPAT_MODEL_ID) ?? "";
-      const oldLimit = get<number>(KEY_OPENAI_COMPAT_CONTEXT_LIMIT) ?? 128_000;
-      if (oldURL.trim() && oldModel.trim()) {
-        return [
-          {
-            id: crypto.randomUUID().slice(0, 8),
-            name: "Custom endpoint",
-            baseURL: oldURL,
-            modelId: oldModel,
-            contextLimit: oldLimit,
-          },
-        ];
-      }
-      return [];
+      return migrateLegacyCompatEndpoint(
+        get<string>(KEY_OPENAI_COMPAT_BASE_URL) ?? "",
+        get<string>(KEY_OPENAI_COMPAT_MODEL_ID) ?? "",
+        get<number>(KEY_OPENAI_COMPAT_CONTEXT_LIMIT) ?? 128_000,
+        crypto.randomUUID().slice(0, 8),
+      );
     })(),
     openrouterModelId:
       get<string>(KEY_OPENROUTER_MODEL_ID) ??
