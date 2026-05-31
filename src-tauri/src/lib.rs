@@ -2,9 +2,9 @@ mod modules;
 
 use modules::{fs, git, net, pty, secrets, shell, workspace};
 use std::sync::Mutex;
-use tauri::{
-    Emitter, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
-};
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+#[cfg(target_os = "macos")]
+use tauri::{PhysicalPosition, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
 
 /// Drained on first read so HMR / re-mounts can't replay the launch dir.
@@ -136,22 +136,23 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
-            // Without parent() on macOS, close settings when the main window goes away.
-            let Some(main) = app.get_webview_window("main") else {
-                return Ok(());
-            };
-            let handle = app.handle().clone();
-            main.on_window_event(move |event| {
-                if matches!(
-                    event,
-                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
-                ) {
-                    if let Some(settings) = handle.get_webview_window("settings") {
-                        let _ = settings.close();
+        .setup(|_app| {
+            // macOS skips parent() for the settings window, so tie its lifecycle
+            // to the main window here instead. Other platforms keep parent().
+            #[cfg(target_os = "macos")]
+            if let Some(main) = _app.get_webview_window("main") {
+                let handle = _app.handle().clone();
+                main.on_window_event(move |event| {
+                    if matches!(
+                        event,
+                        WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+                    ) {
+                        if let Some(settings) = handle.get_webview_window("settings") {
+                            let _ = settings.close();
+                        }
                     }
-                }
-            });
+                });
+            }
             Ok(())
         })
         .manage(pty::PtyState::default())
