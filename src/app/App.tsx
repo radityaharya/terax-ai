@@ -79,7 +79,7 @@ import {
   useSourceControl,
 } from "@/modules/source-control";
 import { StatusBar } from "@/modules/statusbar";
-import { MAX_PANES_PER_TAB, useTabs, useWorkspaceCwd } from "@/modules/tabs";
+import { MAX_PANES_PER_TAB, useTabs, useWindowTitle, useWorkspaceCwd } from "@/modules/tabs";
 import {
   clearFocusedTerminal,
   disposeSession,
@@ -638,6 +638,8 @@ export default function App() {
     tabs,
     launchCwd ?? home,
   );
+
+  useWindowTitle(activeTab, explorerRoot);
 
   useEffect(() => {
     setActiveSearchAddon(
