@@ -12,8 +12,6 @@ import { useZoom } from "@/lib/useZoom";
 import { AgentNotificationsBridge } from "@/modules/agents";
 import {
   AgentRunBridge,
-  AiInputBar,
-  AiInputBarConnect,
   AiMiniWindow,
   LocalAgentNotificationsBridge,
   SelectionAskAi,
@@ -81,6 +79,10 @@ import { useWorkspaceEnvStore } from "@/modules/workspace";
 import type { SearchAddon } from "@xterm/addon-search";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CloseDialogs } from "./components/CloseDialogs";
+import {
+  TOGGLE_BLOCK_INPUT_EVENT,
+  WorkspaceInputBar,
+} from "./components/WorkspaceInputBar";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
@@ -193,6 +195,7 @@ export default function App() {
 
   const activeTab = tabs.find((t) => t.id === activeId);
   const isTerminalTab = activeTab?.kind === "terminal";
+  const isBlockTab = activeTerminalTab?.blocks === true;
   const isEditorTab = activeTab?.kind === "editor";
   const isGitHistoryTab = activeTab?.kind === "git-history";
 
@@ -515,6 +518,8 @@ export default function App() {
       "terminal.clear": () => {
         clearFocusedTerminal();
       },
+      "terminal.toggleInput": () =>
+        window.dispatchEvent(new CustomEvent(TOGGLE_BLOCK_INPUT_EVENT)),
       "search.focus": () => searchInlineRef.current?.focus(),
       "ai.toggle": togglePanelAndFocus,
       "ai.askSelection": askFromSelection,
@@ -571,6 +576,9 @@ export default function App() {
         const target =
           (e.target as HTMLElement | null) ?? document.activeElement;
         return !(target as HTMLElement | null)?.closest?.(".xterm");
+      }
+      if (id === "terminal.toggleInput") {
+        return !(activeTab?.kind === "terminal" && activeTab.blocks === true);
       }
       if (id === "sidebar.toggle") {
         // Ctrl+B is also Claude Code's "run in background" key. While a terminal
@@ -881,24 +889,17 @@ export default function App() {
                     />
                   </div>
 
-                  {keysLoaded ? (
-                    <div
-                      data-ai-input-bar
-                      data-state={panelOpen ? "open" : "closed"}
-                      className="terax-reveal"
-                      aria-hidden={!panelOpen}
-                    >
-                      <div>
-                        {hasComposer ? (
-                          <AiInputBar />
-                        ) : (
-                          <AiInputBarConnect
-                            onAdd={() => void openSettingsWindow("models")}
-                          />
-                        )}
-                      </div>
-                    </div>
-                  ) : null}
+                  <WorkspaceInputBar
+                    isBlockTab={isBlockTab}
+                    isTerminalTab={isTerminalTab}
+                    activeLeafId={activeLeafId}
+                    cwd={activeCwd}
+                    home={home}
+                    hasComposer={hasComposer}
+                    panelOpen={panelOpen}
+                    keysLoaded={keysLoaded}
+                    onConnect={() => void openSettingsWindow("models")}
+                  />
                 </div>
               </ResizablePanel>
             </ResizablePanelGroup>

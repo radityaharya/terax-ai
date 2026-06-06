@@ -20,6 +20,7 @@ export type ShortcutId =
   | "pane.focusPrev"
   | "pane.source"
   | "terminal.clear"
+  | "terminal.toggleInput"
   | "search.focus"
   | "explorer.search"
   | "explorer.focus"
@@ -148,6 +149,12 @@ export const SHORTCUTS: Shortcut[] = [
     // macOS — on other platforms Ctrl+K is readline's kill-line, so we leave it
     // unbound and let users assign their own in settings.
     defaultBindings: IS_MAC ? [{ meta: true, key: "k" }] : [],
+  },
+  {
+    id: "terminal.toggleInput",
+    label: "Toggle Shell / AI input",
+    group: "Terminal",
+    defaultBindings: [{ [MOD_PROP]: true, key: "u" }],
   },
   {
     id: "tab.next",
