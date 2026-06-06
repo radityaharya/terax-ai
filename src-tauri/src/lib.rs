@@ -160,6 +160,7 @@ pub fn run() {
         .manage(secrets::SecretsState::default())
         .manage(fs::watch::FsWatchState::default())
         .manage(history::HistoryState::default())
+        .manage(fs::grep::ContentSearchState::default())
         .manage({
             let registry = workspace::WorkspaceRegistry::default();
             workspace::bootstrap_registry(&registry);
@@ -192,6 +193,7 @@ pub fn run() {
             fs::search::fs_search,
             fs::search::fs_list_files,
             fs::grep::fs_grep,
+            fs::grep::fs_grep_interactive,
             fs::grep::fs_glob,
             git::commands::git_resolve_repo,
             git::commands::git_panel_snapshot,
