@@ -24,7 +24,7 @@ import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { native } from "@/modules/ai/lib/native";
 import {
   CommandPalette,
-  createCommandPaletteActions,
+  createCommandItems,
 } from "@/modules/command-palette";
 import {
   NewEditorDialog,
@@ -41,7 +41,6 @@ import {
 import type { PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import {
-  ShortcutsDialog,
   useGlobalShortcuts,
   type ShortcutHandlers,
   type ShortcutId,
@@ -58,7 +57,6 @@ import {
 } from "@/modules/source-control";
 import { StatusBar } from "@/modules/statusbar";
 import {
-  MAX_PANES_PER_TAB,
   useTabs,
   useWindowTitle,
   useWorkspaceCwd,
@@ -72,6 +70,7 @@ import {
   respawnSession,
   type TerminalPaneHandle,
   useTerminalFileDrop,
+  writeToSession,
 } from "@/modules/terminal";
 import { ThemeProvider, useThemeFileEditing } from "@/modules/theme";
 import { UpdaterDialog } from "@/modules/updater";
@@ -179,9 +178,18 @@ export default function App() {
     toggleExplorerFocus,
   } = useSidebarPanel(explorerRef);
 
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [newEditorOpen, setNewEditorOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [paletteInitialMode, setPaletteInitialMode] = useState<
+    "commands" | "content"
+  >("commands");
+  const openCommandPalette = useCallback(
+    (mode: "commands" | "content" = "commands") => {
+      setPaletteInitialMode(mode);
+      setCommandPaletteOpen(true);
+    },
+    [],
+  );
   const miniOpen = useChatStore((s) => s.mini.open);
   const miniPresence = usePresence(miniOpen, 200);
   const openMini = useChatStore((s) => s.openMini);
@@ -501,7 +509,8 @@ export default function App() {
 
   const shortcutHandlers = useMemo<ShortcutHandlers>(
     () => ({
-      "commandPalette.open": () => setCommandPaletteOpen(true),
+      "commandPalette.open": () => openCommandPalette("commands"),
+      "commandPalette.content": () => openCommandPalette("content"),
       "tab.new": openNewTab,
       "tab.newPrivate": openNewPrivateTab,
       "tab.newPreview": () => openPreviewTab(""),
@@ -523,7 +532,6 @@ export default function App() {
       "search.focus": () => searchInlineRef.current?.focus(),
       "ai.toggle": togglePanelAndFocus,
       "ai.askSelection": askFromSelection,
-      "shortcuts.open": () => setShortcutsOpen((v) => !v),
       "settings.open": () => void openSettingsWindow(),
       "sidebar.toggle": toggleSidebar,
       "explorer.focus": toggleExplorerFocus,
@@ -536,6 +544,7 @@ export default function App() {
     }),
     [
       activeId,
+      openCommandPalette,
       cycleTab,
       handleCloseTabOrPane,
       openNewTab,
@@ -610,8 +619,16 @@ export default function App() {
 
   const registerEditorHandle = useCallback(
     (id: number, h: EditorPaneHandle | null) => {
-      if (h) editorRefs.current.set(id, h);
-      else editorRefs.current.delete(id);
+      if (h) {
+        editorRefs.current.set(id, h);
+        const line = pendingGotoLine.current.get(id);
+        if (line != null) {
+          pendingGotoLine.current.delete(id);
+          h.gotoLine(line);
+        }
+      } else {
+        editorRefs.current.delete(id);
+      }
       if (id === activeId) setActiveEditorHandle(h);
     },
     [activeId],
@@ -721,33 +738,32 @@ export default function App() {
     gitHistoryHandle,
   ]);
 
-  const commandPaletteActions = useMemo(
+  const commandPaletteItems = useMemo(
     () =>
       commandPaletteOpen
-        ? createCommandPaletteActions({
+        ? createCommandItems({
             tabs,
             activeId,
             searchTarget,
             explorerRoot,
             home,
             openNewTab,
+            openNewBlock: openNewBlockTab,
             openNewPrivate: openNewPrivateTab,
             openNewEditor: () => setNewEditorOpen(true),
             openNewPreview: () => openPreviewTab(""),
+            openGitGraph: openGitGraphFromContext,
+            toggleSourceControl,
             closeActiveTabOrPane: handleCloseTabOrPane,
-            nextTab: () => cycleTab(1),
-            previousTab: () => cycleTab(-1),
             splitPaneRight: () => splitActivePaneInActiveTab("row"),
             splitPaneDown: () => splitActivePaneInActiveTab("col"),
-            focusNextPane: () => focusNextPaneInTab(activeId, 1),
-            focusPreviousPane: () => focusNextPaneInTab(activeId, -1),
             focusSearch: () => searchInlineRef.current?.focus(),
             focusExplorerSearch: () => explorerRef.current?.focusSearch(),
             toggleSidebar,
             toggleAi: togglePanelAndFocus,
             askAiSelection: askFromSelection,
             openSettings: () => void openSettingsWindow(),
-            openShortcuts: () => setShortcutsOpen(true),
+            openKeyboardShortcuts: () => void openSettingsWindow("shortcuts"),
           })
         : [],
     [
@@ -758,16 +774,40 @@ export default function App() {
       explorerRoot,
       home,
       openNewTab,
+      openNewBlockTab,
       openNewPrivateTab,
       openPreviewTab,
+      openGitGraphFromContext,
+      toggleSourceControl,
       handleCloseTabOrPane,
-      cycleTab,
       splitActivePaneInActiveTab,
-      focusNextPaneInTab,
       toggleSidebar,
       togglePanelAndFocus,
       askFromSelection,
     ],
+  );
+
+  const pendingGotoLine = useRef<Map<number, number>>(new Map());
+  const openContentHit = useCallback(
+    (path: string, line: number) => {
+      const id = openFileTab(path, true);
+      if (id == null) return;
+      const h = editorRefs.current.get(id);
+      if (h) h.gotoLine(line);
+      else pendingGotoLine.current.set(id, line);
+    },
+    [openFileTab],
+  );
+
+  const insertHistoryCommand = useMemo(
+    () =>
+      isTerminalTab && activeLeafId !== null
+        ? (cmd: string) => {
+            writeToSession(activeLeafId, cmd);
+            terminalRefs.current.get(activeLeafId)?.focus();
+          }
+        : null,
+    [isTerminalTab, activeLeafId],
   );
 
   const activeCwd = activeTerminalLeafCwd;
@@ -803,11 +843,7 @@ export default function App() {
               onPin={pinTab}
               onRename={handleRenameTab}
               onToggleSidebar={toggleSidebar}
-              onSplit={splitActivePaneInActiveTab}
-              canSplit={
-                activeTerminalTab !== null &&
-                leafIds(activeTerminalTab.paneTree).length < MAX_PANES_PER_TAB
-              }
+              onOpenCommandPalette={() => openCommandPalette("commands")}
               onActivateAgent={onActivateAgent}
               onActivateLocalAgent={onActivateLocalAgent}
               onOpenSettings={() => void openSettingsWindow()}
@@ -953,14 +989,11 @@ export default function App() {
           <CommandPalette
             open={commandPaletteOpen}
             onOpenChange={setCommandPaletteOpen}
-            actions={commandPaletteActions}
+            initialMode={paletteInitialMode}
+            commandItems={commandPaletteItems}
             workspaceRoot={explorerRoot}
-            onOpenFile={handleOpenFile}
-          />
-
-          <ShortcutsDialog
-            open={shortcutsOpen}
-            onOpenChange={setShortcutsOpen}
+            onOpenContentHit={openContentHit}
+            insertCommand={insertHistoryCommand}
           />
 
           <NewEditorDialog
