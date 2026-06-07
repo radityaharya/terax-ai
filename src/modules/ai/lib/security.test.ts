@@ -230,6 +230,12 @@ describe("checkShellCommand — home directory rm guard", () => {
     expect(checkShellCommand("rm -rf ~/subdir && ls")).toMatchObject({ ok: false });
   });
 
+  it("blocks rm -rf when the home target is immediately followed by a pipe", () => {
+    expect(checkShellCommand("rm -rf ~|cat")).toMatchObject({ ok: false });
+    expect(checkShellCommand("rm -rf $HOME|cat")).toMatchObject({ ok: false });
+    expect(checkShellCommand("rm -rf ${HOME}|cat")).toMatchObject({ ok: false });
+  });
+
   it("does not block rm -rf on explicit absolute paths", () => {
     expect(checkShellCommand("rm -rf /home/me/safe")).toMatchObject({ ok: true });
   });
