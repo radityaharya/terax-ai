@@ -1,7 +1,8 @@
+import babel from "@rolldown/plugin-babel";
 import tailwindcss from "@tailwindcss/vite";
-import react from "@vitejs/plugin-react";
+import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import path from "path";
-import { defineConfig, type PluginOption } from "vite";
+import { defineConfig, type PluginOption, type UserConfig } from "vite";
 import Inspect from "vite-plugin-inspect";
 
 const host = process.env.TAURI_DEV_HOST;
@@ -10,13 +11,12 @@ const host = process.env.TAURI_DEV_HOST;
 const analyze = process.env.ANALYZE === "true";
 
 // https://vite.dev/config/
-export default defineConfig(async ({ mode }) => ({
+export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
   plugins: [
-    react({
-      babel: {
-        plugins: [["babel-plugin-react-compiler", { target: "19" }]],
-      },
+    babel({
+      presets: [reactCompilerPreset({ target: "19" })],
     }),
+    react(),
     tailwindcss(),
     // Dev-only module-graph inspector at /__inspect (who-imports-what,
     // per-plugin transforms). Never included in a production build.
@@ -38,21 +38,23 @@ export default defineConfig(async ({ mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
-  esbuild: {
-    drop: mode === "production" ? (["debugger"] as ["debugger"]) : [],
-    pure:
-      mode === "production"
-        ? ["console.debug", "console.info", "console.trace"]
-        : [],
-  },
   build: {
     target:
       process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome120" : "es2022",
     chunkSizeWarningLimit: 1500,
-    rollupOptions: {
+    rolldownOptions: {
       input: {
         main: path.resolve(__dirname, "index.html"),
         settings: path.resolve(__dirname, "settings.html"),
+      },
+      // Oxc drops `debugger` by default. These calls return undefined, so
+      // marking them pure lets DCE strip them from production builds.
+      treeshake: {
+        manualPureFunctions: [
+          "console.debug",
+          "console.info",
+          "console.trace",
+        ],
       },
       output: {
         manualChunks(id: string) {
@@ -64,7 +66,7 @@ export default defineConfig(async ({ mode }) => ({
           if (id.includes("vite/preload-helper") || id.includes("/vite/dist/"))
             return "react";
 
-          if (!id.includes("node_modules")) return;
+          if (!id.includes("node_modules")) return null;
 
           // Ubiquitous styling utils used by `cn()` on nearly every eager
           // component. Left unassigned, Rollup absorbs them into whichever
@@ -118,6 +120,8 @@ export default defineConfig(async ({ mode }) => ({
             return "react";
           if (id.includes("@radix-ui/") || id.includes("/radix-ui/"))
             return "radix";
+
+          return null;
         },
       },
     },
