@@ -221,9 +221,10 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     }, [vimMode]);
 
     useEffect(() => {
-      let cancelled = false;
       const ext = path.split(".").pop()?.toLowerCase() ?? null;
       languageRef.current = ext;
+      if (doc.status !== "ready") return;
+      let cancelled = false;
       const resolve = async (): Promise<Extension> => {
         if (path.toLowerCase().endsWith(".terax-theme")) {
           const [{ json }, { colorSwatches }] = await Promise.all([
