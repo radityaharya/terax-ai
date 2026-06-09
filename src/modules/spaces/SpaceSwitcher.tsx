@@ -190,8 +190,11 @@ export function SpaceSwitcher({
         >
           <span
             aria-hidden
-            className="size-2 shrink-0 rounded-full"
-            style={{ backgroundColor: accentFor(current) }}
+            className="size-1.5 shrink-0 rounded-full"
+            style={{
+              backgroundColor: `color-mix(in oklch, ${accentFor(current)} 90%, transparent)`,
+              boxShadow: `0 0 0 2px color-mix(in oklch, ${accentFor(current)} 22%, transparent)`,
+            }}
           />
           <span className="max-w-36 truncate text-xs font-medium">
             {current.name}
