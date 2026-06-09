@@ -28,7 +28,13 @@ import {
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { labelFor } from "./lib/tabLabel";
 import type { EditorTab, Tab } from "./lib/useTabs";
 
@@ -66,7 +72,42 @@ export function TabBar({
   compact,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
+
+  // Single shared pill slides to the active tab instead of each tab toggling
+  // its own background. Measured relative to the list (its offsetParent) so it
+  // scrolls with the strip for free; transform/width only, no layout on siblings.
+  const [pill, setPill] = useState<{ left: number; width: number } | null>(null);
+  const [pillReady, setPillReady] = useState(false);
+
+  const measurePill = useCallback(() => {
+    const el = listRef.current?.querySelector<HTMLElement>(
+      '[data-tab-active="true"]',
+    );
+    setPill(el ? { left: el.offsetLeft, width: el.offsetWidth } : null);
+  }, []);
+
+  useLayoutEffect(() => {
+    measurePill();
+  }, [measurePill, activeId, tabs]);
+
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const ro = new ResizeObserver(measurePill);
+    ro.observe(list);
+    return () => ro.disconnect();
+  }, [measurePill]);
+
+  // Hold the transition off until the pill is first placed, so it never slides
+  // in from the origin on mount.
+  useEffect(() => {
+    if (pill && !pillReady) {
+      const id = requestAnimationFrame(() => setPillReady(true));
+      return () => cancelAnimationFrame(id);
+    }
+  }, [pill, pillReady]);
 
   // Horizontal wheel scroll without holding shift.
   useEffect(() => {
@@ -101,7 +142,25 @@ export function TabBar({
           value={String(activeId)}
           onValueChange={(v) => onSelect(Number(v))}
         >
-          <TabsList className="h-7 w-max gap-0.5 bg-transparent p-0">
+          <TabsList
+            ref={listRef}
+            className="relative h-7 w-max gap-0.5 bg-transparent p-0"
+          >
+            <span
+              aria-hidden
+              className="pointer-events-none absolute left-0 top-0 h-7 rounded-md bg-accent"
+              style={
+                pill
+                  ? {
+                      width: pill.width,
+                      transform: `translateX(${pill.left}px)`,
+                      transitionProperty: pillReady ? "transform, width" : "none",
+                      transitionDuration: "var(--dur-base)",
+                      transitionTimingFunction: "var(--ease-premium)",
+                    }
+                  : { opacity: 0 }
+              }
+            />
             {tabs.map((t) => {
               const isPreview = t.kind === "editor" && (t as EditorTab).preview;
               const isActive = t.id === activeId;
@@ -137,6 +196,7 @@ export function TabBar({
                   key={t.id}
                   value={String(t.id)}
                   data-tab-id={t.id}
+                  data-tab-active={isActive ? "true" : undefined}
                   onDoubleClick={() => isPreview && onPin(t.id)}
                   onAuxClick={(e) => {
                     if (e.button === 1 && tabs.length > 1) {
@@ -149,10 +209,8 @@ export function TabBar({
                     if (e.button === 1) e.preventDefault();
                   }}
                   className={cn(
-                    "group h-7 shrink-0 gap-1.5 rounded-md text-xs transition-colors hover:text-foreground/80 justify-between",
-                    isActive
-                      ? "bg-accent text-foreground"
-                      : "text-muted-foreground",
+                    "group relative z-[1] h-7 shrink-0 gap-1.5 rounded-md text-xs transition-colors hover:text-foreground/80 justify-between",
+                    isActive ? "text-foreground" : "text-muted-foreground",
                     compact
                       ? "px-1.5!"
                       : tabs.length === 1
