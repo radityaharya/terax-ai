@@ -147,7 +147,7 @@ export function pasteIntoLeaf(leafId: number, text: string): boolean {
 }
 
 function getRecycler(): HTMLDivElement {
-  if (recyclerEl && recyclerEl.isConnected) return recyclerEl;
+  if (recyclerEl?.isConnected) return recyclerEl;
   const el = document.createElement("div");
   el.setAttribute("data-terax-recycler", "");
   el.style.cssText =
@@ -436,7 +436,7 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
   cancelWebglReap(slot);
   cancelSlotReap(slot);
   unparkSlotHost(slot);
-  slot.host.style.visibility = "hidden";
+  if (!fast) slot.host.style.visibility = "hidden";
 
   if (slot.host.parentNode !== p.container) {
     p.container.appendChild(slot.host);
@@ -508,7 +508,17 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
     adapter?.resolveLeaf(p.leafId)?.kickPty(slot.term.cols, slot.term.rows);
   }
 
-  scheduleUnhide(slot, stale);
+  if (fast) {
+    if (stale) {
+      if (!slot.webglAddon) attachWebgl(slot);
+      try {
+        slot.term.refresh(0, slot.term.rows - 1);
+      } catch {}
+    }
+    if (adapter?.isLeafFocused(p.leafId)) slot.term.focus();
+  } else {
+    scheduleUnhide(slot, stale);
+  }
 
   p.onSearchReady(slot.searchAddon);
 }
