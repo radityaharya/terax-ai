@@ -41,16 +41,28 @@ function global:__terax_install_readline {
     if ($global:__terax_readline_done) { return }
     if (-not (Test-Path Function:PSConsoleHostReadLine)) { return }
     $global:__terax_readline_done = $true
-    Copy-Item Function:PSConsoleHostReadLine Function:__terax_user_readline -Force
+    # global: is required -- a plain Function: copy made inside a function
+    # lands in its local scope and vanishes when it returns, leaving the
+    # wrapper calling a missing command on every read (empty-input loop).
+    Copy-Item Function:PSConsoleHostReadLine Function:global:__terax_user_readline -Force
     function global:PSConsoleHostReadLine {
-        $line = __terax_user_readline
-        if ($null -ne $line -and $line.Trim().Length -gt 0) {
-            $global:__terax_block_seen = $true
-            $esc = [char]27
-            $cmd = $line -replace '[\x00-\x1F\x7F]', ' '
-            if ($cmd.Length -gt 256) { $cmd = $cmd.Substring(0, 256) }
-            [Console]::Write("$esc]133;C;$cmd$esc\")
+        try {
+            $line = __terax_user_readline
+        } catch {
+            # Self-heal: restore the original reader so a broken wrapper can
+            # never lock the shell out of input.
+            Copy-Item Function:__terax_user_readline Function:global:PSConsoleHostReadLine -Force
+            return ''
         }
+        try {
+            if ($line -is [string] -and $line.Trim().Length -gt 0) {
+                $global:__terax_block_seen = $true
+                $esc = [char]27
+                $cmd = $line -replace '[\x00-\x1F\x7F]', ' '
+                if ($cmd.Length -gt 256) { $cmd = $cmd.Substring(0, 256) }
+                [Console]::Write("$esc]133;C;$cmd$esc\")
+            }
+        } catch {}
         $line
     }
 }
