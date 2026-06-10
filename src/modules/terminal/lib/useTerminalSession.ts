@@ -87,6 +87,8 @@ type Session = {
   commandRunning: boolean;
   hiddenReleaseTimer: ReturnType<typeof setTimeout> | null;
   spawnFailed: boolean;
+  gotBytes: boolean;
+  stallRespawned: boolean;
 };
 
 const sessions = new Map<number, Session>();
@@ -292,12 +294,24 @@ if (typeof window !== "undefined") {
   void listen<number>("terax:pty-stall", (e) => {
     const leafId = leafIdForPty(e.payload);
     if (leafId === null) return;
+    const s = sessions.get(leafId);
+    if (!s || s.disposed || s.shellExited || s.gotBytes) return;
+    // Known ConPTY flakiness: the console spawns but its output pipe never
+    // pumps. Respawn transparently once; a second stall gets a notice so a
+    // genuinely broken shell can't respawn-loop.
+    if (!s.stallRespawned) {
+      s.stallRespawned = true;
+      console.warn("[terax] pty stall, auto-respawning leaf", leafId);
+      void respawnSession(leafId);
+      return;
+    }
     deliverPtyBytes(
       leafId,
       new TextEncoder().encode(
-        "\r\n\x1b[2m[terax] the shell has not produced any output yet; it may have failed to start\x1b[0m\r\n",
+        "\r\n\x1b[2m[terax] the shell is not producing output; press Enter to retry\x1b[0m\r\n",
       ),
     );
+    s.spawnFailed = true;
   });
 }
 
@@ -307,11 +321,13 @@ configureRendererPool({
     if (!s) return null;
     return {
       writeToPty: (data) => {
-        if (s.pty) {
-          s.pty.write(data);
+        // spawnFailed covers both a dead spawn (pty null) and a stalled
+        // ConPTY (pty alive but mute); Enter retries with a fresh pty.
+        if (s.spawnFailed) {
+          if (data.includes("\r")) void respawnSession(leafId);
           return;
         }
-        if (s.spawnFailed && data.includes("\r")) void respawnSession(leafId);
+        s.pty?.write(data);
       },
       resizePty: (cols, rows) => {
         s.cols = cols;
@@ -397,6 +413,8 @@ function ensureSession(
     commandRunning: false,
     hiddenReleaseTimer: null,
     spawnFailed: false,
+    gotBytes: false,
+    stallRespawned: false,
   };
   sessions.set(leafId, session);
 
@@ -464,7 +482,10 @@ async function openPtyForSession(
     startCols,
     startRows,
     {
-      onData: (bytes) => deliverPtyBytes(leafId, bytes),
+      onData: (bytes) => {
+        s.gotBytes = true;
+        deliverPtyBytes(leafId, bytes);
+      },
       onExit: (code) => {
         s.shellExited = true;
         s.pty = null;
@@ -638,6 +659,7 @@ export async function respawnSession(
   s.altScreenAtRelease = false;
   s.commandRunning = false;
   s.spawnFailed = false;
+  s.gotBytes = false;
   cancelHiddenRelease(s);
 
   const slot = getSlotForLeaf(leafId);
