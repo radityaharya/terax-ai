@@ -1,10 +1,10 @@
 import type { Tab } from "@/modules/tabs";
 import type { SearchAddon } from "@xterm/addon-search";
 import { useEffect, useMemo, useRef } from "react";
+import { selectLiveTerminals } from "./lib/liveTerminals";
+import { leafIds } from "./lib/panes";
 import { PaneTreeView } from "./PaneTreeView";
 import type { TerminalPaneHandle } from "./TerminalPane";
-import { leafIds } from "./lib/panes";
-import { selectLiveTerminals } from "./lib/liveTerminals";
 
 type Props = {
   tabs: Tab[];
@@ -19,9 +19,9 @@ type Props = {
 
 type Bundle = {
   setRef: (h: TerminalPaneHandle | null) => void;
-  onSearch: (addon: SearchAddon) => void;
-  onCwd: (cwd: string) => void;
-  onExit: (code: number) => void;
+  onSearchReady: (leafId: number, addon: SearchAddon) => void;
+  onCwd: (leafId: number, cwd: string) => void;
+  onExit: (leafId: number, code: number) => void;
 };
 
 export function TerminalStack({
@@ -58,9 +58,9 @@ export function TerminalStack({
     if (!b) {
       b = {
         setRef: (h) => registerRef.current(leafId, h),
-        onSearch: (addon) => searchReadyRef.current(leafId, addon),
-        onCwd: (cwd) => cwdRef.current(leafId, cwd),
-        onExit: (code) => exitRef.current(leafId, code),
+        onSearchReady: (id, addon) => searchReadyRef.current(id, addon),
+        onCwd: (id, cwd) => cwdRef.current(id, cwd),
+        onExit: (id, code) => exitRef.current(id, code),
       };
       bundles.current.set(leafId, b);
     }
@@ -69,7 +69,8 @@ export function TerminalStack({
 
   useEffect(() => {
     const live = new Set<number>();
-    for (const t of terminals) for (const id of leafIds(t.paneTree)) live.add(id);
+    for (const t of terminals)
+      for (const id of leafIds(t.paneTree)) live.add(id);
     for (const id of bundles.current.keys()) {
       if (!live.has(id)) bundles.current.delete(id);
     }

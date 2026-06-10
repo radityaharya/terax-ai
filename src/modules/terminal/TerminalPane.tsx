@@ -2,6 +2,7 @@ import { useTheme } from "@/modules/theme";
 import type { SearchAddon } from "@xterm/addon-search";
 import {
   forwardRef,
+  memo,
   useEffect,
   useImperativeHandle,
   useRef,
@@ -32,8 +33,8 @@ type Props = {
   onCwd?: (leafId: number, cwd: string) => void;
 };
 
-export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
-  function TerminalPane(
+export const TerminalPane = memo(
+  forwardRef<TerminalPaneHandle, Props>(function TerminalPane(
     {
       leafId,
       visible,
@@ -148,7 +149,11 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
     }
 
     return (
-      <div ref={containerRef} className="zoom-exempt h-full w-full" style={hideStyle} />
+      <div
+        ref={containerRef}
+        className="zoom-exempt h-full w-full"
+        style={hideStyle}
+      />
     );
-  },
+  }),
 );

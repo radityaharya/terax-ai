@@ -1,19 +1,19 @@
-import { Fragment } from "react";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import type { SearchAddon } from "@xterm/addon-search";
-import { TerminalPane, type TerminalPaneHandle } from "./TerminalPane";
+import { Fragment } from "react";
 import { useTerminalDropStore } from "./lib/dropStore";
 import type { PaneNode } from "./lib/panes";
+import { TerminalPane, type TerminalPaneHandle } from "./TerminalPane";
 
 type LeafBundle = {
   setRef: (h: TerminalPaneHandle | null) => void;
-  onSearch: (addon: SearchAddon) => void;
-  onCwd: (cwd: string) => void;
-  onExit: (code: number) => void;
+  onSearchReady: (leafId: number, addon: SearchAddon) => void;
+  onCwd: (leafId: number, cwd: string) => void;
+  onExit: (leafId: number, code: number) => void;
 };
 
 type Props = {
@@ -56,9 +56,9 @@ export function PaneTreeView({
           initialCwd={node.cwd}
           blocks={blocks}
           ref={b.setRef}
-          onSearchReady={(_id, addon) => b.onSearch(addon)}
-          onCwd={(_id, cwd) => b.onCwd(cwd)}
-          onExit={(_id, code) => b.onExit(code)}
+          onSearchReady={b.onSearchReady}
+          onCwd={b.onCwd}
+          onExit={b.onExit}
         />
         <DropOverlay leafId={node.id} />
       </div>
