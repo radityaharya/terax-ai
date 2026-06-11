@@ -221,6 +221,8 @@ mod unix {
                 if let Err(e) = prepare_fish_conf_d() {
                     log::warn!("fish shell integration disabled: {e}");
                 }
+                // fish 4.0+ writes its own OSC 133 A/B; ours would double it.
+                cmd.env("fish_features", "no-mark-prompt");
                 cmd.arg("-i");
             }
             Shell::Other => {
@@ -475,6 +477,8 @@ mod windows {
                 args.push("-i".to_string());
             }
             (ShellKind::Fish, WslShellIntegration::Fish) => {
+                args.push("env".to_string());
+                args.push("fish_features=no-mark-prompt".to_string());
                 args.push(shell_path.to_string());
                 args.push("-i".to_string());
             }
@@ -719,6 +723,8 @@ mod windows {
                     "--cd".to_string(),
                     "/home/vinicios/repo".to_string(),
                     "--exec".to_string(),
+                    "env".to_string(),
+                    "fish_features=no-mark-prompt".to_string(),
                     "/usr/bin/fish".to_string(),
                     "-i".to_string(),
                 ]

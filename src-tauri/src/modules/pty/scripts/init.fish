@@ -1,6 +1,8 @@
 # terax-shell-integration (fish)
 # Emits OSC 7 (cwd) + OSC 133 A/B/C/D so the host tracks cwd and prompt
-# boundaries without re-parsing the prompt.
+# boundaries without re-parsing the prompt. fish 4.0+ writes its own OSC 133
+# A/B (the `mark-prompt` feature); Terax disables it at spawn via
+# fish_features=no-mark-prompt so these markers aren't emitted twice.
 
 # Installed into conf.d, which every fish session sources; only Terax-spawned
 # shells (TERAX_TERMINAL=1) may get their prompt wrapped.
@@ -11,6 +13,12 @@ if set -q __TERAX_HOOKS_LOADED
     exit 0
 end
 set -g __TERAX_HOOKS_LOADED 1
+
+# Block mode draws its own UI; the startup greeting would land as stray grid output.
+if set -q TERAX_BLOCKS
+    function fish_greeting
+    end
+end
 
 set -g __TERAX_HOST (uname -n 2>/dev/null; or echo localhost)
 
