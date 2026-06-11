@@ -1,12 +1,14 @@
 import { detectMonoFontFamily } from "@/lib/fonts";
-import { MOD_KEY, fmtShortcut } from "@/lib/platform";
+import { fmtShortcut, MOD_KEY } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useEffect, useRef, useState } from "react";
 import {
+  clearLeafBlockSelection,
   getLeafDraft,
   leafGridSelection,
   setLeafDraft,
+  setLeafInputActivity,
   setLeafInputFocus,
 } from "../lib/useTerminalSession";
 import {
@@ -44,6 +46,8 @@ export default function ShellInput({
   const commandsRef = useRef<string[]>([]);
   const cbRef = useRef({ onSubmit, onInterrupt, getCwd });
   cbRef.current = { onSubmit, onInterrupt, getCwd };
+  const leafIdRef = useRef(leafId);
+  leafIdRef.current = leafId;
   const atPrompt = mode === "prompt";
   const [empty, setEmpty] = useState(true);
 
@@ -72,7 +76,10 @@ export default function ShellInput({
       fontSize: fontRef.current.fontSize,
       commandNames: () => commandsRef.current,
       getCwd: () => cbRef.current.getCwd(),
-      onChange: (text) => setEmpty(text.length === 0),
+      onChange: (text) => {
+        setEmpty(text.length === 0);
+        setLeafInputActivity(leafIdRef.current, text.length > 0);
+      },
       suggest: historySuggest,
       historyList,
       onSubmit: (text) => {
@@ -84,6 +91,7 @@ export default function ShellInput({
         cbRef.current.onSubmit(text);
       },
       onInterrupt: () => cbRef.current.onInterrupt(),
+      onEscape: () => clearLeafBlockSelection(leafIdRef.current),
     });
     handleRef.current = handle;
     requestAnimationFrame(() => handleRef.current?.focus());
@@ -99,7 +107,9 @@ export default function ShellInput({
     setLeafInputFocus(leafId, () => handleRef.current?.focus());
     handleRef.current?.setValue(getLeafDraft(leafId));
     return () => {
-      setLeafDraft(leafId, handleRef.current?.getValue() ?? "");
+      const value = handleRef.current?.getValue() ?? "";
+      setLeafDraft(leafId, value);
+      setLeafInputActivity(leafId, value.length > 0);
       setLeafInputFocus(leafId, null);
     };
   }, [leafId]);
