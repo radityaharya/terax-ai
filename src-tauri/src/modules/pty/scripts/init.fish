@@ -2,6 +2,11 @@
 # Emits OSC 7 (cwd) + OSC 133 A/B/C/D so the host tracks cwd and prompt
 # boundaries without re-parsing the prompt.
 
+# Installed into conf.d, which every fish session sources; only Terax-spawned
+# shells (TERAX_TERMINAL=1) may get their prompt wrapped.
+if not set -q TERAX_TERMINAL
+    exit 0
+end
 if set -q __TERAX_HOOKS_LOADED
     exit 0
 end
