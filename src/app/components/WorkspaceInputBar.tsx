@@ -107,11 +107,7 @@ export function WorkspaceInputBar({
 
   const terminalChips = isTerminalTab ? (
     <>
-      {os && (
-        <Chip tone="neutral" iconNode={<OsIcon os={os} />}>
-          {os}
-        </Chip>
-      )}
+      {os && <Chip tone="neutral" iconNode={<OsIcon os={os} />} title={os} />}
       {cwd && (
         <Chip tone="blue" icon={Folder01Icon} title={cwd}>
           {relPath(cwd, home)}
@@ -248,7 +244,9 @@ function SegButton({
       onClick={onClick}
       className={cn(
         "relative z-10 flex items-center justify-center gap-1 rounded-[5px] px-2.5 py-[3px] font-medium transition-colors",
-        active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+        active
+          ? "text-foreground"
+          : "text-muted-foreground hover:text-foreground",
       )}
     >
       <HugeiconsIcon icon={icon} size={12} strokeWidth={1.75} />
