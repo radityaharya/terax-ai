@@ -1,7 +1,6 @@
 import { ensureMonoFontsLoaded } from "@/lib/fonts";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import type { SearchAddon } from "@xterm/addon-search";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -87,9 +86,6 @@ type Session = {
   commandRunning: boolean;
   hiddenReleaseTimer: ReturnType<typeof setTimeout> | null;
   spawnFailed: boolean;
-  gotBytes: boolean;
-  stallRespawned: boolean;
-  firstByteTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const sessions = new Map<number, Session>();
@@ -291,40 +287,13 @@ ensureAgentActivityListener((ptyId) => {
   if (s) scheduleHiddenRelease(leafId, s);
 });
 
-if (typeof window !== "undefined") {
-  void listen<number>("terax:pty-stall", (e) => {
-    const leafId = leafIdForPty(e.payload);
-    if (leafId === null) return;
-    const s = sessions.get(leafId);
-    if (!s || s.disposed || s.shellExited || s.gotBytes) return;
-    // Known ConPTY flakiness: the console spawns but its output pipe never
-    // pumps. Respawn transparently once; a second stall gets a notice so a
-    // genuinely broken shell can't respawn-loop.
-    if (!s.stallRespawned) {
-      s.stallRespawned = true;
-      console.warn("[terax] pty stall, auto-respawning leaf", leafId);
-      void respawnSession(leafId);
-      return;
-    }
-    if (s.spawnFailed) return;
-    s.spawnFailed = true;
-    deliverPtyBytes(
-      leafId,
-      new TextEncoder().encode(
-        "\r\n\x1b[2m[terax] the shell is not producing output; press Enter to retry\x1b[0m\r\n",
-      ),
-    );
-  });
-}
-
 configureRendererPool({
   resolveLeaf(leafId) {
     const s = sessions.get(leafId);
     if (!s) return null;
     return {
       writeToPty: (data) => {
-        // spawnFailed covers both a dead spawn (pty null) and a stalled
-        // ConPTY (pty alive but mute); Enter retries with a fresh pty.
+        // Shell spawn failed (bad cwd, missing binary): Enter retries.
         if (s.spawnFailed) {
           if (data.includes("\r")) void respawnSession(leafId);
           return;
@@ -415,9 +384,6 @@ function ensureSession(
     commandRunning: false,
     hiddenReleaseTimer: null,
     spawnFailed: false,
-    gotBytes: false,
-    stallRespawned: false,
-    firstByteTimer: null,
   };
   sessions.set(leafId, session);
 
@@ -437,44 +403,6 @@ function deliverPtyBytes(leafId: number, bytes: Uint8Array): void {
   const slot = getLiveSlotForLeaf(leafId);
   if (slot) slot.term.write(bytes);
   else s.dormantRing.push(bytes);
-}
-
-// Windows-only: the Rust watchdog sees backend stalls, but on WebView2 bytes
-// can also be lost between the reader and the webview (Channel delivery).
-// Watch for the first byte at the destination and respawn once with fresh
-// channels. On Unix this would only false-positive on slow silent shell init.
-// conhost emits its initial sequences well before a slow profile finishes,
-// but 1s is too tight for AV-loaded machines; 2s balances recovery vs risk.
-const FIRST_BYTE_TIMEOUT_MS = 2000;
-const IS_WINDOWS =
-  typeof navigator !== "undefined" && navigator.userAgent.includes("Windows");
-
-function armFirstByteWatchdog(leafId: number, s: Session): void {
-  if (!IS_WINDOWS) return;
-  if (s.firstByteTimer) clearTimeout(s.firstByteTimer);
-  s.firstByteTimer = setTimeout(() => {
-    s.firstByteTimer = null;
-    if (s.disposed || s.gotBytes || !s.pty || s.shellExited) return;
-    if (!s.stallRespawned) {
-      // Sticky once per session: resetting it would loop a truly mute shell
-      // through respawn forever; later retries stay user-driven via Enter.
-      s.stallRespawned = true;
-      console.warn(
-        "[terax] no pty output reached the webview, respawning leaf",
-        leafId,
-      );
-      void respawnSession(leafId);
-      return;
-    }
-    if (s.spawnFailed) return;
-    s.spawnFailed = true;
-    deliverPtyBytes(
-      leafId,
-      new TextEncoder().encode(
-        "\r\n\x1b[2m[terax] the shell is not producing output; press Enter to retry\x1b[0m\r\n",
-      ),
-    );
-  }, FIRST_BYTE_TIMEOUT_MS);
 }
 
 const SPAWN_RETRY_DELAY_MS = 250;
@@ -523,18 +451,7 @@ async function openPtyForSession(
     startCols,
     startRows,
     {
-      onData: (bytes) => {
-        if (!s.gotBytes) {
-          s.gotBytes = true;
-          // A late shell proved itself alive: unblock input and stop watching.
-          s.spawnFailed = false;
-          if (s.firstByteTimer) {
-            clearTimeout(s.firstByteTimer);
-            s.firstByteTimer = null;
-          }
-        }
-        deliverPtyBytes(leafId, bytes);
-      },
+      onData: (bytes) => deliverPtyBytes(leafId, bytes),
       onExit: (code) => {
         s.shellExited = true;
         s.pty = null;
@@ -687,7 +604,6 @@ function attachSession(
           return;
         }
         s.pty = pty;
-        armFirstByteWatchdog(leafId, s);
       })
       .catch((e) => {
         s.ptyOpening = false;
@@ -719,7 +635,6 @@ export async function respawnSession(
   s.altScreenAtRelease = false;
   s.commandRunning = false;
   s.spawnFailed = false;
-  s.gotBytes = false;
   cancelHiddenRelease(s);
 
   const slot = getSlotForLeaf(leafId);
@@ -746,7 +661,6 @@ export async function respawnSession(
     return;
   }
   s.pty = pty;
-  armFirstByteWatchdog(leafId, s);
 }
 
 export async function leafHasForegroundProcess(
@@ -774,8 +688,6 @@ export function disposeSession(leafId: number): void {
   if (!s) return;
   s.disposed = true;
   cancelHiddenRelease(s);
-  if (s.firstByteTimer) clearTimeout(s.firstByteTimer);
-  s.firstByteTimer = null;
   disposeLeafSlot(leafId);
   s.hasSlot = false;
   s.snapshot = null;

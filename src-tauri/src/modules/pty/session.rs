@@ -165,24 +165,6 @@ pub fn spawn(
 
     let first_byte = Arc::new(AtomicBool::new(false));
 
-    // ConPTY occasionally hands back a console whose output pipe never pumps
-    // (random black tab). Log + notify the frontend instead of staying silent.
-    #[cfg(windows)]
-    {
-        let first_byte_w = first_byte.clone();
-        let app_w = app.clone();
-        thread::Builder::new()
-            .name("terax-pty-watchdog".into())
-            .spawn(move || {
-                thread::sleep(Duration::from_secs(5));
-                if !first_byte_w.load(Ordering::Acquire) {
-                    log::warn!("pty id={id} produced no output within 5s (possible ConPTY stall)");
-                    let _ = app_w.emit("terax:pty-stall", id);
-                }
-            })
-            .expect("spawn pty watchdog thread");
-    }
-
     let pending_r = pending.clone();
     let writer_for_da = writer.clone();
     let app_reader = app.clone();
