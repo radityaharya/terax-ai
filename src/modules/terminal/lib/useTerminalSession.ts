@@ -132,7 +132,7 @@ export function whenSessionReady(
 
 export function writeToSession(leafId: number, data: string): boolean {
   const s = sessions.get(leafId);
-  if (!s || !s.pty) return false;
+  if (!s?.pty) return false;
   void s.pty.write(data);
   return true;
 }
@@ -151,6 +151,11 @@ export function interruptLeaf(leafId: number): void {
 
 export function leafCwd(leafId: number): string | null {
   return sessions.get(leafId)?.lastCwd ?? null;
+}
+
+export function leafGridSelection(leafId: number): string | null {
+  const sel = getSlotForLeaf(leafId)?.term.getSelection() ?? "";
+  return sel.length > 0 ? sel : null;
 }
 
 export function getLeafBlockMode(leafId: number): BlockMode {
@@ -491,7 +496,12 @@ function applyBlockMode(leafId: number, mode: BlockMode): void {
     // Disable the helper textarea at the prompt so a grid click can't focus the
     // xterm (no flashing cursor) and can't steal focus from the shell input.
     if (slot.term.textarea) slot.term.textarea.disabled = prompt;
-    if (!prompt) slot.term.focus();
+    if (!prompt) {
+      slot.term.focus();
+    } else if (s.visibleNow && s.focusedNow) {
+      const inputFocus = s.inputFocus;
+      if (inputFocus) setTimeout(inputFocus, 0);
+    }
   }
   for (const l of s.blockListeners) l();
 }

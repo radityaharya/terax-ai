@@ -5,6 +5,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useEffect, useRef, useState } from "react";
 import {
   getLeafDraft,
+  leafGridSelection,
   setLeafDraft,
   setLeafInputFocus,
 } from "../lib/useTerminalSession";
@@ -119,8 +120,22 @@ export default function ShellInput({
     if (focused && atPrompt) handleRef.current?.focus();
   }, [focused, atPrompt]);
 
+  // The editor holds focus at the prompt, so a Cmd+C over a grid selection lands
+  // here, not on the xterm. Copy the grid selection unless the editor has its own.
+  const onCopyCapture = (e: React.ClipboardEvent) => {
+    const view = handleRef.current?.view;
+    if (view && !view.state.selection.main.empty) return;
+    const sel = leafGridSelection(leafId);
+    if (!sel) return;
+    e.preventDefault();
+    e.clipboardData.setData("text/plain", sel);
+  };
+
   return (
-    <div className={cn("flex items-start gap-2", !atPrompt && "opacity-45")}>
+    <div
+      className={cn("flex items-start gap-2", !atPrompt && "opacity-45")}
+      onCopyCapture={onCopyCapture}
+    >
       <span
         className="select-none pt-px text-primary/80"
         style={{ fontFamily, fontSize: `${fontSize}px`, lineHeight: 1.5 }}
