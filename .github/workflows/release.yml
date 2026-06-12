@@ -74,7 +74,8 @@ jobs:
           printf '%s' "$KEY_CONTENT" > "$HOME/private_keys/AuthKey.p8"
           echo "APPLE_API_KEY_PATH=$HOME/private_keys/AuthKey.p8" >> "$GITHUB_ENV"
 
-      - uses: tauri-apps/tauri-action@v0
+      - id: tauri
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -94,3 +95,59 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      # Strip outdated bundled libwayland-* libs from the AppImage so it loads
+      # the host's libs at runtime. The Ubuntu 22.04 build host ships
+      # libwayland 1.20, but recent Mesa (e.g. Fedora 43 / Mesa 25.3) expects
+      # 1.22+ symbols; the loader's lib-search-path preference makes the
+      # bundled copy win, breaking EGL with EGL_BAD_PARAMETER. These libs are
+      # on the AppImage project's standard excludelist for exactly this
+      # reason — host copies are ABI-stable and always preferred.
+      - name: Fix AppImage wayland libs and re-sign
+        if: matrix.platform == 'ubuntu-22.04' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          APPIMAGE=$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -n1)
+          BASENAME=$(basename "$APPIMAGE")
+          LATEST=src-tauri/target/release/bundle/latest.json
+          echo "Patching: $APPIMAGE"
+
+          WORK=$(mktemp -d)
+          cp "$APPIMAGE" "$WORK/"
+          pushd "$WORK" >/dev/null
+          chmod +x "./$BASENAME"
+          "./$BASENAME" --appimage-extract >/dev/null
+
+          rm -f squashfs-root/usr/lib/libwayland-client.so.0 \
+                squashfs-root/usr/lib/libwayland-egl.so.1 \
+                squashfs-root/usr/lib/libwayland-cursor.so.0
+
+          curl -fsSL -o appimagetool.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool.AppImage
+          ARCH=x86_64 ./appimagetool.AppImage --appimage-extract-and-run squashfs-root "$BASENAME"
+          popd >/dev/null
+
+          cp "$WORK/$BASENAME" "$APPIMAGE"
+
+          rm -f "$APPIMAGE.sig"
+          pnpm tauri signer sign "$APPIMAGE"
+
+          if [ -f "$LATEST" ]; then
+            NEW_SIG=$(cat "$APPIMAGE.sig")
+            jq --arg sig "$NEW_SIG" '.platforms["linux-x86_64"].signature = $sig' "$LATEST" > "$LATEST.tmp"
+            mv "$LATEST.tmp" "$LATEST"
+          fi
+
+          TAG="${GITHUB_REF_NAME}"
+          gh release upload "$TAG" "$APPIMAGE" "$APPIMAGE.sig" \
+            --clobber --repo "$GITHUB_REPOSITORY"
+          if [ -f "$LATEST" ]; then
+            gh release upload "$TAG" "$LATEST" \
+              --clobber --repo "$GITHUB_REPOSITORY"
+          fi
