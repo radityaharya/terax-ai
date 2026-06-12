@@ -60,6 +60,16 @@ function isUnder(key: string, root: string): boolean {
   return key === root || key.startsWith(`${root}/`);
 }
 
+// mtime/size are ignored on purpose: the tree never renders them, so a watcher
+// refetch that only bumps mtime (saving a file) must not count as a change.
+function sameDirListing(a: DirEntry[], b: DirEntry[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].name !== b[i].name || a[i].kind !== b[i].kind) return false;
+  }
+  return true;
+}
+
 type Options = {
   onPathRenamed?: (from: string, to: string) => void;
   onPathDeleted?: (path: string) => void;
@@ -103,13 +113,20 @@ export function useFileTree(rootPath: string | null, options?: Options) {
   }, []);
 
   const fetchChildren = useCallback(async (path: string) => {
-    setNodes((s) => ({ ...s, [path]: { status: "loading" } }));
+    if (nodesRef.current[path]?.status !== "loaded") {
+      setNodes((s) => ({ ...s, [path]: { status: "loading" } }));
+    }
     try {
       const entries = await invoke<DirEntry[]>("fs_read_dir", {
         path,
         showHidden: showHiddenRef.current,
         workspace: currentWorkspaceEnv(),
       });
+
+      const prev = nodesRef.current[path];
+      if (prev?.status === "loaded" && sameDirListing(prev.entries, entries)) {
+        return;
+      }
 
       const liveDirs = new Set(
         entries.filter((e) => e.kind === "dir").map((e) => joinPath(path, e.name)),

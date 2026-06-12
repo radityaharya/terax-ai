@@ -17,6 +17,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   forwardRef,
+  memo,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -25,7 +26,7 @@ import {
   useState,
 } from "react";
 import { ExplorerSearch, type ExplorerSearchHandle } from "./ExplorerSearch";
-import { EntryRow, PendingRow, StatusRow } from "./TreeRow";
+import { EntryRow, PendingRow, StatusRow, type RowActions } from "./TreeRow";
 import { InlineInput } from "./InlineInput";
 import { copyToClipboard, revealInFinder } from "./lib/contextActions";
 import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
@@ -145,8 +146,8 @@ function buildRows(
   return { rows, entryIndexByPath };
 }
 
-export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
-  function FileExplorer(
+export const FileExplorer = memo(
+  forwardRef<FileExplorerHandle, Props>(function FileExplorer(
     {
       rootPath,
       activeFilePath,
@@ -170,7 +171,31 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
     const { rows, entryIndexByPath } = useMemo(() => {
       if (!rootPath) return { rows: [] as Row[], entryIndexByPath: new Map<string, number>() };
       return buildRows(rootPath, tree);
-    }, [rootPath, tree.nodes, tree.expanded, tree.renaming, tree.pendingCreate, tree]);
+      // `tree` is intentionally omitted: its identity changes every render, but
+      // the listed fields are the only inputs buildRows actually reads.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [rootPath, tree.nodes, tree.expanded, tree.renaming, tree.pendingCreate]);
+
+    const rowActions = useMemo<RowActions>(
+      () => ({
+        toggle: tree.toggle,
+        beginRename: tree.beginRename,
+        commitRename: tree.commitRename,
+        cancelRename: tree.cancelRename,
+        beginCreate: tree.beginCreate,
+        deletePath: tree.deletePath,
+      }),
+      [
+        tree.toggle,
+        tree.beginRename,
+        tree.commitRename,
+        tree.cancelRename,
+        tree.beginCreate,
+        tree.deletePath,
+      ],
+    );
+    const renameInProgress =
+      tree.renaming !== null || tree.pendingCreate !== null;
 
     const entryPaths = useMemo<string[]>(() => {
       const out: string[] = [];
@@ -353,7 +378,8 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
               isExpanded={row.kind === "entry" ? row.isExpanded : false}
               depth={row.depth}
               rootPath={rootPath}
-              tree={tree}
+              actions={rowActions}
+              renameInProgress={renameInProgress}
               isSelected={selectedPath === row.path}
               isRenaming={row.kind === "rename"}
               onOpenFile={onOpenFile}
@@ -578,5 +604,5 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
         ) : null}
       </div>
     );
-  },
+  }),
 );

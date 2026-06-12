@@ -17,9 +17,15 @@ import {
 } from "./lib/contextActions";
 import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
-import type { useFileTree } from "./lib/useFileTree";
 
-type Tree = ReturnType<typeof useFileTree>;
+export type RowActions = {
+  toggle: (path: string) => void;
+  beginRename: (path: string) => void;
+  commitRename: (newName: string) => void | Promise<void>;
+  cancelRename: () => void;
+  beginCreate: (parentPath: string, kind: "file" | "dir") => void;
+  deletePath: (path: string) => Promise<void>;
+};
 
 export type EntryRowProps = {
   path: string;
@@ -28,7 +34,8 @@ export type EntryRowProps = {
   isExpanded: boolean;
   depth: number;
   rootPath: string;
-  tree: Tree;
+  actions: RowActions;
+  renameInProgress: boolean;
   isSelected: boolean;
   isRenaming: boolean;
   onOpenFile: (path: string, pin?: boolean) => void;
@@ -50,7 +57,8 @@ function EntryRowImpl(props: EntryRowProps) {
     isExpanded,
     depth,
     rootPath,
-    tree,
+    actions,
+    renameInProgress,
     isSelected,
     isRenaming,
     onOpenFile,
@@ -66,9 +74,9 @@ function EntryRowImpl(props: EntryRowProps) {
   const paddingLeft = 6 + depth * 12;
 
   const handleClick = () => {
-    if (tree.renaming) return;
+    if (renameInProgress) return;
     onSelectPath(path);
-    if (isDir) tree.toggle(path);
+    if (isDir) actions.toggle(path);
     else onOpenFile(path);
   };
 
@@ -88,8 +96,8 @@ function EntryRowImpl(props: EntryRowProps) {
             )}
             <InlineInput
               initial={name}
-              onCommit={tree.commitRename}
-              onCancel={tree.cancelRename}
+              onCommit={actions.commitRename}
+              onCancel={actions.cancelRename}
             />
           </div>
         ) : (
@@ -97,7 +105,7 @@ function EntryRowImpl(props: EntryRowProps) {
             type="button"
             data-fs-path={path}
             onClick={handleClick}
-            onDoubleClick={() => !isDir && tree.beginRename(path)}
+            onDoubleClick={() => !isDir && actions.beginRename(path)}
             className={cn(
               "group flex h-6 w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm px-1.5 text-left text-[13px] text-foreground/85 transition-colors hover:bg-accent/70",
               isSelected && "bg-accent text-foreground",
@@ -129,7 +137,7 @@ function EntryRowImpl(props: EntryRowProps) {
       <ContextMenuContent
         className={COMPACT_CONTENT}
         onCloseAutoFocus={(e) => {
-          if (tree.renaming || tree.pendingCreate) e.preventDefault();
+          if (renameInProgress) e.preventDefault();
         }}
       >
         {!isDir && (
@@ -165,13 +173,13 @@ function EntryRowImpl(props: EntryRowProps) {
         <ContextMenuSeparator />
         <ContextMenuItem
           className={COMPACT_ITEM}
-          onSelect={() => tree.beginCreate(createTarget, "file")}
+          onSelect={() => actions.beginCreate(createTarget, "file")}
         >
           New File
         </ContextMenuItem>
         <ContextMenuItem
           className={COMPACT_ITEM}
-          onSelect={() => tree.beginCreate(createTarget, "dir")}
+          onSelect={() => actions.beginCreate(createTarget, "dir")}
         >
           New Folder
         </ContextMenuItem>
@@ -202,7 +210,7 @@ function EntryRowImpl(props: EntryRowProps) {
           onSelect={(e) => {
             e.preventDefault();
             if (isConfirming) {
-              void tree.deletePath(path);
+              void actions.deletePath(path);
             } else {
               setIsConfirming(true);
             }
