@@ -234,6 +234,13 @@ mod unix {
                 // fish 4.0+ writes its own OSC 133 A/B; ours would double it.
                 cmd.env("fish_features", "no-mark-prompt");
                 cmd.arg("-i");
+                // In block mode, re-assert our prompt after config.fish (-C runs
+                // last), so a framework prompt (starship etc.) loaded there can't
+                // override the markers and break the blocks.
+                if blocks {
+                    cmd.arg("-C");
+                    cmd.arg("functions -q __terax_install_prompt; and __terax_install_prompt");
+                }
             }
             Shell::Other => {
                 log::info!(
