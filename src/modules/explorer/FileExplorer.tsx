@@ -25,6 +25,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { cn } from "@/lib/utils";
 import { ExplorerSearch, type ExplorerSearchHandle } from "./ExplorerSearch";
 import { EntryRow, PendingRow, StatusRow, type RowActions } from "./TreeRow";
 import { InlineInput } from "./InlineInput";
@@ -36,6 +37,7 @@ import {
 import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
 import { useExplorerDnd } from "./lib/useExplorerDnd";
+import { useExplorerFileDrop } from "./lib/useExplorerFileDrop";
 import { useFileTree } from "./lib/useFileTree";
 import { useGitStatus } from "./lib/useGitStatus";
 import type { GitStatusCode } from "./lib/gitStatusUtils";
@@ -264,7 +266,14 @@ export const FileExplorer = memo(
       onMove: tree.movePath,
     });
 
-    const dropTargetDir = dnd.dropTargetDir;
+    const fileDrop = useExplorerFileDrop({
+      rootPath,
+      isDir: isDirAt,
+      onCopied: tree.refresh,
+    });
+
+    const dropTargetDir = dnd.dropTargetDir ?? fileDrop.externalTargetDir;
+    const rootIsDropTarget = dropTargetDir != null && dropTargetDir === rootPath;
     useEffect(() => {
       if (!dropTargetDir || dropTargetDir === rootPath) return;
       if (tree.expanded.has(dropTargetDir)) return;
@@ -450,7 +459,7 @@ export const FileExplorer = memo(
               renameInProgress={renameInProgress}
               isSelected={selectedPath === row.path}
               isRenaming={row.kind === "rename"}
-              isDropTarget={dnd.dropTargetDir === row.path}
+              isDropTarget={dropTargetDir === row.path}
               onOpenFile={onOpenFile}
               onSelectPath={setSelectedPath}
               gitStatusCode={row.gitStatusCode}
@@ -556,7 +565,12 @@ export const FileExplorer = memo(
             <ContextMenuTrigger asChild>
               <div
                 ref={scrollRef}
-                className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]"
+                data-explorer-drop=""
+                className={cn(
+                  "min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]",
+                  rootIsDropTarget &&
+                    "rounded-sm ring-1 ring-inset ring-primary/50",
+                )}
                 onPointerDown={dnd.onPointerDown}
                 onClickCapture={dnd.onClickCapture}
                 onContextMenuCapture={(e) => {
