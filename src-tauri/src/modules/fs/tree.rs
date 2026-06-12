@@ -25,6 +25,21 @@ pub struct DirEntry {
     pub gitignored: bool,
 }
 
+// Whether `dir` is inside a git repo. Walks up only; never descends into
+// siblings, so it does not touch protected macOS folders (Desktop, ...).
+fn in_git_repo(dir: &Path) -> bool {
+    let mut cur = dir;
+    loop {
+        if cur.join(".git").exists() {
+            return true;
+        }
+        match cur.parent() {
+            Some(p) => cur = p,
+            None => return false,
+        }
+    }
+}
+
 // Immediate children of `dir` that git does not ignore. Outside a repo every
 // name is returned, so nothing is dimmed.
 fn git_non_ignored_names(dir: &Path, show_hidden: bool) -> HashSet<String> {
@@ -61,7 +76,9 @@ pub fn fs_read_dir(
         e.to_string()
     })?;
 
-    let git_decorations = git_decorations.unwrap_or(false);
+    // Gate on a real repo: outside one the walk is pointless and would probe
+    // each child for a nested `.git`, which trips macOS folder-access prompts.
+    let git_decorations = git_decorations.unwrap_or(false) && in_git_repo(&root);
     let git_visible = if git_decorations {
         git_non_ignored_names(&root, show_hidden)
     } else {

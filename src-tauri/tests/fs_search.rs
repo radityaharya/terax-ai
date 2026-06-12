@@ -296,6 +296,16 @@ fn read_dir_flags_gitignored_entries_only_when_requested() {
 }
 
 #[test]
+fn read_dir_skips_gitignore_outside_a_repo() {
+    let fx = FsFixture::new();
+    fx.write(".gitignore", "ignored.txt\n");
+    fx.write("ignored.txt", "");
+    fx.write("kept.txt", "");
+    let entries = fs_read_dir(fx.root_str(), false, Some(true), None).expect("read_dir");
+    assert!(entries.iter().all(|e| !e.gitignored));
+}
+
+#[test]
 fn read_dir_returns_size_for_files() {
     let fx = FsFixture::new();
     fx.write("known.txt", "abcdef");
