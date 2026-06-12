@@ -35,6 +35,7 @@ import {
 } from "./lib/contextActions";
 import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
+import { useExplorerDnd } from "./lib/useExplorerDnd";
 import { useFileTree } from "./lib/useFileTree";
 import { useGitStatus } from "./lib/useGitStatus";
 import type { GitStatusCode } from "./lib/gitStatusUtils";
@@ -249,6 +250,28 @@ export const FileExplorer = memo(
       return out;
     }, [rows]);
 
+    const isDirAt = useCallback(
+      (path: string): boolean | undefined => {
+        const idx = entryIndexByPath.get(path);
+        const row = idx !== undefined ? rows[idx] : undefined;
+        return row?.kind === "entry" ? row.isDir : undefined;
+      },
+      [entryIndexByPath, rows],
+    );
+    const dnd = useExplorerDnd({
+      rootPath: rootPath ?? "",
+      isDir: isDirAt,
+      onMove: tree.movePath,
+    });
+
+    const dropTargetDir = dnd.dropTargetDir;
+    useEffect(() => {
+      if (!dropTargetDir || dropTargetDir === rootPath) return;
+      if (tree.expanded.has(dropTargetDir)) return;
+      const id = window.setTimeout(() => tree.expand(dropTargetDir), 700);
+      return () => window.clearTimeout(id);
+    }, [dropTargetDir, rootPath, tree.expanded, tree.expand]);
+
     useEffect(() => {
       if (selectedPath && !entryIndexByPath.has(selectedPath)) {
         setSelectedPath(null);
@@ -427,6 +450,7 @@ export const FileExplorer = memo(
               renameInProgress={renameInProgress}
               isSelected={selectedPath === row.path}
               isRenaming={row.kind === "rename"}
+              isDropTarget={dnd.dropTargetDir === row.path}
               onOpenFile={onOpenFile}
               onSelectPath={setSelectedPath}
               gitStatusCode={row.gitStatusCode}
@@ -533,6 +557,8 @@ export const FileExplorer = memo(
               <div
                 ref={scrollRef}
                 className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]"
+                onPointerDown={dnd.onPointerDown}
+                onClickCapture={dnd.onClickCapture}
                 onContextMenuCapture={(e) => {
                   const el = (e.target as HTMLElement).closest<HTMLElement>(
                     "[data-fs-path]",
@@ -756,6 +782,15 @@ export const FileExplorer = memo(
               )}
             </ContextMenuContent>
           </ContextMenu>
+        ) : null}
+
+        {dnd.dragLabel ? (
+          <div
+            ref={dnd.ghostRef}
+            className="pointer-events-none fixed left-0 top-0 z-50 flex items-center gap-1.5 rounded-sm border border-border/70 bg-card/95 px-2 py-1 text-[12px] text-foreground shadow-md"
+          >
+            {dnd.dragLabel}
+          </div>
         ) : null}
       </div>
     );

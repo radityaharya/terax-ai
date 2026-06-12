@@ -24,6 +24,7 @@ export type EntryRowProps = {
   renameInProgress: boolean;
   isSelected: boolean;
   isRenaming: boolean;
+  isDropTarget?: boolean;
   onOpenFile: (path: string, pin?: boolean) => void;
   onSelectPath: (path: string) => void;
   gitStatusCode?: GitStatusCode | null;
@@ -41,6 +42,7 @@ function EntryRowImpl(props: EntryRowProps) {
     renameInProgress,
     isSelected,
     isRenaming,
+    isDropTarget = false,
     onOpenFile,
     onSelectPath,
     gitStatusCode,
@@ -91,6 +93,7 @@ function EntryRowImpl(props: EntryRowProps) {
           : gitignored
             ? "text-muted-foreground/70"
             : "text-foreground/85",
+        isDropTarget && "bg-primary/10 ring-1 ring-inset ring-primary/60",
       )}
       style={{ paddingLeft }}
     >

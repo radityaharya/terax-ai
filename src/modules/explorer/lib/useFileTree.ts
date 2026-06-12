@@ -392,6 +392,34 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     [fetchChildren, options],
   );
 
+  const movePath = useCallback(
+    async (from: string, toDir: string) => {
+      const name = from.slice(from.lastIndexOf("/") + 1);
+      const to = joinPath(toDir, name);
+      if (to === from) return;
+      const target = nodesRef.current[toDir];
+      if (
+        target?.status === "loaded" &&
+        target.entries.some((e) => e.name === name)
+      ) {
+        console.warn(`move skipped: "${name}" already exists in ${toDir}`);
+        return;
+      }
+      try {
+        await invoke("fs_rename", {
+          from,
+          to,
+          workspace: currentWorkspaceEnv(),
+        });
+        options?.onPathRenamed?.(from, to);
+        await Promise.all([fetchChildren(dirname(from)), fetchChildren(toDir)]);
+      } catch (e) {
+        console.error("fs_rename (move) failed:", e);
+      }
+    },
+    [fetchChildren, options],
+  );
+
   return {
     nodes,
     expanded,
@@ -407,6 +435,7 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     cancelRename,
     commitRename,
     deletePath,
+    movePath,
     joinPath,
   };
 }
