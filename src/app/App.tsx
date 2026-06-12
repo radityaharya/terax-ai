@@ -67,6 +67,7 @@ import {
   findLeafCwd,
   hasLeaf,
   leafIds,
+  navigateFocusedBlocks,
   respawnSession,
   type TerminalPaneHandle,
   useTerminalFileDrop,
@@ -586,6 +587,7 @@ export default function App() {
       "commandPalette.open": () => openCommandPalette("commands"),
       "commandPalette.content": () => openCommandPalette("content"),
       "tab.new": openNewTab,
+      "tab.newBlock": openNewBlockTab,
       "tab.newPrivate": openNewPrivateTab,
       "tab.newPreview": () => openPreviewTab(""),
       "tab.newEditor": () => setNewEditorOpen(true),
@@ -606,6 +608,8 @@ export default function App() {
       },
       "terminal.toggleInput": () =>
         window.dispatchEvent(new CustomEvent(TOGGLE_BLOCK_INPUT_EVENT)),
+      "blocks.prev": () => navigateFocusedBlocks(-1),
+      "blocks.next": () => navigateFocusedBlocks(1),
       "search.focus": () => searchInlineRef.current?.focus(),
       "ai.toggle": togglePanelAndFocus,
       "ai.askSelection": askFromSelection,
@@ -626,6 +630,7 @@ export default function App() {
       cycleSpace,
       handleCloseTabOrPane,
       openNewTab,
+      openNewBlockTab,
       openNewPrivateTab,
       openPreviewTab,
       selectByIndex,
@@ -664,7 +669,11 @@ export default function App() {
           (e.target as HTMLElement | null) ?? document.activeElement;
         return !(target as HTMLElement | null)?.closest?.(".xterm");
       }
-      if (id === "terminal.toggleInput") {
+      if (
+        id === "terminal.toggleInput" ||
+        id === "blocks.prev" ||
+        id === "blocks.next"
+      ) {
         return !(activeTab?.kind === "terminal" && activeTab.blocks === true);
       }
       if (id === "sidebar.toggle") {
