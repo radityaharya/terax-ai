@@ -40,6 +40,7 @@ import {
 } from "@/modules/header";
 import type { PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   useGlobalShortcuts,
   type ShortcutHandlers,
@@ -542,6 +543,9 @@ export default function App() {
       cycleSidebarView,
       openCommitHistoryTab,
     });
+  const explorerGitDecorations = usePreferencesStore(
+    (s) => s.explorerGitDecorations,
+  );
 
   const openPreviewTab = useCallback(
     (url: string) => {
@@ -1046,6 +1050,9 @@ export default function App() {
                       <FileExplorer
                         ref={explorerRef}
                         rootPath={explorerRoot}
+                        gitStatus={
+                          explorerGitDecorations ? sourceControl.status : null
+                        }
                         activeFilePath={explorerActiveFilePath}
                         onOpenFile={handleOpenFile}
                         onPathRenamed={handlePathRenamed}
