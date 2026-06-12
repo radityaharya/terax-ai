@@ -47,6 +47,11 @@ stdenv.mkDerivation {
   GST_PLUGIN_SYSTEM_PATH = lib.optionalString stdenv.hostPlatform.isLinux
     "${gst_all_1.gst-plugins-base}/lib/gstreamer-1.0:${gst_all_1.gst-plugins-good}/lib/gstreamer-1.0:${gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0";
 
+  # wrapGAppsHook3 would auto-wrap the binary in postFixup; we wrap it manually
+  # to add the GStreamer path, so disable the auto-wrap and splice the hook's
+  # GApps args into our single wrapper instead of nesting two wrappers.
+  dontWrapGApps = true;
+
   unpackPhase = if stdenv.hostPlatform.isLinux then "dpkg -x $src ." else "tar xzf $src";
 
   installPhase = if stdenv.hostPlatform.isLinux then ''
@@ -55,6 +60,7 @@ stdenv.mkDerivation {
     install -Dm755 usr/bin/terax $out/bin/terax
 
     wrapProgram $out/bin/terax \
+      "''${gappsWrapperArgs[@]}" \
       --prefix GST_PLUGIN_SYSTEM_PATH : "$GST_PLUGIN_SYSTEM_PATH"
   '' else ''
     mkdir -p $out/Applications
