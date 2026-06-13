@@ -80,5 +80,8 @@ jobs:
           title: "nix: update sources to ${{ steps.hashes.outputs.version }}"
           body: 'Automated update of `nix/sources.json` for release ${{ steps.tag.outputs.tag }}.'
           base: main
+          # Only commit the manifest; the downloaded release assets sit in the
+          # work tree and must not be committed.
+          add-paths: nix/sources.json
           branch: update-nix-sources/${{ steps.hashes.outputs.version }}
           delete-branch: true
