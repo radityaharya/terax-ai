@@ -17,7 +17,11 @@ jobs:
       pull-requests: write
 
     steps:
+      # On a `release` event the default checkout lands on the tag (detached
+      # HEAD); create-pull-request needs a branch base, so check out main.
       - uses: actions/checkout@v6
+        with:
+          ref: main
 
       - name: Normalize tag
         id: tag
@@ -75,5 +79,6 @@ jobs:
           commit-message: "update nix sources to ${{ steps.hashes.outputs.version }}"
           title: "nix: update sources to ${{ steps.hashes.outputs.version }}"
           body: 'Automated update of `nix/sources.json` for release ${{ steps.tag.outputs.tag }}.'
+          base: main
           branch: update-nix-sources/${{ steps.hashes.outputs.version }}
           delete-branch: true
