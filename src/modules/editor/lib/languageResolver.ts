@@ -174,8 +174,6 @@ const loaders: Record<string, LanguageLoader> = {
 
   // Other common languages
   lua: () => import("@codemirror/legacy-modes/mode/lua").then((m) => m.lua),
-  swift: () =>
-    import("@codemirror/legacy-modes/mode/swift").then((m) => m.swift),
   ps1: () =>
     import("@codemirror/legacy-modes/mode/powershell").then(
       (m) => m.powerShell,
@@ -210,7 +208,6 @@ const loaders: Record<string, LanguageLoader> = {
   proto: () =>
     import("@codemirror/legacy-modes/mode/protobuf").then((m) => m.protobuf),
   vb: () => import("@codemirror/legacy-modes/mode/vb").then((m) => m.vb),
-  vue: () => import("@codemirror/lang-html").then((m) => m.html()),
   svelte: () => import("@codemirror/lang-html").then((m) => m.html()),
 };
 
