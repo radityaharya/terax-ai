@@ -122,6 +122,7 @@ export default function App() {
     newPreviewTab,
     newMarkdownTab,
     setMarkdownView,
+    setOverrideLanguage,
     openAiDiffTab,
     closeAiDiffTab,
     openGitDiffTab,
@@ -1067,6 +1068,7 @@ export default function App() {
               spaceSwitcher={spaceSwitcher}
               searchTarget={searchTarget}
               searchRef={searchInlineRef}
+              onOverrideLanguage={setOverrideLanguage}
             />
           )}
 
