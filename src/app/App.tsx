@@ -30,6 +30,7 @@ import { CommandPalette, createCommandItems } from "@/modules/command-palette";
 import {
   type EditorPaneHandle,
   NewEditorDialog,
+  useApplyEditorFontSize,
   useEditorFileSync,
 } from "@/modules/editor";
 import { FileExplorer, type FileExplorerHandle } from "@/modules/explorer";
@@ -164,6 +165,7 @@ export default function App() {
   const [gitHistoryHandle, setGitHistoryHandle] =
     useState<GitHistorySearchHandle | null>(null);
   const { zoomIn, zoomOut, zoomReset } = useZoom();
+  useApplyEditorFontSize();
   useTerminalFileDrop();
   const explorerRef = useRef<FileExplorerHandle>(null);
 
