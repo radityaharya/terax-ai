@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  firstLeafSlotId,
   leafIds,
   swapLeafInDirection,
   type PaneNode,
@@ -104,8 +105,36 @@ describe("swapLeafInDirection", () => {
     const swapped = swapLeafInDirection(tree, 2, "left");
     expect(swapped.kind).toBe("split");
     if (swapped.kind === "split") {
-      expect(swapped.children[0]).toEqual({ kind: "leaf", id: 2, cwd: "/two" });
-      expect(swapped.children[1]).toEqual({ kind: "leaf", id: 1, cwd: "/one" });
+      expect(swapped.children[0]).toEqual({
+        kind: "leaf",
+        id: 2,
+        slotId: 1,
+        cwd: "/two",
+      });
+      expect(swapped.children[1]).toEqual({
+        kind: "leaf",
+        id: 1,
+        slotId: 2,
+        cwd: "/one",
+      });
+    }
+  });
+
+  it("keeps resizable layout slots fixed while sessions move", () => {
+    const tree = row(1, 2, 3);
+    const swapped = swapLeafInDirection(tree, 2, "left");
+
+    expect(swapped.kind).toBe("split");
+    if (swapped.kind === "split") {
+      expect(swapped.children.map(firstLeafSlotId)).toEqual([1, 2, 3]);
+      expect(leafIds(swapped)).toEqual([2, 1, 3]);
+    }
+
+    const restored = swapLeafInDirection(swapped, 2, "right");
+    expect(restored.kind).toBe("split");
+    if (restored.kind === "split") {
+      expect(restored.children.map(firstLeafSlotId)).toEqual([1, 2, 3]);
+      expect(leafIds(restored)).toEqual([1, 2, 3]);
     }
   });
 

@@ -45,6 +45,7 @@ import type { PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
+  shouldDisablePaneSwapShortcut,
   type ShortcutHandlers,
   type ShortcutId,
   useGlobalShortcuts,
@@ -774,6 +775,11 @@ export default function App() {
 
   const shortcutsDisabled = useCallback(
     (id: ShortcutId, e: KeyboardEvent) => {
+      const terminalPaneCount =
+        activeTab?.kind === "terminal"
+          ? leafIds(activeTab.paneTree).length
+          : null;
+      if (shouldDisablePaneSwapShortcut(id, terminalPaneCount)) return true;
       if (
         id === "editor.undo" ||
         id === "editor.redo" ||

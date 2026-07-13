@@ -11,7 +11,7 @@ export type PaneBounds = {
 };
 
 export type PaneNode =
-  | { kind: "leaf"; id: PaneId; cwd?: string }
+  | { kind: "leaf"; id: PaneId; slotId?: PaneId; cwd?: string }
   | {
       kind: "split";
       id: PaneId;
@@ -28,6 +28,11 @@ export function isLeaf(
 export function leafIds(n: PaneNode): PaneId[] {
   if (isLeaf(n)) return [n.id];
   return n.children.flatMap(leafIds);
+}
+
+export function firstLeafSlotId(n: PaneNode): PaneId {
+  if (isLeaf(n)) return n.slotId ?? n.id;
+  return firstLeafSlotId(n.children[0]);
 }
 
 export function findLeafCwd(n: PaneNode, id: PaneId): string | undefined {
@@ -241,8 +246,9 @@ function swapLeaves(
   second: Extract<PaneNode, { kind: "leaf" }>,
 ): PaneNode {
   if (isLeaf(node)) {
-    if (node.id === first.id) return second;
-    if (node.id === second.id) return first;
+    const slotId = node.slotId ?? node.id;
+    if (node.id === first.id) return { ...second, slotId };
+    if (node.id === second.id) return { ...first, slotId };
     return node;
   }
   return {
