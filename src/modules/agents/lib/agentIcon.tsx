@@ -6,6 +6,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 
+// Pi mark, from github.com/earendil-works pi-website logo.svg (MIT).
 function PiIcon({ size, className }: { size: number; className?: string }) {
   return (
     <svg
