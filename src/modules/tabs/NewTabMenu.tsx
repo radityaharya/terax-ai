@@ -14,6 +14,7 @@ import { fmtShortcut, MOD_KEY, SHIFT_KEY } from "@/lib/platform";
 import { AgentLauncherPanel } from "@/modules/agents/components/AgentLauncherPanel";
 import type { AgentLaunchRequest } from "@/modules/agents/lib/launcher";
 import {
+  AiBrowserIcon,
   ArrowRight01Icon,
   ComputerTerminal02Icon,
   GitBranchIcon,
@@ -21,10 +22,9 @@ import {
   IncognitoIcon,
   PencilEdit02Icon,
   PlusSignIcon,
-  RoboticIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 type Props = {
   onNew: () => void;
@@ -47,19 +47,24 @@ export function NewTabMenu({
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [launcherOpen, setLauncherOpen] = useState(false);
+  const openLauncherAfterMenuClose = useRef(false);
+  const openMenuAfterLauncherClose = useRef(false);
 
   const onMenuOpenChange = (next: boolean) => {
-    if (next) setLauncherOpen(false);
+    if (next) {
+      openLauncherAfterMenuClose.current = false;
+      setLauncherOpen(false);
+    }
     setMenuOpen(next);
   };
 
   const openLauncher = () => {
-    setTimeout(() => setLauncherOpen(true), 0);
+    openLauncherAfterMenuClose.current = true;
   };
 
   const backToMenu = () => {
+    openMenuAfterLauncherClose.current = true;
     setLauncherOpen(false);
-    setTimeout(() => setMenuOpen(true), 0);
   };
 
   return (
@@ -80,7 +85,13 @@ export function NewTabMenu({
             <DropdownMenuContent
               align="start"
               className="min-w-44"
-              onCloseAutoFocus={(event) => event.preventDefault()}
+              onCloseAutoFocus={(event) => {
+                event.preventDefault();
+                if (!openLauncherAfterMenuClose.current) return;
+
+                openLauncherAfterMenuClose.current = false;
+                requestAnimationFrame(() => setLauncherOpen(true));
+              }}
             >
               <DropdownMenuItem onSelect={onNew}>
                 <HugeiconsIcon
@@ -106,7 +117,7 @@ export function NewTabMenu({
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={openLauncher}>
                 <HugeiconsIcon
-                  icon={RoboticIcon}
+                  icon={AiBrowserIcon}
                   size={14}
                   strokeWidth={1.75}
                 />
@@ -166,7 +177,13 @@ export function NewTabMenu({
       <PopoverContent
         align="start"
         sideOffset={6}
-        onCloseAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (!openMenuAfterLauncherClose.current) return;
+
+          openMenuAfterLauncherClose.current = false;
+          requestAnimationFrame(() => setMenuOpen(true));
+        }}
         className="w-[340px] gap-0 overflow-hidden rounded-2xl p-1.5"
       >
         <AgentLauncherPanel

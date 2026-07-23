@@ -1,10 +1,10 @@
 import {
+  AiBrowserIcon,
   ChatGptIcon,
   ClaudeIcon,
   CodeIcon,
   GoogleGeminiIcon,
-  GrokIcon,
-  RoboticIcon,
+  Grok02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 
@@ -33,10 +33,10 @@ function iconFor(agent: string): IconSvgElement {
   if (a.includes("claude")) return ClaudeIcon;
   if (a.includes("gemini")) return GoogleGeminiIcon;
   if (a.includes("opencode")) return CodeIcon;
-  if (a.includes("grok")) return GrokIcon;
+  if (a.includes("grok")) return Grok02Icon;
   if (a.includes("codex") || a.includes("gpt") || a.includes("openai"))
     return ChatGptIcon;
-  return RoboticIcon;
+  return AiBrowserIcon;
 }
 
 export function AgentIcon({
