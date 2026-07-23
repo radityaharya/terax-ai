@@ -1,5 +1,9 @@
 import { isMarkdownPath } from "@/lib/utils";
 import {
+  createAgentPanePlan,
+  type AgentInstanceCount,
+} from "@/modules/agents/lib/launcher";
+import {
   findLeafCwd,
   hasLeaf,
   leafIds,
@@ -446,24 +450,40 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     ).__teraxNewBlockTab = newBlockTab;
   }, [newBlockTab]);
 
-  const newAgentTab = useCallback((cwd: string | undefined, title: string) => {
-    const tabId = nextIdRef.current++;
-    const leafId = nextIdRef.current++;
-    setTabs((t) => [
-      ...t,
-      {
-        id: tabId,
-        kind: "terminal",
-        spaceId: activeSpaceIdRef.current,
-        title,
+  const newAgentGroupTab = useCallback(
+    (cwd: string | undefined, title: string, instances: AgentInstanceCount) => {
+      const tabId = nextIdRef.current++;
+      const { paneTree, leafIds: agentLeafIds } = createAgentPanePlan(
+        instances,
+        () => nextIdRef.current++,
         cwd,
-        paneTree: { kind: "leaf", id: leafId, cwd },
-        activeLeafId: leafId,
-      },
-    ]);
-    setActiveId(tabId);
-    return { tabId, leafId };
-  }, []);
+      );
+      setTabs((t) => [
+        ...t,
+        {
+          id: tabId,
+          kind: "terminal",
+          spaceId: activeSpaceIdRef.current,
+          title,
+          customTitle: title,
+          cwd,
+          paneTree,
+          activeLeafId: agentLeafIds[0],
+        },
+      ]);
+      setActiveId(tabId);
+      return { tabId, leafIds: agentLeafIds };
+    },
+    [],
+  );
+
+  const newAgentTab = useCallback(
+    (cwd: string | undefined, title: string) => {
+      const { tabId, leafIds: agentLeafIds } = newAgentGroupTab(cwd, title, 1);
+      return { tabId, leafId: agentLeafIds[0] };
+    },
+    [newAgentGroupTab],
+  );
 
   const newPrivateTab = useCallback((cwd?: string) => {
     const tabId = nextIdRef.current++;
@@ -1176,6 +1196,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newTab,
     newBlockTab,
     newAgentTab,
+    newAgentGroupTab,
     newPrivateTab,
     openFileTab,
     pinTab,
