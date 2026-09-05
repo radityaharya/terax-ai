@@ -81,8 +81,8 @@ export class GlyphAtlas {
     COLOR_ATLAS_SIZE,
   );
   private readonly simpleGlyphs = new Map<number, GlyphEntry>();
-  private readonly complexGlyphs = new Map<string, GlyphEntry>();
-  private readonly coveragePixels = new Uint8Array(
+  private readonly complexGlyphs = new Map<number, Map<string, GlyphEntry>>();
+  private coveragePixels = new Uint8Array(
     COVERAGE_ATLAS_SIZE * COVERAGE_ATLAS_SIZE,
   );
   private colorPixels: Uint8Array | null = null;
@@ -94,24 +94,26 @@ export class GlyphAtlas {
   private colorView: GPUTextureView;
   private coverageDirty: DirtyRectangle | null = null;
   private colorDirty: DirtyRectangle | null = null;
+  private coverageUsed: DirtyRectangle | null = null;
+  private colorUsed: DirtyRectangle | null = null;
   private readonly encodedUploadBuffers: GPUBuffer[] = [];
+  private readonly submittedUploadBuffers = new Set<GPUBuffer>();
+  private readonly retiredTextures: GPUTexture[] = [];
+  private readonly submittedTextures = new Set<GPUTexture>();
   private uploadCountValue = 0;
   private uploadedBytesValue = 0;
   private resetCountValue = 0;
   private capacityFailureCountValue = 0;
   private generationValue = 1;
+  private gpuActive = true;
   private disposed = false;
 
   constructor(
-    private readonly device: GPUDevice,
+    private device: GPUDevice,
     private readonly metrics: TerminalFontMetrics,
     private readonly scale: number,
     private readonly onReset: () => void,
   ) {
-    this.coverageTexture = this.createCoverageTexture();
-    this.coverageView = this.coverageTexture.createView();
-    this.colorTexture = this.createPlaceholderColorTexture();
-    this.colorView = this.colorTexture.createView();
     this.rasterCanvas.width = RASTER_SIZE;
     this.rasterCanvas.height = RASTER_SIZE;
     const context = this.rasterCanvas.getContext("2d", {
@@ -119,17 +121,41 @@ export class GlyphAtlas {
     });
     if (!context) throw new Error("Glyph rasterization is unavailable");
     this.rasterContext = context;
+    [
+      this.coverageTexture,
+      this.coverageView,
+      this.colorTexture,
+      this.colorView,
+    ] = this.allocateTextures();
   }
 
   get byteSize(): number {
+    if (!this.gpuActive || this.disposed) return 0;
+    let retiredBytes = 0;
+    for (const texture of this.retiredTextures)
+      retiredBytes += textureBytes(texture);
+    for (const texture of this.submittedTextures)
+      retiredBytes += textureBytes(texture);
     return (
+      retiredBytes +
       COVERAGE_ATLAS_SIZE * COVERAGE_ATLAS_SIZE +
       (this.colorPixels ? COLOR_ATLAS_SIZE * COLOR_ATLAS_SIZE * 4 : 4)
     );
   }
 
   get cpuByteSize(): number {
-    return this.coveragePixels.byteLength + (this.colorPixels?.byteLength ?? 0);
+    return (
+      this.coveragePixels.byteLength +
+      (this.colorPixels?.byteLength ?? 0) +
+      (this.disposed || !this.gpuActive ? 0 : RASTER_SIZE * RASTER_SIZE * 4)
+    );
+  }
+
+  get stagingBytes(): number {
+    let total = 0;
+    for (const buffer of this.encodedUploadBuffers) total += buffer.size;
+    for (const buffer of this.submittedUploadBuffers) total += buffer.size;
+    return total;
   }
 
   get generation(): number {
@@ -145,7 +171,11 @@ export class GlyphAtlas {
   }
 
   get glyphCount(): number {
-    return this.simpleGlyphs.size + this.complexGlyphs.size;
+    let complexCount = 0;
+    for (const glyphs of this.complexGlyphs.values()) {
+      complexCount += glyphs.size;
+    }
+    return this.simpleGlyphs.size + complexCount;
   }
 
   get uploadCount(): number {
@@ -165,7 +195,38 @@ export class GlyphAtlas {
   }
 
   get hasEncodedUploads(): boolean {
-    return this.encodedUploadBuffers.length > 0;
+    return (
+      this.encodedUploadBuffers.length > 0 || this.retiredTextures.length > 0
+    );
+  }
+
+  suspend(): void {
+    if (this.disposed || !this.gpuActive) return;
+    this.gpuActive = false;
+    this.coverageTexture.destroy();
+    this.colorTexture.destroy();
+    this.releaseUploads();
+    this.rasterCanvas.width = 1;
+    this.rasterCanvas.height = 1;
+  }
+
+  resume(device: GPUDevice): void {
+    this.assertLive();
+    if (this.gpuActive && this.device === device) return;
+    this.suspend();
+    this.device = device;
+    [
+      this.coverageTexture,
+      this.coverageView,
+      this.colorTexture,
+      this.colorView,
+    ] = this.allocateTextures();
+    this.gpuActive = true;
+    this.rasterCanvas.width = RASTER_SIZE;
+    this.rasterCanvas.height = RASTER_SIZE;
+    this.coverageDirty = this.coverageUsed ? { ...this.coverageUsed } : null;
+    this.colorDirty = this.colorUsed ? { ...this.colorUsed } : null;
+    this.bumpGeneration();
   }
 
   glyph(codepoint: number, grapheme: string | null, flags: number): GlyphEntry {
@@ -181,11 +242,15 @@ export class GlyphAtlas {
       return entry;
     }
 
-    const key = `${style}:${grapheme}`;
-    const cached = this.complexGlyphs.get(key);
+    let styledGlyphs = this.complexGlyphs.get(style);
+    const cached = styledGlyphs?.get(grapheme);
     if (cached) return cached;
     const entry = this.rasterize(grapheme, flags);
-    this.complexGlyphs.set(key, entry);
+    if (!styledGlyphs) {
+      styledGlyphs = new Map();
+      this.complexGlyphs.set(style, styledGlyphs);
+    }
+    styledGlyphs.set(grapheme, entry);
     return entry;
   }
 
@@ -228,6 +293,7 @@ export class GlyphAtlas {
       usage: GPUBufferUsage.COPY_SRC,
       mappedAtCreation: true,
     });
+    this.encodedUploadBuffers.push(staging);
     const mapped = new Uint8Array(staging.getMappedRange());
     for (let index = 0; index < uploads.length; index += 1) {
       writeTextureUpload(mapped, offsets[index], uploads[index]);
@@ -250,7 +316,6 @@ export class GlyphAtlas {
         [upload.width, upload.height, 1],
       );
     }
-    this.encodedUploadBuffers.push(staging);
     this.uploadCountValue += uploads.length;
     this.uploadedBytesValue += totalBytes;
     this.coverageDirty = null;
@@ -260,12 +325,20 @@ export class GlyphAtlas {
   completeSubmission(
     completion = this.device.queue.onSubmittedWorkDone(),
   ): void {
-    if (this.encodedUploadBuffers.length === 0) return;
+    if (!this.hasEncodedUploads) return;
+    const textures = this.retiredTextures.splice(0);
+    for (const texture of textures) this.submittedTextures.add(texture);
     const buffers = this.encodedUploadBuffers.splice(0);
+    for (const buffer of buffers) this.submittedUploadBuffers.add(buffer);
     void completion
       .catch(() => undefined)
       .then(() => {
-        for (const buffer of buffers) buffer.destroy();
+        for (const texture of textures) {
+          if (this.submittedTextures.delete(texture)) texture.destroy();
+        }
+        for (const buffer of buffers) {
+          if (this.submittedUploadBuffers.delete(buffer)) buffer.destroy();
+        }
       });
   }
 
@@ -281,16 +354,25 @@ export class GlyphAtlas {
 
   dispose(): void {
     if (this.disposed) return;
+    this.suspend();
     this.disposed = true;
-    this.coverageTexture.destroy();
-    this.colorTexture.destroy();
-    for (const buffer of this.encodedUploadBuffers) buffer.destroy();
-    this.encodedUploadBuffers.length = 0;
     this.simpleGlyphs.clear();
     this.complexGlyphs.clear();
     this.coverageDirty = null;
     this.colorDirty = null;
     this.colorPixels = null;
+    this.coveragePixels = new Uint8Array(0);
+  }
+
+  private releaseUploads(): void {
+    for (const texture of this.retiredTextures) texture.destroy();
+    this.retiredTextures.length = 0;
+    for (const texture of this.submittedTextures) texture.destroy();
+    this.submittedTextures.clear();
+    for (const buffer of this.encodedUploadBuffers) buffer.destroy();
+    this.encodedUploadBuffers.length = 0;
+    for (const buffer of this.submittedUploadBuffers) buffer.destroy();
+    this.submittedUploadBuffers.clear();
   }
 
   private rasterize(text: string, flags: number): GlyphEntry {
@@ -355,6 +437,13 @@ export class GlyphAtlas {
         const target = ((region.y + row) * COLOR_ATLAS_SIZE + region.x) * 4;
         colorPixels.set(rgba.subarray(source, source + width * 4), target);
       }
+      this.colorUsed = mergeDirty(
+        this.colorUsed,
+        region.x,
+        region.y,
+        width,
+        height,
+      );
       this.colorDirty = mergeDirty(
         this.colorDirty,
         region.x,
@@ -372,6 +461,13 @@ export class GlyphAtlas {
           target += 1;
         }
       }
+      this.coverageUsed = mergeDirty(
+        this.coverageUsed,
+        region.x,
+        region.y,
+        width,
+        height,
+      );
       this.coverageDirty = mergeDirty(
         this.coverageDirty,
         region.x,
@@ -398,22 +494,30 @@ export class GlyphAtlas {
 
   private ensureColorAtlas(): void {
     if (this.colorPixels) return;
+    const texture = this.createColorTexture();
+    let view: GPUTextureView;
+    try {
+      view = texture.createView();
+    } catch (error) {
+      texture.destroy();
+      throw error;
+    }
     this.colorPixels = new Uint8Array(COLOR_ATLAS_SIZE * COLOR_ATLAS_SIZE * 4);
-    this.colorTexture.destroy();
-    this.colorTexture = this.createColorTexture();
-    this.colorView = this.colorTexture.createView();
+    this.retiredTextures.push(this.colorTexture);
+    this.colorTexture = texture;
+    this.colorView = view;
     this.bumpGeneration();
   }
 
   private reset(): void {
-    this.coverageTexture.destroy();
-    this.coverageTexture = this.createCoverageTexture();
-    this.coverageView = this.coverageTexture.createView();
-    this.colorTexture.destroy();
-    this.colorTexture = this.colorPixels
-      ? this.createColorTexture()
-      : this.createPlaceholderColorTexture();
-    this.colorView = this.colorTexture.createView();
+    const textures = this.allocateTextures();
+    this.retiredTextures.push(this.coverageTexture, this.colorTexture);
+    [
+      this.coverageTexture,
+      this.coverageView,
+      this.colorTexture,
+      this.colorView,
+    ] = textures;
     this.coverageAllocator.reset();
     this.colorAllocator.reset();
     this.simpleGlyphs.clear();
@@ -422,12 +526,35 @@ export class GlyphAtlas {
     this.colorPixels?.fill(0);
     this.coverageDirty = null;
     this.colorDirty = null;
+    this.coverageUsed = null;
+    this.colorUsed = null;
     this.bumpGeneration();
   }
 
   private bumpGeneration(): void {
     this.generationValue += 1;
     this.onReset();
+  }
+
+  private allocateTextures(): [
+    GPUTexture,
+    GPUTextureView,
+    GPUTexture,
+    GPUTextureView,
+  ] {
+    const coverage = this.createCoverageTexture();
+    let color: GPUTexture | null = null;
+    try {
+      const coverageView = coverage.createView();
+      color = this.colorPixels
+        ? this.createColorTexture()
+        : this.createPlaceholderColorTexture();
+      return [coverage, coverageView, color, color.createView()];
+    } catch (error) {
+      coverage.destroy();
+      color?.destroy();
+      throw error;
+    }
   }
 
   private createCoverageTexture(): GPUTexture {
@@ -523,4 +650,10 @@ function mergeDirty(
 
 function align(value: number, alignment: number): number {
   return Math.ceil(value / alignment) * alignment;
+}
+
+function textureBytes(texture: GPUTexture): number {
+  return (
+    texture.width * texture.height * (texture.format === "r8unorm" ? 1 : 4)
+  );
 }

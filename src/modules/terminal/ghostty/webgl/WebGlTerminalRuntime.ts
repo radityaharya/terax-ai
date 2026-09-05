@@ -1,3 +1,13 @@
+import { SurfaceFramePacer } from "@/modules/terminal/ghostty/SurfaceFramePacer";
+import {
+  subscribeWindowPresentation,
+  terminalWindowPresentation,
+} from "@/modules/terminal/ghostty/windowPresentation";
+import {
+  bindTerminalWindowFocus,
+  terminalFrameIntervalMs,
+  terminalWindowFocused,
+} from "../renderScheduling";
 import {
   rendererProfileKey,
   type WebGlRendererProfile,
@@ -11,17 +21,22 @@ export const WEBGL_RENDERER_IDLE_TTL_MS = 30_000;
 export interface WebGlRuntimeSurface {
   renderFrame(renderer: XtermWebGlRenderer): boolean;
   handleRendererError(error: Error): void;
+  isFocused(): boolean;
 }
 
 export type WebGlRuntimeDependencies = {
   readonly createRenderer: () => XtermWebGlRenderer;
   readonly now: () => number;
   readonly isVisible: () => boolean;
-  readonly requestFrame: (callback: () => void) => number;
+  readonly isWindowFocused: () => boolean;
+  readonly requestFrame: (callback: (frameAt?: number) => void) => number;
   readonly cancelFrame: (handle: number) => void;
   readonly setTimer: (callback: () => void, delayMs: number) => number;
   readonly clearTimer: (handle: number) => void;
   readonly bindVisibility: (callback: () => void) => () => void;
+  readonly bindWindowFocus: (
+    callback: (focused: boolean) => void,
+  ) => () => void;
 };
 
 type RendererSlot = {
@@ -39,6 +54,9 @@ export type WebGlRuntimeStats = {
   readonly submittedFrames: number;
   readonly atlasBytes: number;
   readonly cpuBufferBytes: number;
+  readonly windowFocused: boolean;
+  readonly targetFrameIntervalMs: number;
+  readonly frameScheduled: boolean;
 };
 
 /**
@@ -49,17 +67,26 @@ export type WebGlRuntimeStats = {
 export class WebGlTerminalRuntime {
   private readonly slots: RendererSlot[] = [];
   private readonly leases = new Map<WebGlRuntimeSurface, RendererSlot>();
-  private readonly dirtySurfaces = new Set<WebGlRuntimeSurface>();
+  private dirtySurfaces = new Set<WebGlRuntimeSurface>();
+  private renderSurfaces = new Set<WebGlRuntimeSurface>();
   private animationFrame: number | null = null;
+  private frameTimer: number | null = null;
   private idleSweepTimer: number | null = null;
   private submittedFrames = 0;
+  private windowFocused: boolean;
+  private readonly pacer = new SurfaceFramePacer();
   private disposed = false;
   private readonly unbindVisibility: () => void;
+  private readonly unbindWindowFocus: () => void;
 
   constructor(
     private readonly dependencies: WebGlRuntimeDependencies = browserDependencies(),
   ) {
+    this.windowFocused = dependencies.isWindowFocused();
     this.unbindVisibility = dependencies.bindVisibility(this.handleVisibility);
+    this.unbindWindowFocus = dependencies.bindWindowFocus(
+      this.handleWindowFocus,
+    );
   }
 
   acquire(
@@ -129,7 +156,7 @@ export class WebGlTerminalRuntime {
       }
       throw error;
     }
-    this.clearIdleSweepTimer();
+    this.scheduleIdleSweep();
     return slot.renderer;
   }
 
@@ -138,13 +165,11 @@ export class WebGlTerminalRuntime {
     if (!slot) return;
     this.leases.delete(surface);
     this.dirtySurfaces.delete(surface);
+    this.renderSurfaces.delete(surface);
     slot.renderer.detach();
     slot.owner = null;
     slot.lastUsed = this.dependencies.now();
-    if (this.dirtySurfaces.size === 0 && this.animationFrame !== null) {
-      this.dependencies.cancelFrame(this.animationFrame);
-      this.animationFrame = null;
-    }
+    if (this.dirtySurfaces.size === 0) this.cancelScheduledFrame();
     this.scheduleIdleSweep();
   }
 
@@ -153,14 +178,21 @@ export class WebGlTerminalRuntime {
     if (!slot) return false;
     this.leases.delete(surface);
     this.dirtySurfaces.delete(surface);
+    this.renderSurfaces.delete(surface);
     slot.renderer.detach();
     slot.renderer.dispose();
     this.slots.splice(this.slots.indexOf(slot), 1);
-    if (this.dirtySurfaces.size === 0 && this.animationFrame !== null) {
-      this.dependencies.cancelFrame(this.animationFrame);
-      this.animationFrame = null;
-    }
+    if (this.dirtySurfaces.size === 0) this.cancelScheduledFrame();
     return true;
+  }
+
+  trimForHiddenDocument(): void {
+    for (const slot of [...this.slots]) {
+      if (slot.owner) continue;
+      slot.renderer.dispose();
+      this.slots.splice(this.slots.indexOf(slot), 1);
+    }
+    this.clearIdleSweepTimer();
   }
 
   schedule(surface: WebGlRuntimeSurface): void {
@@ -185,6 +217,12 @@ export class WebGlTerminalRuntime {
       submittedFrames: this.submittedFrames,
       atlasBytes,
       cpuBufferBytes,
+      windowFocused: this.windowFocused,
+      targetFrameIntervalMs: terminalFrameIntervalMs(
+        this.windowFocused,
+        this.hasFocusedSurface(),
+      ),
+      frameScheduled: this.animationFrame !== null || this.frameTimer !== null,
     };
   }
 
@@ -192,56 +230,106 @@ export class WebGlTerminalRuntime {
     if (this.disposed) return;
     this.disposed = true;
     this.unbindVisibility();
-    if (this.animationFrame !== null) {
-      this.dependencies.cancelFrame(this.animationFrame);
-    }
-    this.animationFrame = null;
+    this.unbindWindowFocus();
+    this.cancelScheduledFrame();
     this.clearIdleSweepTimer();
     this.dirtySurfaces.clear();
+    this.renderSurfaces.clear();
     this.leases.clear();
     for (const slot of this.slots) slot.renderer.dispose();
     this.slots.length = 0;
   }
 
   private readonly handleVisibility = (): void => {
-    if (this.dependencies.isVisible()) this.requestFrame();
+    if (this.dependencies.isVisible()) {
+      this.pacer.reset();
+      this.requestFrame();
+    } else this.cancelScheduledFrame();
+  };
+
+  private readonly handleWindowFocus = (focused: boolean): void => {
+    if (this.windowFocused === focused) return;
+    this.windowFocused = focused;
+    this.cancelScheduledFrame();
+    this.requestFrame();
   };
 
   private requestFrame(): void {
     if (
       this.animationFrame !== null ||
+      this.frameTimer !== null ||
       this.dirtySurfaces.size === 0 ||
       !this.dependencies.isVisible()
     ) {
       return;
     }
-    this.animationFrame = this.dependencies.requestFrame(() =>
-      this.flushFrame(),
+    const delay = this.pacer.delay(
+      this.dirtySurfaces,
+      this.windowFocused,
+      this.dependencies.now(),
+    );
+    if (delay > 1) {
+      this.frameTimer = this.dependencies.setTimer(() => {
+        this.frameTimer = null;
+        this.requestFrame();
+      }, delay);
+      return;
+    }
+    this.animationFrame = this.dependencies.requestFrame((frameAt) =>
+      this.flushFrame(frameAt),
     );
   }
 
-  private flushFrame(): void {
+  private flushFrame(frameAt = this.dependencies.now()): void {
     this.animationFrame = null;
     if (this.disposed || this.dirtySurfaces.size === 0) return;
     if (!this.dependencies.isVisible()) return;
-    const batch = [...this.dirtySurfaces];
-    this.dirtySurfaces.clear();
+    const batch = this.dirtySurfaces;
+    this.dirtySurfaces = this.renderSurfaces;
+    this.renderSurfaces = batch;
     for (const surface of batch) {
       const slot = this.leases.get(surface);
       if (!slot) continue;
+      if (!this.pacer.due(surface, this.windowFocused, frameAt)) {
+        this.dirtySurfaces.add(surface);
+        continue;
+      }
       try {
-        if (surface.renderFrame(slot.renderer)) this.submittedFrames += 1;
+        if (surface.renderFrame(slot.renderer)) {
+          this.pacer.presented(surface, frameAt);
+          this.submittedFrames += 1;
+        }
       } catch (error) {
         surface.handleRendererError(toError(error));
       }
     }
+    batch.clear();
     this.requestFrame();
+  }
+
+  private hasFocusedSurface(): boolean {
+    for (const surface of this.leases.keys()) {
+      if (surface.isFocused()) return true;
+    }
+    return false;
+  }
+
+  private cancelScheduledFrame(): void {
+    if (this.animationFrame !== null) {
+      this.dependencies.cancelFrame(this.animationFrame);
+    }
+    this.animationFrame = null;
+    if (this.frameTimer !== null) {
+      this.dependencies.clearTimer(this.frameTimer);
+    }
+    this.frameTimer = null;
   }
 
   private scheduleIdleSweep(): void {
     if (
       this.idleSweepTimer !== null ||
-      this.slots.length <= MIN_WARM_WEBGL_RENDERER_SLOTS
+      this.slots.length <= MIN_WARM_WEBGL_RENDERER_SLOTS ||
+      !this.slots.some((slot) => !slot.owner)
     ) {
       return;
     }
@@ -308,14 +396,13 @@ function browserDependencies(): WebGlRuntimeDependencies {
   return {
     createRenderer: () => new XtermWebGlRenderer(),
     now: () => performance.now(),
-    isVisible: () => document.visibilityState === "visible",
+    isVisible: () => terminalWindowPresentation().visible,
+    isWindowFocused: terminalWindowFocused,
     requestFrame: (callback) => requestAnimationFrame(callback),
     cancelFrame: (handle) => cancelAnimationFrame(handle),
     setTimer: (callback, delayMs) => window.setTimeout(callback, delayMs),
     clearTimer: (handle) => window.clearTimeout(handle),
-    bindVisibility: (callback) => {
-      document.addEventListener("visibilitychange", callback);
-      return () => document.removeEventListener("visibilitychange", callback);
-    },
+    bindVisibility: (callback) => subscribeWindowPresentation(callback),
+    bindWindowFocus: bindTerminalWindowFocus,
   };
 }

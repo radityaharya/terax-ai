@@ -74,6 +74,21 @@ describe("CanvasBackingStore", () => {
     });
     expect(intrinsicWrites).toBe(0);
   });
+
+  it("keeps intrinsic and CSS sizes exact while shrinking", () => {
+    const canvas = fakeCanvas(1_024, 768);
+    canvas.style.width = "512px";
+    canvas.style.height = "384px";
+    const backing = new CanvasBackingStore(canvas);
+
+    expect(backing.stage(700, 500, 350, 250)).toBe(true);
+    expect(backing.commit()).toBe(true);
+    expect(canvas).toMatchObject({
+      width: 700,
+      height: 500,
+      style: { width: "350px", height: "250px" },
+    });
+  });
 });
 
 function fakeCanvas(width: number, height: number) {

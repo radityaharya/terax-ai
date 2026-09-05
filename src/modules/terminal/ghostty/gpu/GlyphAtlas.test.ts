@@ -14,7 +14,7 @@ describe("WebGPU GlyphAtlas", () => {
 
     expect(atlas.hasEncodedUploads).toBe(true);
     expect(atlas.byteSize).toBe(1_048_580);
-    expect(atlas.cpuByteSize).toBe(1_048_576);
+    expect(atlas.cpuByteSize).toBe(1_310_720);
     expect(harness.createBuffer).toHaveBeenCalledOnce();
     expect(harness.copyBufferToTexture).toHaveBeenCalledOnce();
     expect(harness.copyBufferToTexture.mock.calls[0][0].bytesPerRow).toBe(256);
@@ -38,9 +38,68 @@ describe("WebGPU GlyphAtlas", () => {
     const glyph = atlas.glyph(0x1f600, null, 0);
 
     expect(glyph.intrinsicColor).toBe(true);
-    expect(atlas.byteSize).toBe(2_097_152);
-    expect(atlas.cpuByteSize).toBe(2_097_152);
+    expect(atlas.byteSize).toBe(2_097_156);
+    expect(atlas.cpuByteSize).toBe(2_359_296);
     expect(onReset).toHaveBeenCalledOnce();
+    atlas.dispose();
+  });
+
+  it("releases submitted staging allocations on disposal even if the GPU completion is delayed", async () => {
+    const harness = createHarness("monochrome");
+    const atlas = new GlyphAtlas(harness.device, METRICS, 1, vi.fn());
+    atlas.glyph(65, null, 0);
+    atlas.encodePendingUploads(harness.encoder);
+    let resolve: (value: undefined) => void = () => {};
+    atlas.completeSubmission(
+      new Promise<undefined>((done) => {
+        resolve = done;
+      }),
+    );
+    expect(atlas.stagingBytes).toBeGreaterThan(0);
+    atlas.dispose();
+    expect(atlas.stagingBytes).toBe(0);
+    expect(atlas.cpuByteSize).toBe(0);
+    expect(harness.stagingDestroy).toHaveBeenCalledOnce();
+    resolve(undefined);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(harness.stagingDestroy).toHaveBeenCalledOnce();
+  });
+
+  it("keeps replaced textures alive through submission and releases them on completion", async () => {
+    const h = createHarness("color");
+    const atlas = new GlyphAtlas(h.device, METRICS, 1, vi.fn());
+    const createTexture = vi.mocked(h.device.createTexture);
+    const placeholder = createTexture.mock.results[1].value;
+    atlas.glyph(0x1f600, null, 0);
+    expect(placeholder.destroy).not.toHaveBeenCalled();
+    let complete: (value: undefined) => void = () => {};
+    atlas.completeSubmission(
+      new Promise<undefined>((resolve) => {
+        complete = resolve;
+      }),
+    );
+    expect(placeholder.destroy).not.toHaveBeenCalled();
+    complete(undefined);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(placeholder.destroy).toHaveBeenCalledOnce();
+    atlas.dispose();
+  });
+
+  it("cleans partial texture allocations when resuming fails", () => {
+    const h = createHarness("monochrome");
+    const atlas = new GlyphAtlas(h.device, METRICS, 1, vi.fn());
+    atlas.suspend();
+    const texture = { createView: vi.fn(() => ({})), destroy: vi.fn() };
+    vi.mocked(h.device.createTexture)
+      .mockReturnValueOnce(texture as unknown as GPUTexture)
+      .mockImplementationOnce(() => {
+        throw new Error("allocation failed");
+      });
+    expect(() => atlas.resume(h.device)).toThrow("allocation failed");
+    expect(texture.destroy).toHaveBeenCalledOnce();
+    expect(atlas.byteSize).toBe(0);
     atlas.dispose();
   });
 
@@ -63,6 +122,22 @@ describe("WebGPU GlyphAtlas", () => {
     expect(onReset).toHaveBeenCalledOnce();
     atlas.dispose();
   });
+
+  it("restores cached glyphs after GPU reclamation without rasterizing them again", () => {
+    const harness = createHarness("monochrome");
+    const atlas = new GlyphAtlas(harness.device, METRICS, 1, vi.fn());
+    const glyph = atlas.glyph(65, null, 0);
+    atlas.suspend();
+    expect(atlas.byteSize).toBe(0);
+    expect(atlas.cpuByteSize).toBe(1_048_576);
+    atlas.resume(harness.device);
+    expect(atlas.glyph(65, null, 0)).toBe(glyph);
+    expect(atlas.glyphCount).toBe(1);
+    expect(atlas.byteSize).toBe(1_048_580);
+    atlas.encodePendingUploads(harness.encoder);
+    expect(atlas.uploadedBytes).toBe(4_096);
+    atlas.dispose();
+  });
 });
 
 function createHarness(mode: "monochrome" | "color" | "large-monochrome") {
@@ -72,12 +147,16 @@ function createHarness(mode: "monochrome" | "color" | "large-monochrome") {
     const mapped = new ArrayBuffer(Number(descriptor.size));
     mappedBuffers.push(new Uint8Array(mapped));
     return {
+      size: descriptor.size,
       getMappedRange: vi.fn(() => mapped),
       unmap: vi.fn(),
       destroy: stagingDestroy,
     } as unknown as GPUBuffer;
   });
-  const createTexture = vi.fn(() => ({
+  const createTexture = vi.fn((descriptor: GPUTextureDescriptor) => ({
+    width: (descriptor.size as number[])[0],
+    height: (descriptor.size as number[])[1],
+    format: descriptor.format,
     createView: vi.fn(() => ({})),
     destroy: vi.fn(),
   })) as unknown as GPUDevice["createTexture"];

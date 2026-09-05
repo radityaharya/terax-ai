@@ -4,7 +4,7 @@ struct Screen {
   cursor_origin: vec2f,
   cursor_size: vec2f,
   text_blink_visible: f32,
-  padding: f32,
+  _padding: f32,
   cursor_color: vec4f,
   decoration: vec4f,
 }
@@ -116,7 +116,9 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
     input.pixel.y >= screen.cursor_origin.y &&
     input.pixel.x < cursor_end.x &&
     input.pixel.y < cursor_end.y;
-  if (in_cursor) { return screen.cursor_color; }
+  if (in_cursor) {
+    return screen.cursor_color;
+  }
   return decoration_color(input);
 }
 `;

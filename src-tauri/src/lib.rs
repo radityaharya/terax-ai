@@ -205,6 +205,8 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .setup(move |_app| {
+            #[cfg(target_os = "macos")]
+            modules::window_presentation::macos::install(_app.handle());
             if let Err(error) = control::start(_app.handle().clone(), control_for_setup.clone()) {
                 log::warn!("could not start Terax control server: {error}");
             }
@@ -227,6 +229,7 @@ pub fn run() {
             Ok(())
         })
         .manage(pty::PtyState::default())
+        .manage(modules::window_presentation::WindowPresentationState::default())
         .manage(control_state)
         .manage(shell::ShellState::default())
         .manage(secrets::SecretsState::default())
@@ -332,6 +335,7 @@ pub fn run() {
             history::history_list,
             vibrancy::window_backdrop_kind,
             vibrancy::window_set_backdrop,
+            modules::window_presentation::window_presentation_state,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -340,6 +344,8 @@ pub fn run() {
                 // Servers exit on stdin EOF, but destructors are not guaranteed
                 // on process exit; kill explicitly.
                 tauri::RunEvent::Exit => {
+                    #[cfg(target_os = "macos")]
+                    modules::window_presentation::macos::uninstall();
                     if let Some(state) = app.try_state::<lsp::LspState>() {
                         state.kill_all();
                     }

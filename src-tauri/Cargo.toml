@@ -77,6 +77,8 @@ keyring = { version = "3.6", default-features = false, features = [
 	"apple-native",
 ] }
 objc2 = "0.6"
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWindow", "NSWorkspace"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSUserDefaults"] }
 window-vibrancy = "0.8"
 

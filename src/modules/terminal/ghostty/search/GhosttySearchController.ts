@@ -8,6 +8,11 @@ const SEARCH_STEP_BUDGET = 256;
 
 type Direction = "next" | "previous";
 
+export type GhosttySearchSnapshot = {
+  readonly query: string;
+  readonly pendingDirection: Direction | null;
+};
+
 type Scheduler = {
   readonly request: (callback: () => void) => number;
   readonly cancel: (handle: number) => void;
@@ -20,6 +25,7 @@ export class GhosttySearchController implements TerminalSearchController {
   private pendingDirection: Direction | null = null;
   private scheduledStep: number | null = null;
   private disposed = false;
+  private suspended = false;
 
   constructor(
     private readonly model: GhosttyTerminalModelApi,
@@ -33,6 +39,28 @@ export class GhosttySearchController implements TerminalSearchController {
 
   findPrevious(query: string): boolean {
     return this.find(query, "previous");
+  }
+
+  snapshot(): GhosttySearchSnapshot {
+    return { query: this.query, pendingDirection: this.pendingDirection };
+  }
+
+  restore(snapshot: GhosttySearchSnapshot): void {
+    if (this.disposed) return;
+    this.cancelStep();
+    this.query = snapshot.query;
+    this.pendingDirection = snapshot.pendingDirection;
+    this.refresh();
+  }
+
+  suspend(): void {
+    this.suspended = true;
+    this.cancelStep();
+  }
+
+  resume(): void {
+    this.suspended = false;
+    this.refresh();
   }
 
   clearDecorations(): void {
@@ -74,7 +102,7 @@ export class GhosttySearchController implements TerminalSearchController {
   }
 
   private find(query: string, direction: Direction): boolean {
-    if (this.disposed || query.length === 0) return false;
+    if (this.disposed || this.suspended || query.length === 0) return false;
     if (query !== this.query) {
       this.cancelStep();
       this.query = query;
@@ -86,7 +114,7 @@ export class GhosttySearchController implements TerminalSearchController {
   }
 
   private step(): void {
-    if (this.disposed || !this.query) return;
+    if (this.disposed || this.suspended || !this.query) return;
     this.status = this.model.stepSearch(SEARCH_STEP_BUDGET);
     if (
       this.status.complete &&

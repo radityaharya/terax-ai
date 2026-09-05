@@ -1,3 +1,14 @@
+import { SurfaceFramePacer } from "@/modules/terminal/ghostty/SurfaceFramePacer";
+import {
+  subscribeWindowPresentation,
+  terminalWindowPresentation,
+} from "@/modules/terminal/ghostty/windowPresentation";
+import type { WindowPresentation } from "@/modules/terminal/ghostty/WindowPresentationPolicy";
+import {
+  bindTerminalWindowFocus,
+  terminalFrameIntervalMs,
+  terminalWindowFocused,
+} from "../renderScheduling";
 import { GlyphAtlas } from "./GlyphAtlas";
 import { COLOR_SHADER, GLYPH_SHADER } from "./shaders";
 import type { TerminalFontMetrics } from "./terminalVisuals";
@@ -6,6 +17,7 @@ import { CELL_INSTANCE_BYTES, PACKED_INSTANCE_BYTES } from "./WebGpuCellBuffer";
 const MAX_ATLAS_COUNT = 8;
 const MAX_WARM_UNUSED_ATLASES = 1;
 const ATLAS_IDLE_TTL_MS = 30_000;
+const MAX_IN_FLIGHT_FRAMES = 2;
 
 export type WebGpuSharedResources = {
   readonly device: GPUDevice;
@@ -25,7 +37,8 @@ export interface WebGpuRuntimeSurface {
   ): boolean;
   handleRuntimeReset(resources: WebGpuSharedResources): void;
   handleRuntimeError(error: Error): void;
-  handleVisibilityChange(visible: boolean): void;
+  handleVisibilityChange(visible: boolean, reclaim?: boolean): void;
+  isFocused(): boolean;
 }
 
 type AtlasEntry = {
@@ -61,14 +74,22 @@ export type WebGpuRuntimeStats = {
   readonly atlasCapacityFailures: number;
   readonly submittedFrames: number;
   readonly deviceRecoveries: number;
+  readonly recoveryPending: boolean;
   readonly pendingSurfaces: number;
+  readonly windowFocused: boolean;
+  readonly targetFrameIntervalMs: number;
+  readonly frameScheduled: boolean;
   readonly healthy: boolean;
   readonly lastError: string | null;
+  readonly inFlightFrames: number;
+  readonly peakInFlightFrames: number;
+  readonly stagingBytes: number;
 };
 
 export class WebGpuTerminalRuntime {
   private readonly surfaces = new Set<WebGpuRuntimeSurface>();
-  private readonly dirtySurfaces = new Set<WebGpuRuntimeSurface>();
+  private dirtySurfaces = new Set<WebGpuRuntimeSurface>();
+  private renderSurfaces = new Set<WebGpuRuntimeSurface>();
   private readonly atlases = new Map<string, AtlasEntry>();
   private device: GPUDevice | null = null;
   private format: GPUTextureFormat = "bgra8unorm";
@@ -78,12 +99,21 @@ export class WebGpuTerminalRuntime {
   private glyphBindGroupLayout: GPUBindGroupLayout | null = null;
   private glyphSampler: GPUSampler | null = null;
   private animationFrame: number | null = null;
+  private frameTimer: ReturnType<typeof setTimeout> | null = null;
+  private atlasReapDeferred = false;
   private atlasReapTimer: ReturnType<typeof setTimeout> | null = null;
   private recovering: Promise<void> | null = null;
+  private pendingRecoveryReason: string | null = null;
   private generation = 0;
   private submittedFrames = 0;
+  private inFlightFrames = 0;
+  private peakInFlightFrames = 0;
   private deviceRecoveries = 0;
   private fatalError: Error | null = null;
+  private windowFocused = terminalWindowFocused();
+  private readonly pacer = new SurfaceFramePacer();
+  private unbindWindowFocus: () => void = () => {};
+  private unbindPresentation: () => void = () => {};
   private disposed = false;
 
   private constructor() {}
@@ -92,7 +122,12 @@ export class WebGpuTerminalRuntime {
     const runtime = new WebGpuTerminalRuntime();
     try {
       await runtime.initializeDevice();
-      document.addEventListener("visibilitychange", runtime.handleVisibility);
+      runtime.unbindPresentation = subscribeWindowPresentation(
+        runtime.handleVisibility,
+      );
+      runtime.unbindWindowFocus = bindTerminalWindowFocus(
+        runtime.handleWindowFocus,
+      );
       return runtime;
     } catch (error) {
       runtime.dispose();
@@ -104,15 +139,18 @@ export class WebGpuTerminalRuntime {
     this.assertLive();
     this.assertHealthy();
     this.surfaces.add(surface);
+    const state = terminalWindowPresentation();
+    surface.handleVisibilityChange(
+      state.visible && !this.pendingRecoveryReason && !this.recovering,
+      state.reclaim,
+    );
   }
 
   unregister(surface: WebGpuRuntimeSurface): void {
     this.surfaces.delete(surface);
     this.dirtySurfaces.delete(surface);
-    if (this.dirtySurfaces.size === 0 && this.animationFrame !== null) {
-      cancelAnimationFrame(this.animationFrame);
-      this.animationFrame = null;
-    }
+    this.renderSurfaces.delete(surface);
+    if (this.dirtySurfaces.size === 0) this.cancelScheduledFrame();
   }
 
   schedule(surface: WebGpuRuntimeSurface): void {
@@ -168,6 +206,7 @@ export class WebGpuTerminalRuntime {
       };
       this.atlases.set(key, entry);
     }
+    entry.atlas.resume(this.resources().device);
     entry.references += 1;
     if (user) entry.users.add(user);
     entry.lastUsed = performance.now();
@@ -225,6 +264,7 @@ export class WebGpuTerminalRuntime {
     let isolatedAtlasCount = 0;
     let atlasResets = 0;
     let atlasCapacityFailures = 0;
+    let stagingBytes = 0;
     for (const entry of this.atlases.values()) {
       atlasBytes += entry.atlas.byteSize;
       atlasCpuBytes += entry.atlas.cpuByteSize;
@@ -233,6 +273,7 @@ export class WebGpuTerminalRuntime {
       atlasUploadedBytes += entry.atlas.uploadedBytes;
       atlasResets += entry.atlas.resetCount;
       atlasCapacityFailures += entry.atlas.capacityFailureCount;
+      stagingBytes += entry.atlas.stagingBytes;
       if (entry.references === 0) unusedAtlasCount += 1;
       if (entry.isolated) isolatedAtlasCount += 1;
     }
@@ -250,8 +291,19 @@ export class WebGpuTerminalRuntime {
       atlasResets,
       atlasCapacityFailures,
       submittedFrames: this.submittedFrames,
+      inFlightFrames: this.inFlightFrames,
+      peakInFlightFrames: this.peakInFlightFrames,
+      stagingBytes,
       deviceRecoveries: this.deviceRecoveries,
+      recoveryPending:
+        this.recovering !== null || this.pendingRecoveryReason !== null,
       pendingSurfaces: this.dirtySurfaces.size,
+      windowFocused: this.windowFocused,
+      targetFrameIntervalMs: terminalFrameIntervalMs(
+        this.windowFocused,
+        this.hasFocusedSurface(),
+      ),
+      frameScheduled: this.animationFrame !== null || this.frameTimer !== null,
       healthy: this.fatalError === null,
       lastError: this.fatalError?.message ?? null,
     };
@@ -260,79 +312,175 @@ export class WebGpuTerminalRuntime {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    document.removeEventListener("visibilitychange", this.handleVisibility);
-    if (this.animationFrame !== null) cancelAnimationFrame(this.animationFrame);
-    this.animationFrame = null;
+    this.unbindPresentation();
+    this.unbindWindowFocus();
+    this.cancelScheduledFrame();
     if (this.atlasReapTimer !== null) clearTimeout(this.atlasReapTimer);
     this.atlasReapTimer = null;
     this.dirtySurfaces.clear();
+    this.renderSurfaces.clear();
     this.surfaces.clear();
     for (const entry of this.atlases.values()) entry.atlas.dispose();
     this.atlases.clear();
-    this.device?.destroy();
-    this.device = null;
+    this.releaseDevice();
   }
 
-  private readonly handleVisibility = (): void => {
-    const visible = document.visibilityState === "visible";
-    for (const surface of this.surfaces) {
-      surface.handleVisibilityChange(visible);
+  private readonly handleVisibility = ({
+    visible,
+    reclaim,
+  }: WindowPresentation): void => {
+    if (visible && (this.pendingRecoveryReason || this.recovering)) {
+      if (this.pendingRecoveryReason)
+        void this.recoverDevice(this.pendingRecoveryReason);
+      return;
     }
-    if (visible) this.requestFrame();
+    if (!visible) this.cancelScheduledFrame();
+    for (const surface of this.surfaces) {
+      surface.handleVisibilityChange(visible, reclaim);
+    }
+    if (visible) {
+      this.pacer.reset();
+      this.requestFrame();
+    } else if (reclaim) {
+      for (const entry of this.atlases.values()) {
+        if (entry.references === 0) entry.atlas.suspend();
+      }
+    }
+  };
+
+  private readonly handleWindowFocus = (focused: boolean): void => {
+    if (this.windowFocused === focused) return;
+    this.windowFocused = focused;
+    this.cancelScheduledFrame();
+    this.requestFrame();
   };
 
   private requestFrame(): void {
     if (
+      this.disposed ||
       this.animationFrame !== null ||
+      this.frameTimer !== null ||
       this.recovering ||
+      this.pendingRecoveryReason ||
+      this.inFlightFrames >= MAX_IN_FLIGHT_FRAMES ||
       this.fatalError ||
       this.dirtySurfaces.size === 0 ||
-      document.visibilityState !== "visible"
+      !terminalWindowPresentation().visible
     ) {
       return;
     }
-    this.animationFrame = requestAnimationFrame(() => this.flushFrame());
+    const delay = this.pacer.delay(
+      this.dirtySurfaces,
+      this.windowFocused,
+      performance.now(),
+    );
+    if (delay > 1) {
+      this.frameTimer = setTimeout(() => {
+        this.frameTimer = null;
+        this.requestFrame();
+      }, delay);
+      return;
+    }
+    this.animationFrame = requestAnimationFrame((frameAt) =>
+      this.flushFrame(frameAt),
+    );
   }
 
-  private flushFrame(): void {
+  private flushFrame(frameAt = performance.now()): void {
     this.animationFrame = null;
-    if (this.disposed || this.recovering || this.dirtySurfaces.size === 0)
+    if (
+      this.disposed ||
+      this.recovering ||
+      this.pendingRecoveryReason ||
+      this.inFlightFrames >= MAX_IN_FLIGHT_FRAMES ||
+      !terminalWindowPresentation().visible ||
+      this.dirtySurfaces.size === 0
+    )
       return;
-
-    const batch = [...this.dirtySurfaces];
-    this.dirtySurfaces.clear();
+    const batch = this.dirtySurfaces;
+    this.dirtySurfaces = this.renderSurfaces;
+    this.renderSurfaces = batch;
     try {
       const resources = this.resources();
-      const encoder = resources.device.createCommandEncoder({
-        label: "Terax terminal window frame",
-      });
+      let encoder: GPUCommandEncoder | null = null;
       let rendered = false;
 
       for (const surface of batch) {
         if (!this.surfaces.has(surface)) continue;
+        if (!this.pacer.due(surface, this.windowFocused, frameAt)) {
+          this.dirtySurfaces.add(surface);
+          continue;
+        }
         try {
-          rendered = surface.renderFrame(encoder, resources) || rendered;
+          encoder ??= resources.device.createCommandEncoder({
+            label: "Terax terminal window frame",
+          });
+          if (surface.renderFrame(encoder, resources)) {
+            this.pacer.presented(surface, frameAt);
+            rendered = true;
+          }
         } catch (error) {
           surface.handleRuntimeError(toError(error));
         }
       }
 
-      if (rendered) {
+      let uploads = false;
+      for (const entry of this.atlases.values())
+        uploads ||= entry.atlas.hasEncodedUploads;
+      if (encoder && (rendered || uploads)) {
         resources.device.queue.submit([encoder.finish()]);
-        let completion: Promise<undefined> | null = null;
+        this.inFlightFrames += 1;
+        this.peakInFlightFrames = Math.max(
+          this.peakInFlightFrames,
+          this.inFlightFrames,
+        );
+        const generation = this.generation;
+        const completion = resources.device.queue.onSubmittedWorkDone();
         for (const entry of this.atlases.values()) {
           if (!entry.atlas.hasEncodedUploads) continue;
-          completion ??= resources.device.queue
-            .onSubmittedWorkDone()
-            .catch(() => undefined);
           entry.atlas.completeSubmission(completion);
         }
+        void completion.then(
+          () => {
+            if (this.disposed || generation !== this.generation) return;
+            this.inFlightFrames = Math.max(0, this.inFlightFrames - 1);
+            this.requestFrame();
+          },
+          (error: unknown) => {
+            if (
+              this.disposed ||
+              generation !== this.generation ||
+              this.fatalError
+            )
+              return;
+            void this.recoverDevice(toError(error).message);
+          },
+        );
         this.submittedFrames += 1;
       }
     } catch (error) {
       this.disable(toError(error));
     }
+    batch.clear();
+    if (this.atlasReapDeferred) {
+      this.atlasReapDeferred = false;
+      this.scheduleAtlasReap();
+    }
     this.requestFrame();
+  }
+
+  private hasFocusedSurface(): boolean {
+    for (const surface of this.surfaces) {
+      if (surface.isFocused()) return true;
+    }
+    return false;
+  }
+
+  private cancelScheduledFrame(): void {
+    if (this.animationFrame !== null) cancelAnimationFrame(this.animationFrame);
+    this.animationFrame = null;
+    if (this.frameTimer !== null) clearTimeout(this.frameTimer);
+    this.frameTimer = null;
   }
 
   private async initializeDevice(): Promise<void> {
@@ -342,10 +490,16 @@ export class WebGpuTerminalRuntime {
     const adapter = await navigator.gpu.requestAdapter({
       powerPreference: "low-power",
     });
+    this.assertLive();
     if (!adapter) throw new Error("No compatible WebGPU adapter was found");
     const device = await adapter.requestDevice({
       label: "Terax shared terminal renderer",
     });
+    if (this.disposed || this.fatalError) {
+      device.destroy();
+      this.assertLive();
+      this.assertHealthy();
+    }
     device.addEventListener("uncapturederror", (event) => {
       if (this.disposed || this.device !== device) return;
       this.disable(
@@ -354,9 +508,10 @@ export class WebGpuTerminalRuntime {
     });
 
     this.device = device;
-    this.format = navigator.gpu.getPreferredCanvasFormat();
-    await this.createSharedResources(device, this.format);
+    this.inFlightFrames = 0;
     this.generation += 1;
+    this.format = navigator.gpu.getPreferredCanvasFormat();
+    let initialized = false;
     const generation = this.generation;
     void device.lost.then((info) => {
       if (
@@ -364,9 +519,20 @@ export class WebGpuTerminalRuntime {
         !this.fatalError &&
         generation === this.generation
       ) {
-        void this.recoverDevice(info.message || String(info.reason));
+        const reason = info.message || String(info.reason);
+        if (!initialized || this.recovering) {
+          this.disable(
+            new Error(
+              `WebGPU device was lost during initialization: ${reason}`,
+            ),
+          );
+        } else void this.recoverDevice(reason);
       }
     });
+    await this.createSharedResources(device, this.format);
+    this.assertLive();
+    this.assertHealthy();
+    initialized = true;
   }
 
   private async createSharedResources(
@@ -465,10 +631,14 @@ export class WebGpuTerminalRuntime {
       },
       primitive: { topology: "triangle-list" },
     };
-    [this.colorPipeline, this.glyphPipeline] = await Promise.all([
+    const [colorPipeline, glyphPipeline] = await Promise.all([
       device.createRenderPipelineAsync(colorPipelineDescriptor),
       device.createRenderPipelineAsync(glyphPipelineDescriptor),
     ]);
+    this.assertLive();
+    this.assertHealthy();
+    this.colorPipeline = colorPipeline;
+    this.glyphPipeline = glyphPipeline;
     this.glyphSampler = device.createSampler({
       label: "Terax terminal glyph sampler",
       minFilter: "linear",
@@ -477,29 +647,34 @@ export class WebGpuTerminalRuntime {
   }
 
   private recoverDevice(reason: string): Promise<void> {
+    if (this.disposed || this.fatalError) return Promise.resolve();
     if (this.recovering) return this.recovering;
+    this.cancelScheduledFrame();
+    if (!this.pendingRecoveryReason) {
+      this.pendingRecoveryReason = reason;
+      for (const surface of this.surfaces)
+        surface.handleVisibilityChange(false, true);
+      for (const entry of this.atlases.values()) entry.atlas.suspend();
+      this.releaseDevice();
+    }
+    if (!terminalWindowPresentation().visible) return Promise.resolve();
+    this.pendingRecoveryReason = null;
     this.recovering = (async () => {
       try {
-        for (const entry of this.atlases.values()) entry.atlas.dispose();
         await this.initializeDevice();
         this.deviceRecoveries += 1;
-        for (const entry of this.atlases.values()) {
-          entry.atlas = this.createAtlas(
-            entry.metrics,
-            entry.scale,
-            entry.users,
-          );
-        }
-        const resources = this.resources();
+        const state = terminalWindowPresentation();
         for (const surface of this.surfaces) {
-          surface.handleRuntimeReset(resources);
+          surface.handleVisibilityChange(state.visible, state.reclaim);
           this.dirtySurfaces.add(surface);
         }
       } catch (error) {
-        const recoveryError = new Error(
-          `WebGPU recovery failed after ${reason}: ${toError(error).message}`,
-        );
-        this.disable(recoveryError);
+        if (!this.disposed)
+          this.disable(
+            new Error(
+              `WebGPU recovery failed after ${reason}: ${toError(error).message}`,
+            ),
+          );
       } finally {
         this.recovering = null;
         this.requestFrame();
@@ -523,7 +698,7 @@ export class WebGpuTerminalRuntime {
     if (this.atlases.size < MAX_ATLAS_COUNT) return;
     let oldest: AtlasEntry | null = null;
     for (const entry of this.atlases.values()) {
-      if (entry.references > 0) continue;
+      if (entry.references > 0 || entry.atlas.hasEncodedUploads) continue;
       if (!oldest || entry.lastUsed < oldest.lastUsed) oldest = entry;
     }
     if (!oldest) return;
@@ -540,6 +715,10 @@ export class WebGpuTerminalRuntime {
       .filter((entry) => entry.references === 0)
       .sort((left, right) => right.lastUsed - left.lastUsed);
     for (const entry of unused.slice(MAX_WARM_UNUSED_ATLASES)) {
+      if (entry.atlas.hasEncodedUploads) {
+        this.atlasReapDeferred = true;
+        continue;
+      }
       entry.atlas.dispose();
       this.atlases.delete(entry.key);
     }
@@ -571,9 +750,9 @@ export class WebGpuTerminalRuntime {
   private disable(error: Error): void {
     if (this.disposed || this.fatalError) return;
     this.fatalError = error;
-    if (this.animationFrame !== null) cancelAnimationFrame(this.animationFrame);
-    this.animationFrame = null;
+    this.cancelScheduledFrame();
     this.dirtySurfaces.clear();
+    this.renderSurfaces.clear();
     for (const surface of [...this.surfaces]) {
       surface.handleRuntimeError(error);
     }
@@ -581,6 +760,12 @@ export class WebGpuTerminalRuntime {
     this.atlasReapTimer = null;
     for (const entry of this.atlases.values()) entry.atlas.dispose();
     this.atlases.clear();
+    this.releaseDevice();
+  }
+
+  private releaseDevice(): void {
+    this.generation += 1;
+    this.inFlightFrames = 0;
     this.device?.destroy();
     this.device = null;
     this.colorPipeline = null;

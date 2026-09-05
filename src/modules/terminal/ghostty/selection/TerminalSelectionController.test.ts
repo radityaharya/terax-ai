@@ -1,10 +1,58 @@
-import { describe, expect, it } from "vitest";
-import type { TerminalBufferSelection } from "../GhosttyTerminalModel";
+import { describe, expect, it, vi } from "vitest";
+import type {
+  GhosttyTerminalModelApi,
+  TerminalBufferSelection,
+} from "../GhosttyTerminalModel";
 import {
   normalizeSelection,
   selectionContains,
   shouldStartTerminalSelection,
+  TerminalSelectionController,
 } from "./TerminalSelectionController";
+
+describe("selection across renderer replacement", () => {
+  it("adopts native selection immediately and reconciles pruning without clearing the model", () => {
+    let tracked: TerminalBufferSelection | null = {
+      anchor: { line: 4, column: 1 },
+      focus: { line: 4, column: 5 },
+      rectangular: false,
+    };
+    const model = {
+      trackedSelection: () => tracked,
+      selectionText: vi.fn(() => "hello"),
+      setSelection: vi.fn(),
+    } as unknown as GhosttyTerminalModelApi;
+    const target = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as HTMLElement;
+    const create = () =>
+      new TerminalSelectionController({
+        model,
+        target,
+        cellSize: () => ({ width: 8, height: 16 }),
+        shouldIgnoreTarget: () => false,
+        onChange: vi.fn(),
+      });
+    const original = create();
+    original.dispose();
+    const replacement = create();
+    expect(replacement.text()).toBe("hello");
+    expect(replacement.contains(4, 3)).toBe(true);
+    tracked = null;
+    expect(replacement.reconcile()).toBe(true);
+    expect(replacement.text()).toBeNull();
+    tracked = {
+      anchor: { line: 0, column: 0 },
+      focus: { line: 0, column: 2 },
+      rectangular: false,
+    };
+    expect(replacement.reconcile()).toBe(true);
+    expect(replacement.value).toEqual(tracked);
+    replacement.dispose();
+    expect(model.setSelection).not.toHaveBeenCalled();
+  });
+});
 
 describe("terminal selection pointer ownership", () => {
   it("does not capture a pointer already claimed by a resize separator", () => {

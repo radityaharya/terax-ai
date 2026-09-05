@@ -3,6 +3,7 @@ import type { GlyphEntry } from "./GlyphAtlas";
 import {
   CELL_FLAG_OVERLINE,
   CELL_FLAG_STRIKETHROUGH,
+  compactWebGpuCellCapacity,
   GLYPH_FLAG_BLINK,
   GLYPH_FLAG_INTRINSIC_COLOR,
   MAX_WEBGPU_SURFACE_CELLS,
@@ -20,6 +21,12 @@ describe("WebGPU packed cell buffers", () => {
     expect(() =>
       nextWebGpuCellCapacity(0, MAX_WEBGPU_SURFACE_CELLS + 1),
     ).toThrow(RangeError);
+  });
+
+  it("compacts only after a materially oversized viewport", () => {
+    expect(compactWebGpuCellCapacity(8_448, 4_800)).toBeNull();
+    expect(compactWebGpuCellCapacity(16_384, 4_800)).toBe(5_632);
+    expect(compactWebGpuCellCapacity(16_384, 8_000)).toBeNull();
   });
 
   it("packs one complete cell into 32 bytes", () => {

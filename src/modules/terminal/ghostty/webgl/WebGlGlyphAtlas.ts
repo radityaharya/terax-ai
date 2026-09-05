@@ -61,8 +61,11 @@ export class WebGlGlyphAtlas {
     COLOR_ATLAS_SIZE,
   );
   private readonly simpleGlyphs = new Map<number, WebGlGlyphEntry>();
-  private readonly complexGlyphs = new Map<string, WebGlGlyphEntry>();
-  private readonly coverage = new Uint8Array(ATLAS_SIZE * ATLAS_SIZE);
+  private readonly complexGlyphs = new Map<
+    number,
+    Map<string, WebGlGlyphEntry>
+  >();
+  private coverage = new Uint8Array(ATLAS_SIZE * ATLAS_SIZE);
   private colorPixels: Uint8Array | null = null;
   private readonly rasterCanvas = document.createElement("canvas");
   private readonly rasterContext: CanvasRenderingContext2D;
@@ -91,6 +94,8 @@ export class WebGlGlyphAtlas {
     const coverageTexture = gl.createTexture();
     const colorTexture = gl.createTexture();
     if (!coverageTexture || !colorTexture) {
+      if (coverageTexture) gl.deleteTexture(coverageTexture);
+      if (colorTexture) gl.deleteTexture(colorTexture);
       throw new Error("Failed to allocate the WebGL glyph atlas");
     }
     this.coverageTexture = coverageTexture;
@@ -131,9 +136,18 @@ export class WebGlGlyphAtlas {
   }
 
   get byteSize(): number {
+    if (this.disposed) return 0;
     return (
       ATLAS_SIZE * ATLAS_SIZE +
       (this.colorPixels ? COLOR_ATLAS_SIZE * COLOR_ATLAS_SIZE * 4 : 4)
+    );
+  }
+
+  get cpuByteSize(): number {
+    return (
+      this.coverage.byteLength +
+      (this.colorPixels?.byteLength ?? 0) +
+      (this.disposed ? 0 : RASTER_SIZE * RASTER_SIZE * 4)
     );
   }
 
@@ -142,7 +156,11 @@ export class WebGlGlyphAtlas {
   }
 
   get glyphCount(): number {
-    return this.simpleGlyphs.size + this.complexGlyphs.size;
+    let complexCount = 0;
+    for (const glyphs of this.complexGlyphs.values()) {
+      complexCount += glyphs.size;
+    }
+    return this.simpleGlyphs.size + complexCount;
   }
 
   get uploadCount(): number {
@@ -170,11 +188,15 @@ export class WebGlGlyphAtlas {
       return entry;
     }
 
-    const key = `${style}:${grapheme}`;
-    const cached = this.complexGlyphs.get(key);
+    let styledGlyphs = this.complexGlyphs.get(style);
+    const cached = styledGlyphs?.get(grapheme);
     if (cached) return cached;
     const entry = this.rasterize(grapheme, flags);
-    this.complexGlyphs.set(key, entry);
+    if (!styledGlyphs) {
+      styledGlyphs = new Map();
+      this.complexGlyphs.set(style, styledGlyphs);
+    }
+    styledGlyphs.set(grapheme, entry);
     return entry;
   }
 
@@ -245,8 +267,10 @@ export class WebGlGlyphAtlas {
     this.gl.deleteTexture(this.colorTexture);
     this.simpleGlyphs.clear();
     this.complexGlyphs.clear();
-    this.coverage.fill(0);
+    this.coverage = new Uint8Array(0);
     this.colorPixels = null;
+    this.rasterCanvas.width = 1;
+    this.rasterCanvas.height = 1;
     this.coverageDirty = null;
     this.colorDirty = null;
   }

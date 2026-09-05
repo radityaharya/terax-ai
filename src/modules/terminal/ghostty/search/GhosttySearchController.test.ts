@@ -24,6 +24,47 @@ const completeStatus: GhosttySearchStatus = {
 };
 
 describe("GhosttySearchController", () => {
+  it.each([false, true])(
+    "restores the native search without resetting or skipping a match (pending: %s)",
+    (pending) => {
+      let complete = !pending;
+      const model = {
+        cols: 2,
+        rows: 1,
+        setSearchQuery: vi.fn(() => pendingStatus),
+        stepSearch: vi.fn(() => (complete ? completeStatus : pendingStatus)),
+        selectSearchMatch: vi.fn(() => ({
+          ...completeStatus,
+          selectedIndex: 0,
+        })),
+        searchViewportMatches: vi.fn(() => [
+          { row: 0, startColumn: 0, endColumn: 1, selected: complete },
+        ]),
+        clearSearch: vi.fn(),
+      } as unknown as GhosttyTerminalModelApi;
+      const scheduler = { request: vi.fn(() => 42), cancel: vi.fn() };
+      const previous = new GhosttySearchController(model, vi.fn(), scheduler);
+      previous.findNext("x");
+      const snapshot = previous.snapshot();
+      previous.dispose();
+      complete = true;
+      const replacement = new GhosttySearchController(
+        model,
+        vi.fn(),
+        scheduler,
+      );
+      replacement.restore(snapshot);
+      expect(model.setSearchQuery).toHaveBeenCalledOnce();
+      expect(model.selectSearchMatch).toHaveBeenCalledOnce();
+      expect(replacement.matchAt(0, 0)).toBe(2);
+      replacement.findNext("x");
+      expect(model.setSearchQuery).toHaveBeenCalledOnce();
+      expect(model.selectSearchMatch).toHaveBeenCalledTimes(2);
+      replacement.dispose();
+      expect(model.clearSearch).not.toHaveBeenCalled();
+    },
+  );
+
   it("steps incrementally and retains only viewport match cells", () => {
     const callbacks = new Map<number, () => void>();
     let nextHandle = 1;

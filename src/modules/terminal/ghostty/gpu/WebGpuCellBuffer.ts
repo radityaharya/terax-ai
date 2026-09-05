@@ -16,6 +16,8 @@ export const GLYPH_FLAG_COVERAGE_RED = 1 << 2;
 
 const CAPACITY_ALIGNMENT = 256;
 const MIN_CELL_CAPACITY = 1_024;
+const COMPACTION_RATIO = 2;
+const MIN_COMPACTION_SAVINGS = 4_096;
 
 export function nextWebGpuCellCapacity(
   current: number,
@@ -38,6 +40,27 @@ export function nextWebGpuCellCapacity(
     MAX_WEBGPU_SURFACE_CELLS,
     Math.ceil(target / CAPACITY_ALIGNMENT) * CAPACITY_ALIGNMENT,
   );
+}
+
+/**
+ * Returns a smaller capacity only after a large transient viewport has left
+ * enough unused space to justify recreating both the CPU and GPU buffers.
+ */
+export function compactWebGpuCellCapacity(
+  current: number,
+  required: number,
+): number | null {
+  if (!Number.isInteger(current) || current < 0) {
+    throw new RangeError("WebGPU cell capacity must be a non-negative integer");
+  }
+  const target = nextWebGpuCellCapacity(0, required);
+  if (
+    current < target * COMPACTION_RATIO ||
+    current - target < MIN_COMPACTION_SAVINGS
+  ) {
+    return null;
+  }
+  return target;
 }
 
 export function writeCellInstance(

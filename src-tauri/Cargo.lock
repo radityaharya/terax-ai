@@ -5333,6 +5333,7 @@ dependencies = [
 name = "terax"
 version = "0.8.6"
 dependencies = [
+ "block2",
  "bytes",
  "dirs 6.0.0",
  "futures-util",
@@ -5348,6 +5349,7 @@ dependencies = [
  "notify",
  "nucleo-matcher",
  "objc2",
+ "objc2-app-kit",
  "objc2-foundation",
  "portable-pty",
  "proptest",

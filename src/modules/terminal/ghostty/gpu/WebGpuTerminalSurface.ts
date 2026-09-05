@@ -1,9 +1,17 @@
+import { terminalWindowPresentation } from "@/modules/terminal/ghostty/windowPresentation";
 import type { TerminalSurface } from "@/modules/terminal/backend/contracts";
+import {
+  subscribeTerminalResizeInteraction,
+  terminalResizeInteractionActive,
+} from "@/modules/terminal/lib/terminalResizeInteraction";
 import { CellFlags } from "@terax/ghostty-core/protocol";
 import type { Rgb, TerminalCellReader } from "../core/packedCells";
 import type { GhosttyTerminalModelApi } from "../GhosttyTerminalModel";
 import { GhosttySearchController } from "../search/GhosttySearchController";
-import { TerminalSelectionController } from "../selection/TerminalSelectionController";
+import {
+  selectionBoundsContain,
+  TerminalSelectionController,
+} from "../selection/TerminalSelectionController";
 import { CanvasBackingStore } from "./CanvasBackingStore";
 import { DevicePixelRatioMonitor } from "./DevicePixelRatioMonitor";
 import { GlyphAtlasCapacityError } from "./GlyphAtlas";
@@ -23,6 +31,7 @@ import {
   CELL_FLAG_UNDERLINE_MASK,
   clearCellInstance,
   clearGlyphInstance,
+  compactWebGpuCellCapacity,
   GLYPH_FLAG_BLINK,
   GLYPH_FLAG_COVERAGE_RED,
   GLYPH_FLAG_INTRINSIC_COLOR,
@@ -62,13 +71,17 @@ export type WebGpuTerminalSurfaceOptions = {
 export type WebGpuTerminalSurfaceStats = {
   readonly frames: number;
   readonly backingStoreResizes: number;
+  readonly cellCompactions: number;
   readonly cellCapacity: number;
   readonly bufferBytes: number;
   readonly cpuBufferBytes: number;
   readonly gpuBufferBytes: number;
+  readonly canvasColorBytes: number;
+  readonly estimatedSwapchainBytes: number;
   readonly cols: number;
   readonly rows: number;
   readonly visible: boolean;
+  readonly documentSuspended: boolean;
   readonly focused: boolean;
   readonly uploads: number;
   readonly uploadedBytes: number;
@@ -88,6 +101,7 @@ export class WebGpuTerminalSurface
   private readonly scrollbarContent = document.createElement("div");
   private readonly resizeObserver: ResizeObserver;
   private readonly unsubscribeDamage: () => void;
+  private readonly unsubscribeResizeInteraction: () => void;
   private readonly selection: TerminalSelectionController;
   private readonly search: GhosttySearchController;
   private readonly pixelRatioMonitor: DevicePixelRatioMonitor;
@@ -114,6 +128,10 @@ export class WebGpuTerminalSurface
   private scale = 1;
   private visible = true;
   private focused = false;
+  private documentSuspended = !terminalWindowPresentation().visible;
+  private runtimeRegistered = false;
+  private resizeInteractionActive = terminalResizeInteractionActive();
+  private compactAfterResize = false;
   private cursorVisible = true;
   private cursorBlinking: boolean;
   private cursorTimer: number | null = null;
@@ -125,6 +143,7 @@ export class WebGpuTerminalSurface
   private runtimeGeneration = 0;
   private frameCount = 0;
   private backingStoreResizeCount = 0;
+  private cellCompactionCount = 0;
   private uploadCount = 0;
   private uploadedBytes = 0;
   private contentRevision: number;
@@ -151,7 +170,7 @@ export class WebGpuTerminalSurface
     this.contentRevision = options.model.revision();
     this.root.className = "absolute inset-0 overflow-hidden";
     this.root.style.userSelect = "none";
-    this.root.style.backgroundColor = rgbToCss(options.theme.background);
+    this.updateRootBackground();
     this.root.setAttribute("data-terax-ghostty-surface", "webgpu");
     this.root.setAttribute("data-terax-terminal-surface", "");
     this.canvas.className = "block";
@@ -206,6 +225,14 @@ export class WebGpuTerminalSurface
       if (!this.applyingFit) this.runtime.schedule(this);
       this.armCursorBlink();
     });
+    this.unsubscribeResizeInteraction = subscribeTerminalResizeInteraction(
+      (active) => {
+        this.resizeInteractionActive = active;
+        if (active) return;
+        this.compactAfterResize = true;
+        this.queueFit();
+      },
+    );
     this.root.addEventListener("pointerdown", this.handlePointerDown);
     this.root.addEventListener("mousemove", this.handleLinkMouseMove);
     this.root.addEventListener("mousedown", this.handleLinkMouseDown);
@@ -236,7 +263,7 @@ export class WebGpuTerminalSurface
     this.pixelRatioMonitor.start();
     if (this.visible) {
       this.activateGpuResources();
-      this.resizeToHost();
+      if (!this.documentSuspended) this.resizeToHost();
     }
     this.updateScrollbar();
     this.forceFullRedraw = true;
@@ -275,10 +302,11 @@ export class WebGpuTerminalSurface
     this.visible = visible;
     this.root.style.visibility = visible ? "visible" : "hidden";
     if (visible) {
+      if (!this.documentSuspended) this.search.resume();
       try {
         if (this.host && this.context && !this.uniformBuffer) {
           this.activateGpuResources();
-          this.resizeToHost();
+          if (!this.documentSuspended) this.resizeToHost();
         }
       } catch (error) {
         this.options.onError(toError(error));
@@ -291,7 +319,10 @@ export class WebGpuTerminalSurface
       this.clearCursorTimer();
       this.clearTextBlinkTimer();
       this.textBlinkVisible = true;
+      this.search.suspend();
+      this.selection.suspend();
       this.deactivateGpuResources();
+      this.options.model.releasePresentationResources();
     }
   }
 
@@ -305,7 +336,7 @@ export class WebGpuTerminalSurface
 
   setTheme(theme: TerminalGpuTheme): void {
     this.theme = theme;
-    this.root.style.backgroundColor = rgbToCss(theme.background);
+    this.updateRootBackground();
     this.themeBackground = packRgb(theme.background);
     this.themeCursor = packRgb(theme.cursor);
     this.selectionColor = packRgb(theme.selection.color);
@@ -316,6 +347,11 @@ export class WebGpuTerminalSurface
   setFontMetrics(metrics: TerminalFontMetrics): void {
     if (fontMetricsKey(this.metrics) === fontMetricsKey(metrics)) return;
     this.metrics = metrics;
+    if (this.documentSuspended) {
+      this.releaseGpuResources();
+      this.context?.unconfigure();
+      return;
+    }
     if (this.host && this.context && this.uniformBuffer) {
       this.handleRuntimeReset(this.runtime.resources());
       this.resizeToHost();
@@ -345,6 +381,10 @@ export class WebGpuTerminalSurface
     return this.root;
   }
 
+  isFocused(): boolean {
+    return this.focused;
+  }
+
   renderFrame(
     encoder: GPUCommandEncoder,
     resources: WebGpuSharedResources,
@@ -352,6 +392,7 @@ export class WebGpuTerminalSurface
     if (
       this.disposed ||
       !this.visible ||
+      this.documentSuspended ||
       !this.context ||
       !this.instanceBuffer ||
       !this.colorBindGroup ||
@@ -381,7 +422,7 @@ export class WebGpuTerminalSurface
         resources,
       );
     }
-    atlas.encodePendingUploads(encoder);
+    this.atlasLease.atlas.encodePendingUploads(encoder);
     this.updateScreenUniform(resources);
 
     const target = this.context.getCurrentTexture().createView();
@@ -415,7 +456,8 @@ export class WebGpuTerminalSurface
   }
 
   handleRuntimeReset(resources: WebGpuSharedResources): void {
-    if (!this.host || !this.context || this.disposed) return;
+    if (!this.host || !this.context || this.disposed || this.documentSuspended)
+      return;
     this.releaseGpuResources();
     this.initializeGpuResources(resources);
     this.forceFullRedraw = true;
@@ -425,14 +467,36 @@ export class WebGpuTerminalSurface
     this.options.onError(error);
   }
 
-  handleVisibilityChange(visible: boolean): void {
+  handleVisibilityChange(visible: boolean, reclaim = !visible): void {
     if (!visible) {
+      this.documentSuspended = true;
       this.clearCursorTimer();
       this.clearTextBlinkTimer();
+      this.search.suspend();
+      this.selection.suspend();
+      if (reclaim) {
+        this.options.model.releasePresentationResources();
+        this.releaseGpuResources();
+        this.context?.unconfigure();
+      }
       return;
     }
+    if (!this.documentSuspended) return;
+    this.documentSuspended = false;
     this.cursorVisible = true;
     this.textBlinkVisible = true;
+    if (this.visible && this.host && this.context) {
+      try {
+        if (!this.uniformBuffer)
+          this.initializeGpuResources(this.runtime.resources());
+        this.resizeToHost();
+      } catch (error) {
+        this.options.onError(toError(error));
+        return;
+      }
+    }
+    this.forceFullRedraw = true;
+    if (this.visible) this.search.resume();
     this.armCursorBlink();
     this.syncTextBlink();
     this.runtime.schedule(this);
@@ -440,17 +504,27 @@ export class WebGpuTerminalSurface
 
   diagnostics(): WebGpuTerminalSurfaceStats {
     const retainedBufferBytes =
-      this.cellCapacity * PACKED_INSTANCE_BYTES + SCREEN_UNIFORM_BYTES;
+      (this.instanceBuffer?.size ?? 0) + (this.uniformBuffer?.size ?? 0);
+    const canvasColorBytes = this.uniformBuffer
+      ? this.canvas.width * this.canvas.height * 4
+      : 0;
     return {
       frames: this.frameCount,
       backingStoreResizes: this.backingStoreResizeCount,
+      cellCompactions: this.cellCompactionCount,
       cellCapacity: this.cellCapacity,
       bufferBytes: retainedBufferBytes,
-      cpuBufferBytes: retainedBufferBytes,
+      cpuBufferBytes:
+        this.instanceData.byteLength +
+        this.screenData.byteLength +
+        this.blinkingRows.byteLength,
       gpuBufferBytes: retainedBufferBytes,
+      canvasColorBytes,
+      estimatedSwapchainBytes: canvasColorBytes * 3,
       cols: this.options.model.cols,
       rows: this.options.model.rows,
       visible: this.visible,
+      documentSuspended: this.documentSuspended,
       focused: this.focused,
       uploads: this.uploadCount,
       uploadedBytes: this.uploadedBytes,
@@ -463,6 +537,7 @@ export class WebGpuTerminalSurface
     this.detach();
     this.disposed = true;
     this.unsubscribeDamage();
+    this.unsubscribeResizeInteraction();
     this.search.dispose();
     this.selection.dispose();
     this.root.removeEventListener("pointerdown", this.handlePointerDown);
@@ -555,53 +630,64 @@ export class WebGpuTerminalSurface
 
   private initializeGpuResources(resources: WebGpuSharedResources): void {
     if (!this.context) return;
-    this.context.configure({
-      device: resources.device,
-      format: resources.format,
-      alphaMode: "opaque",
-    });
-    this.scale = Math.max(1, window.devicePixelRatio || 1);
-    this.atlasLease = this.runtime.acquireGlyphAtlas(
-      this.metrics,
-      this.scale,
-      this,
-    );
-    this.uniformBuffer = resources.device.createBuffer({
-      label: "Terax terminal surface uniform",
-      size: SCREEN_UNIFORM_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.colorBindGroup = resources.device.createBindGroup({
-      layout: resources.colorBindGroupLayout,
-      entries: [{ binding: 0, resource: { buffer: this.uniformBuffer } }],
-    });
-    this.glyphBindGroup = resources.device.createBindGroup({
-      layout: resources.glyphBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.uniformBuffer } },
-        {
-          binding: 1,
-          resource: this.atlasLease.atlas.coverageTextureView,
-        },
-        { binding: 2, resource: this.atlasLease.atlas.colorTextureView },
-        { binding: 3, resource: resources.glyphSampler },
-      ],
-    });
-    this.runtimeGeneration = resources.generation;
-    this.atlasGeneration = this.atlasLease.atlas.generation;
-    this.ensureCellCapacity(
-      this.options.model.cols * this.options.model.rows,
-      resources.device,
-    );
+    try {
+      this.context.configure({
+        device: resources.device,
+        format: resources.format,
+        alphaMode: "opaque",
+      });
+      this.scale = Math.max(1, window.devicePixelRatio || 1);
+      this.atlasLease = this.runtime.acquireGlyphAtlas(
+        this.metrics,
+        this.scale,
+        this,
+      );
+      this.uniformBuffer = resources.device.createBuffer({
+        label: "Terax terminal surface uniform",
+        size: SCREEN_UNIFORM_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      this.colorBindGroup = resources.device.createBindGroup({
+        layout: resources.colorBindGroupLayout,
+        entries: [{ binding: 0, resource: { buffer: this.uniformBuffer } }],
+      });
+      this.glyphBindGroup = resources.device.createBindGroup({
+        layout: resources.glyphBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.uniformBuffer } },
+          {
+            binding: 1,
+            resource: this.atlasLease.atlas.coverageTextureView,
+          },
+          { binding: 2, resource: this.atlasLease.atlas.colorTextureView },
+          { binding: 3, resource: resources.glyphSampler },
+        ],
+      });
+      this.runtimeGeneration = resources.generation;
+      this.atlasGeneration = this.atlasLease.atlas.generation;
+      this.ensureCellCapacity(
+        this.options.model.cols * this.options.model.rows,
+        resources.device,
+      );
+    } catch (error) {
+      this.releaseGpuResources();
+      this.context.unconfigure();
+      throw error;
+    }
   }
 
   private activateGpuResources(): void {
-    if (!this.context || this.uniformBuffer) return;
-    this.runtime.register(this);
+    if (!this.context) return;
+    if (!this.runtimeRegistered) {
+      this.runtime.register(this);
+      this.runtimeRegistered = true;
+    }
+    if (this.documentSuspended || this.uniformBuffer) return;
     try {
       this.initializeGpuResources(this.runtime.resources());
     } catch (error) {
       this.runtime.unregister(this);
+      this.runtimeRegistered = false;
       this.releaseGpuResources();
       this.context.unconfigure();
       throw error;
@@ -609,7 +695,10 @@ export class WebGpuTerminalSurface
   }
 
   private deactivateGpuResources(): void {
-    this.runtime.unregister(this);
+    if (this.runtimeRegistered) {
+      this.runtime.unregister(this);
+      this.runtimeRegistered = false;
+    }
     this.releaseGpuResources();
     this.context?.unconfigure();
   }
@@ -629,6 +718,7 @@ export class WebGpuTerminalSurface
     this.instanceView = new DataView(this.instanceData);
     this.blinkingRows = new Uint8Array(0);
     this.blinkingRowCount = 0;
+    this.forceFullRedraw = true;
   }
 
   private queueFit(bounds?: Pick<DOMRectReadOnly, "width" | "height">): void {
@@ -643,13 +733,25 @@ export class WebGpuTerminalSurface
       () => this.host?.getBoundingClientRect() ?? { width: 0, height: 0 },
     );
     if (bounds) this.resizeToHost(bounds, false);
+    if (this.compactAfterResize && !this.resizeInteractionActive) {
+      this.compactAfterResize = false;
+      this.options.model.compactPresentationResources();
+      this.compactCellCapacity();
+      this.forceFullRedraw = true;
+    }
   }
 
   private resizeToHost(
     measuredBounds?: Pick<DOMRectReadOnly, "width" | "height">,
     scheduleRender = true,
   ): void {
-    if (!this.host || !this.context || !this.visible || !this.uniformBuffer)
+    if (
+      !this.host ||
+      !this.context ||
+      !this.visible ||
+      this.documentSuspended ||
+      !this.uniformBuffer
+    )
       return;
     this.fitQueue.clear();
     const bounds = measuredBounds ?? this.host.getBoundingClientRect();
@@ -693,7 +795,7 @@ export class WebGpuTerminalSurface
       cssWidth,
       cssHeight,
     );
-    if (backingStoreChanged) {
+    if (changed || backingStoreChanged) {
       this.options.model.setPixelSize(pixelWidth, pixelHeight);
     }
     if (changed) this.options.onResize(cols, rows);
@@ -726,6 +828,21 @@ export class WebGpuTerminalSurface
   private ensureCellCapacity(cellCount: number, device: GPUDevice): boolean {
     if (cellCount <= this.cellCapacity) return false;
     const capacity = nextWebGpuCellCapacity(this.cellCapacity, cellCount);
+    this.replaceCellBuffer(capacity, device);
+    return true;
+  }
+
+  private compactCellCapacity(): void {
+    if (!this.instanceBuffer || !this.host || this.documentSuspended) return;
+    const required = this.options.model.cols * this.options.model.rows;
+    const capacity = compactWebGpuCellCapacity(this.cellCapacity, required);
+    if (capacity === null) return;
+    this.replaceCellBuffer(capacity, this.runtime.resources().device);
+    this.cellCompactionCount += 1;
+    this.forceFullRedraw = true;
+  }
+
+  private replaceCellBuffer(capacity: number, device: GPUDevice): void {
     this.instanceBuffer?.destroy();
     this.cellCapacity = capacity;
     this.instanceData = new ArrayBuffer(capacity * PACKED_INSTANCE_BYTES);
@@ -736,7 +853,6 @@ export class WebGpuTerminalSurface
       this.instanceData.byteLength,
       "Terax terminal packed cell and glyph instances",
     );
-    return true;
   }
 
   private updateCellInstances(
@@ -852,7 +968,7 @@ export class WebGpuTerminalSurface
     const cellWidth = this.metrics.cellWidth * this.scale;
     const cellHeight = this.metrics.cellHeight * this.scale;
     const viewportOriginLine = this.options.model.viewportOriginLine();
-    const hasSelection = this.selection.value !== null;
+    const selectionBounds = this.selection.normalizedBounds();
     const leftPadding = Math.max(
       0,
       Math.floor((this.metrics.font.letterSpacing * this.scale) / 2),
@@ -875,7 +991,9 @@ export class WebGpuTerminalSurface
         let foreground = cells.foregroundPacked(index);
         let background = cells.backgroundPacked(index);
         if ((flags & CellFlags.INVERSE) !== 0) {
-          [foreground, background] = [background, foreground];
+          const originalForeground = foreground;
+          foreground = background;
+          background = originalForeground;
         }
         const searchMatch = this.search.matchAt(row, column);
         if (searchMatch !== 0) {
@@ -885,8 +1003,12 @@ export class WebGpuTerminalSurface
               : SEARCH_MATCH_BACKGROUND;
         }
         if (
-          hasSelection &&
-          this.selection.contains(viewportOriginLine + row, column)
+          selectionBounds &&
+          selectionBoundsContain(
+            selectionBounds,
+            viewportOriginLine + row,
+            column,
+          )
         ) {
           background = blendPackedRgb(
             background,
@@ -1011,6 +1133,7 @@ export class WebGpuTerminalSurface
         style === "underline" ? Math.max(2, this.scale) : cellHeight;
     }
     this.screenData[6] = this.textBlinkVisible ? 1 : 0;
+    this.screenData[7] = 0;
     this.screenData[8] = ((this.themeCursor >> 16) & 0xff) / 255;
     this.screenData[9] = ((this.themeCursor >> 8) & 0xff) / 255;
     this.screenData[10] = (this.themeCursor & 0xff) / 255;
@@ -1031,7 +1154,7 @@ export class WebGpuTerminalSurface
       !this.focused ||
       !this.visible ||
       !this.host ||
-      document.visibilityState !== "visible"
+      !terminalWindowPresentation().visible
     ) {
       this.clearCursorTimer();
       return;
@@ -1055,7 +1178,7 @@ export class WebGpuTerminalSurface
       this.blinkingRowCount === 0 ||
       !this.visible ||
       !this.host ||
-      document.visibilityState !== "visible"
+      !terminalWindowPresentation().visible
     ) {
       this.clearTextBlinkTimer();
       this.textBlinkVisible = true;
@@ -1073,6 +1196,10 @@ export class WebGpuTerminalSurface
   private clearTextBlinkTimer(): void {
     if (this.textBlinkTimer !== null) window.clearTimeout(this.textBlinkTimer);
     this.textBlinkTimer = null;
+  }
+
+  private updateRootBackground(): void {
+    this.root.style.backgroundColor = rgbToCss(this.theme.background);
   }
 
   private assertLive(): void {

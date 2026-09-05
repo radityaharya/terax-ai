@@ -37,6 +37,24 @@ describe("WebGlTerminalRuntime", () => {
     runtime.dispose();
   });
 
+  it("paces sustained focused rendering at 60 frames per second", () => {
+    const harness = createHarness();
+    const runtime = new WebGlTerminalRuntime(harness.dependencies);
+    const surface = createSurface();
+    runtime.acquire(surface, {} as HTMLElement, PROFILE);
+
+    runtime.schedule(surface);
+    harness.flushFrame();
+    runtime.schedule(surface);
+
+    expect(harness.frames).toHaveLength(1);
+    expect(harness.timers).toHaveLength(0);
+    harness.advanceTime(17);
+    harness.flushFrame();
+    expect(surface.renderFrame).toHaveBeenCalledTimes(2);
+    runtime.dispose();
+  });
+
   it("bounds active contexts and retains only one warm idle renderer", () => {
     const harness = createHarness();
     const runtime = new WebGlTerminalRuntime(harness.dependencies);
@@ -69,6 +87,25 @@ describe("WebGlTerminalRuntime", () => {
         (renderer) => renderer.dispose.mock.calls.length > 0,
       ),
     ).toHaveLength(MAX_WEBGL_RENDERER_SLOTS - 1);
+    runtime.dispose();
+  });
+
+  it("keeps idle reclamation scheduled when another surface acquires a renderer", () => {
+    const h = createHarness();
+    const runtime = new WebGlTerminalRuntime(h.dependencies);
+    const surfaces = [createSurface(), createSurface(), createSurface()];
+    for (const surface of surfaces)
+      runtime.acquire(surface, {} as HTMLElement, PROFILE);
+    expect(h.timers).toHaveLength(0);
+    runtime.release(surfaces[0]);
+    runtime.release(surfaces[1]);
+    runtime.acquire(createSurface(), {} as HTMLElement, PROFILE);
+    h.advanceTime(WEBGL_RENDERER_IDLE_TTL_MS + 1);
+    h.flushTimer();
+    expect(runtime.diagnostics()).toMatchObject({
+      activeSlots: 2,
+      idleSlots: 0,
+    });
     runtime.dispose();
   });
 
@@ -142,6 +179,24 @@ describe("WebGlTerminalRuntime", () => {
     expect(runtime.diagnostics().activeSlots).toBe(1);
     runtime.dispose();
   });
+
+  it("destroys every idle context when the document is hidden", () => {
+    const harness = createHarness();
+    const runtime = new WebGlTerminalRuntime(harness.dependencies);
+    const surface = createSurface();
+    runtime.acquire(surface, {} as HTMLElement, PROFILE);
+    runtime.release(surface);
+
+    runtime.trimForHiddenDocument();
+
+    expect(runtime.diagnostics()).toMatchObject({
+      slotCount: 0,
+      activeSlots: 0,
+      idleSlots: 0,
+    });
+    expect(harness.renderers[0].dispose).toHaveBeenCalledOnce();
+    runtime.dispose();
+  });
 });
 
 type RendererDouble = {
@@ -159,6 +214,7 @@ function createHarness(options: { failFirstConfigure?: boolean } = {}) {
   let nextTimer = 100;
   let failedConfigure = false;
   let visibilityListener: (() => void) | null = null;
+  let focusListener: ((focused: boolean) => void) | null = null;
   const frameCallbacks = new Map<number, () => void>();
   const timerCallbacks = new Map<number, () => void>();
   const renderers: RendererDouble[] = [];
@@ -192,6 +248,7 @@ function createHarness(options: { failFirstConfigure?: boolean } = {}) {
     },
     now: () => now,
     isVisible: () => harness.visible,
+    isWindowFocused: () => harness.windowFocused,
     requestFrame: (callback) => {
       const handle = nextFrame;
       nextFrame += 1;
@@ -215,15 +272,25 @@ function createHarness(options: { failFirstConfigure?: boolean } = {}) {
         visibilityListener = null;
       };
     },
+    bindWindowFocus: (callback) => {
+      focusListener = callback;
+      return () => {
+        focusListener = null;
+      };
+    },
   };
 
   const harness = {
     visible: true,
+    windowFocused: true,
     dependencies,
     renderers,
     cancelledFrames,
     get frames(): readonly number[] {
       return [...frameCallbacks.keys()];
+    },
+    get timers(): readonly number[] {
+      return [...timerCallbacks.keys()];
     },
     advanceTime(delta: number): void {
       now += delta;
@@ -245,6 +312,9 @@ function createHarness(options: { failFirstConfigure?: boolean } = {}) {
     notifyVisibility(): void {
       visibilityListener?.();
     },
+    notifyFocus(focused: boolean): void {
+      focusListener?.(focused);
+    },
   };
   return harness;
 }
@@ -255,6 +325,7 @@ function createSurface(): WebGlRuntimeSurface & {
   return {
     renderFrame: vi.fn(() => true),
     handleRendererError: vi.fn(),
+    isFocused: vi.fn(() => true),
   };
 }
 

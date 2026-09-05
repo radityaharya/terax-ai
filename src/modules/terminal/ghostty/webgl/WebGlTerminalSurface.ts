@@ -1,4 +1,13 @@
+import {
+  subscribeWindowPresentation,
+  terminalWindowPresentation,
+} from "@/modules/terminal/ghostty/windowPresentation";
+import type { WindowPresentation } from "@/modules/terminal/ghostty/WindowPresentationPolicy";
 import type { TerminalSurface } from "@/modules/terminal/backend/contracts";
+import {
+  subscribeTerminalResizeInteraction,
+  terminalResizeInteractionActive,
+} from "@/modules/terminal/lib/terminalResizeInteraction";
 import type { GhosttyTerminalModelApi } from "../GhosttyTerminalModel";
 import { DevicePixelRatioMonitor } from "../gpu/DevicePixelRatioMonitor";
 import { fitTerminalViewport } from "../gpu/TerminalFit";
@@ -44,6 +53,7 @@ export type WebGlTerminalSurfaceStats = {
   readonly cols: number;
   readonly rows: number;
   readonly visible: boolean;
+  readonly documentSuspended: boolean;
   readonly focused: boolean;
   readonly renderer: XtermWebGlRendererStats | null;
   readonly rendererRecoveries: number;
@@ -61,6 +71,7 @@ export class WebGlTerminalSurface
   private readonly scrollbarContent = document.createElement("div");
   private readonly resizeObserver: ResizeObserver;
   private readonly unsubscribeDamage: () => void;
+  private readonly unsubscribeResizeInteraction: () => void;
   private readonly selection: TerminalSelectionController;
   private readonly search: GhosttySearchController;
   private readonly runtime: WebGlTerminalRuntime;
@@ -73,6 +84,9 @@ export class WebGlTerminalSurface
   private scale = 1;
   private visible = true;
   private focused = false;
+  private documentSuspended = !terminalWindowPresentation().visible;
+  private resizeInteractionActive = terminalResizeInteractionActive();
+  private compactAfterResize = false;
   private cursorVisible = true;
   private cursorBlinking: boolean;
   private cursorTimer: number | null = null;
@@ -87,6 +101,7 @@ export class WebGlTerminalSurface
   private hoveredLink: string | null = null;
   private mouseDownLink: string | null = null;
   private applyingFit = false;
+  private readonly unsubscribePresentation: () => void;
   private disposed = false;
 
   constructor(private readonly options: WebGlTerminalSurfaceOptions) {
@@ -101,7 +116,7 @@ export class WebGlTerminalSurface
     this.contentRevision = options.model.revision();
     this.root.className = "absolute inset-0 overflow-hidden";
     this.root.style.userSelect = "none";
-    this.root.style.backgroundColor = rgbToCss(options.theme.background);
+    this.updateRootBackground();
     this.root.setAttribute("data-terax-ghostty-surface", "webgl");
     this.root.setAttribute("data-terax-terminal-surface", "");
     this.input.setAttribute("aria-label", "Terminal input");
@@ -154,6 +169,14 @@ export class WebGlTerminalSurface
       if (!this.applyingFit) this.runtime.schedule(this);
       this.armCursorBlink();
     });
+    this.unsubscribeResizeInteraction = subscribeTerminalResizeInteraction(
+      (active) => {
+        this.resizeInteractionActive = active;
+        if (active) return;
+        this.compactAfterResize = true;
+        this.queueFit();
+      },
+    );
     this.root.addEventListener("pointerdown", this.handlePointerDown);
     this.root.addEventListener("mousemove", this.handleLinkMouseMove);
     this.root.addEventListener("mousedown", this.handleLinkMouseDown);
@@ -162,6 +185,9 @@ export class WebGlTerminalSurface
     this.input.addEventListener("focus", this.handleFocus);
     this.input.addEventListener("blur", this.handleBlur);
     this.scrollbar.addEventListener("scroll", this.handleScroll);
+    this.unsubscribePresentation = subscribeWindowPresentation(
+      this.handleVisibilityChange,
+    );
   }
 
   attach(container: HTMLElement): void {
@@ -173,12 +199,12 @@ export class WebGlTerminalSurface
     this.scale = Math.max(1, window.devicePixelRatio || 1);
     this.pixelRatioMonitor.start();
     this.resizeObserver.observe(container);
-    if (this.visible) {
+    if (this.visible && !this.documentSuspended) {
       this.renderer = this.runtime.acquire(this, this.root, this.profile());
       this.resizeToHost();
     }
     this.updateScrollbar();
-    if (this.visible) this.runtime.schedule(this);
+    if (this.visible && !this.documentSuspended) this.runtime.schedule(this);
   }
 
   detach(): void {
@@ -213,7 +239,8 @@ export class WebGlTerminalSurface
     this.visible = visible;
     this.root.style.visibility = visible ? "visible" : "hidden";
     if (visible) {
-      if (this.host && !this.renderer) {
+      if (!this.documentSuspended) this.search.resume();
+      if (this.host && !this.renderer && !this.documentSuspended) {
         this.scale = Math.max(1, window.devicePixelRatio || 1);
         this.renderer = this.runtime.acquire(this, this.root, this.profile());
         this.resizeToHost();
@@ -225,8 +252,11 @@ export class WebGlTerminalSurface
       this.clearCursorTimer();
       this.clearTextBlinkTimer();
       this.textBlinkVisible = true;
+      this.search.suspend();
+      this.selection.suspend();
       this.runtime.release(this);
       this.renderer = null;
+      this.options.model.releasePresentationResources();
     }
   }
 
@@ -240,8 +270,8 @@ export class WebGlTerminalSurface
 
   setTheme(theme: TerminalGpuTheme): void {
     this.theme = theme;
-    this.root.style.backgroundColor = rgbToCss(theme.background);
-    if (!this.renderer || !this.host) return;
+    this.updateRootBackground();
+    if (!this.renderer || !this.host || this.documentSuspended) return;
     this.renderer = this.runtime.acquire(this, this.root, this.profile());
     this.renderer.resetModel();
     this.runtime.schedule(this);
@@ -250,7 +280,7 @@ export class WebGlTerminalSurface
   setFontMetrics(metrics: TerminalFontMetrics): void {
     if (fontMetricsKey(this.metrics) === fontMetricsKey(metrics)) return;
     this.metrics = metrics;
-    if (this.renderer && this.host) {
+    if (this.renderer && this.host && !this.documentSuspended) {
       this.renderer = this.runtime.acquire(this, this.root, this.profile());
       this.resizeToHost();
       this.renderer.resetModel();
@@ -279,8 +309,17 @@ export class WebGlTerminalSurface
     return this.root;
   }
 
+  isFocused(): boolean {
+    return this.focused;
+  }
+
   renderFrame(renderer: XtermWebGlRenderer): boolean {
-    if (this.disposed || !this.visible || !this.host) {
+    if (
+      this.disposed ||
+      !this.visible ||
+      this.documentSuspended ||
+      !this.host
+    ) {
       return false;
     }
     this.applyQueuedFit();
@@ -294,9 +333,7 @@ export class WebGlTerminalSurface
       damage: this.options.model.consumeDamage(),
       cursorVisible: this.cursorVisible,
       textBlinkVisible: this.textBlinkVisible,
-      hasSelection: this.selection.value !== null,
-      selectionContains: (line, column) =>
-        this.selection.contains(line, column),
+      selection: this.selection.normalizedBounds(),
       searchMatchAt: (row, column) => this.search.matchAt(row, column),
     });
     if (!rendered) return false;
@@ -308,6 +345,11 @@ export class WebGlTerminalSurface
   }
 
   handleRendererError(error: Error): void {
+    if (!this.disposed && this.documentSuspended) {
+      this.runtime.discard(this);
+      this.renderer = null;
+      return;
+    }
     if (
       this.disposed ||
       this.recoveringRenderer ||
@@ -348,6 +390,7 @@ export class WebGlTerminalSurface
       cols: this.options.model.cols,
       rows: this.options.model.rows,
       visible: this.visible,
+      documentSuspended: this.documentSuspended,
       focused: this.focused,
       renderer: this.renderer?.diagnostics() ?? null,
       rendererRecoveries: this.rendererRecoveryCount,
@@ -360,6 +403,7 @@ export class WebGlTerminalSurface
     this.detach();
     this.disposed = true;
     this.unsubscribeDamage();
+    this.unsubscribeResizeInteraction();
     this.search.dispose();
     this.selection.dispose();
     this.root.removeEventListener("pointerdown", this.handlePointerDown);
@@ -370,6 +414,7 @@ export class WebGlTerminalSurface
     this.input.removeEventListener("focus", this.handleFocus);
     this.input.removeEventListener("blur", this.handleBlur);
     this.scrollbar.removeEventListener("scroll", this.handleScroll);
+    this.unsubscribePresentation();
   }
 
   private readonly handlePointerDown = (): void => this.focus();
@@ -402,6 +447,40 @@ export class WebGlTerminalSurface
   private readonly handleLinkMouseLeave = (): void => {
     this.mouseDownLink = null;
     this.clearHoveredLink();
+  };
+
+  private readonly handleVisibilityChange = ({
+    visible,
+    reclaim,
+  }: WindowPresentation): void => {
+    const wasSuspended = this.documentSuspended;
+    this.documentSuspended = !visible;
+    if (!visible) {
+      this.clearCursorTimer();
+      this.clearTextBlinkTimer();
+      this.textBlinkVisible = true;
+      this.search.suspend();
+      this.selection.suspend();
+      if (reclaim) {
+        this.options.model.releasePresentationResources();
+        this.runtime.discard(this);
+        this.renderer = null;
+        this.runtime.trimForHiddenDocument();
+      }
+      return;
+    }
+    if (!wasSuspended || !this.visible || !this.host) return;
+    this.search.resume();
+    try {
+      this.scale = Math.max(1, window.devicePixelRatio || 1);
+      this.renderer = this.runtime.acquire(this, this.root, this.profile());
+      this.resizeToHost();
+      this.renderer.resetModel();
+      this.runtime.schedule(this);
+      this.armCursorBlink();
+    } catch (error) {
+      this.options.onError(toError(error));
+    }
   };
 
   private readonly handleScroll = (): void => {
@@ -470,13 +549,18 @@ export class WebGlTerminalSurface
       () => this.host?.getBoundingClientRect() ?? { width: 0, height: 0 },
     );
     if (bounds) this.resizeToHost(bounds, false);
+    if (this.compactAfterResize && !this.resizeInteractionActive) {
+      this.compactAfterResize = false;
+      this.options.model.compactPresentationResources();
+      this.renderer?.resetModel();
+    }
   }
 
   private resizeToHost(
     measuredBounds?: Pick<DOMRectReadOnly, "width" | "height">,
     scheduleRender = true,
   ): void {
-    if (!this.host || !this.renderer) return;
+    if (!this.host || !this.renderer || this.documentSuspended) return;
     this.fitQueue.clear();
     const nextScale = Math.max(1, window.devicePixelRatio || 1);
     if (nextScale !== this.scale) {
@@ -514,8 +598,12 @@ export class WebGlTerminalSurface
       }
     }
     if (changed) this.selection.reconcile();
-    const rendererChanged = this.renderer.resize(cols, rows);
-    if (rendererChanged) {
+    const rendererChanged = this.renderer.resize(
+      cols,
+      rows,
+      this.resizeInteractionActive,
+    );
+    if (changed || rendererChanged) {
       this.options.model.setPixelSize(pixelWidth, pixelHeight);
     }
     if (changed) this.options.onResize(cols, rows);
@@ -550,7 +638,7 @@ export class WebGlTerminalSurface
       !this.focused ||
       !this.visible ||
       !this.host ||
-      document.visibilityState !== "visible"
+      !terminalWindowPresentation().visible
     ) {
       this.clearCursorTimer();
       return;
@@ -583,7 +671,7 @@ export class WebGlTerminalSurface
       this.textBlinkTimer !== null ||
       !this.visible ||
       !this.host ||
-      document.visibilityState !== "visible"
+      !terminalWindowPresentation().visible
     ) {
       return;
     }
@@ -598,6 +686,10 @@ export class WebGlTerminalSurface
   private clearTextBlinkTimer(): void {
     if (this.textBlinkTimer !== null) window.clearTimeout(this.textBlinkTimer);
     this.textBlinkTimer = null;
+  }
+
+  private updateRootBackground(): void {
+    this.root.style.backgroundColor = rgbToCss(this.theme.background);
   }
 
   private assertLive(): void {

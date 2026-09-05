@@ -1,0 +1,170 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { GhosttyTerminalModelApi } from "@/modules/terminal/ghostty/GhosttyTerminalModel";
+import { WebGpuTerminalSurface } from "@/modules/terminal/ghostty/gpu/WebGpuTerminalSurface";
+
+const bridge = vi.hoisted(() => ({ runtime: {} as unknown, visible: true }));
+vi.mock("@/modules/terminal/ghostty/gpu/WebGpuTerminalRuntime", () => ({
+  getWebGpuTerminalRuntime: async () => bridge.runtime,
+}));
+vi.mock("@/modules/terminal/ghostty/windowPresentation", () => ({
+  terminalWindowPresentation: () => ({
+    visible: bridge.visible,
+    reclaim: false,
+  }),
+}));
+
+const surfaces: WebGpuTerminalSurface[] = [];
+afterEach(() => {
+  for (const surface of surfaces.splice(0)) surface.dispose();
+  vi.unstubAllGlobals();
+});
+
+describe("WebGPU surface resource lifecycle", () => {
+  it("reuses presentation through rapid desktop switches and retains selection after reclamation", async () => {
+    const h = await harness();
+    const allocated = h.createBuffer.mock.calls.length;
+    for (let transition = 0; transition < 1_000; transition++) {
+      h.visibility(false, false);
+      h.visibility(true, false);
+    }
+    expect(h.createBuffer).toHaveBeenCalledTimes(allocated);
+    expect(h.destroy).not.toHaveBeenCalled();
+    expect(h.model.releasePresentationResources).not.toHaveBeenCalled();
+    h.visibility(false, true);
+    expect(h.surface.diagnostics().gpuBufferBytes).toBe(0);
+    expect(h.surface.diagnostics().estimatedSwapchainBytes).toBe(0);
+    expect(h.model.releasePresentationResources).toHaveBeenCalledOnce();
+    expect(h.surface.getSelection()).toBe("selected output");
+    h.visibility(true, false);
+    expect(h.createBuffer).toHaveBeenCalledTimes(allocated * 2);
+    expect(h.surface.getSelection()).toBe("selected output");
+    expect(h.onError).not.toHaveBeenCalled();
+  });
+
+  it("defers font changes during occlusion and acquires the current font and DPR on resume", async () => {
+    const h = await harness();
+    const allocated = h.createBuffer.mock.calls.length;
+    h.visibility(false, false);
+    const metrics = {
+      ...METRICS,
+      cellWidth: 10,
+      font: { ...METRICS.font, size: 18 },
+    };
+    h.surface.setFontMetrics(metrics);
+    expect(h.createBuffer).toHaveBeenCalledTimes(allocated);
+    expect(h.surface.diagnostics().gpuBufferBytes).toBe(0);
+    window.devicePixelRatio = 2;
+    h.visibility(true, false);
+    expect(h.acquireGlyphAtlas).toHaveBeenLastCalledWith(metrics, 2, h.surface);
+    expect(h.surface.diagnostics().gpuBufferBytes).toBeGreaterThan(0);
+    expect(h.onError).not.toHaveBeenCalled();
+  });
+});
+
+const METRICS = {
+  font: {
+    family: "monospace",
+    size: 14,
+    lineHeight: 1.2,
+    letterSpacing: 0,
+    weight: "400",
+  },
+  cellWidth: 8,
+  cellHeight: 16,
+  baseline: 12,
+};
+
+async function harness() {
+  bridge.visible = true;
+  const destroy = vi.fn();
+  const createBuffer = vi.fn(({ size }) => ({ size, destroy }));
+  const context = { configure: vi.fn(), unconfigure: vi.fn() };
+  const element = () => ({
+    style: { setProperty: vi.fn() },
+    width: 300,
+    height: 150,
+    setAttribute: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    append: vi.fn(),
+    appendChild: vi.fn(),
+    remove: vi.fn(),
+    getContext: () => context,
+    getBoundingClientRect: () => ({ width: 960, height: 640 }),
+  });
+  vi.stubGlobal("document", { createElement: element });
+  vi.stubGlobal("window", { devicePixelRatio: 1, setTimeout, clearTimeout });
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
+  vi.stubGlobal("GPUBufferUsage", { UNIFORM: 1, COPY_DST: 2, VERTEX: 4 });
+  const acquireGlyphAtlas = vi.fn(() => ({
+    atlas: { generation: 1, coverageTextureView: {}, colorTextureView: {} },
+    release: vi.fn(),
+  }));
+  bridge.runtime = {
+    register: vi.fn(),
+    unregister: vi.fn(),
+    schedule: vi.fn(),
+    acquireGlyphAtlas,
+    resources: () => ({
+      device: { createBuffer, createBindGroup: vi.fn() },
+      generation: 1,
+    }),
+  };
+  const model = {
+    cols: 120,
+    rows: 40,
+    setCursorOptions: vi.fn(),
+    revision: () => 0,
+    subscribeDamage: () => () => {},
+    trackedSelection: () => ({
+      anchor: { line: 0, column: 0 },
+      focus: { line: 0, column: 10 },
+      rectangular: false,
+    }),
+    selectionText: () => "selected output",
+    scrollPosition: () => ({ history: 0, offset: 0 }),
+    modes: () => ({ alternateScreen: false }),
+    setPixelSize: vi.fn(),
+    releasePresentationResources: vi.fn(),
+    resize: (cols: number, rows: number) => {
+      model.cols = cols;
+      model.rows = rows;
+    },
+  };
+  const onError = vi.fn();
+  const surface = await WebGpuTerminalSurface.create({
+    model: model as unknown as GhosttyTerminalModelApi,
+    metrics: METRICS,
+    theme: {
+      background: [0, 0, 0],
+      foreground: [255, 255, 255],
+      cursor: [255, 255, 255],
+      selection: { color: [50, 50, 50], alpha: 0.5 },
+      palette: [],
+    },
+    cursorBlink: false,
+    cursorStyle: "block",
+    onResize: vi.fn(),
+    onError,
+  });
+  surfaces.push(surface);
+  surface.attach(element() as unknown as HTMLElement);
+  return {
+    surface,
+    model,
+    createBuffer,
+    destroy,
+    acquireGlyphAtlas,
+    onError,
+    visibility(visible: boolean, reclaim: boolean) {
+      bridge.visible = visible;
+      surface.handleVisibilityChange(visible, reclaim);
+    },
+  };
+}

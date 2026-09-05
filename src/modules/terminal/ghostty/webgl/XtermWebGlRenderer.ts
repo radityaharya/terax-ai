@@ -12,6 +12,10 @@ import type {
   TerminalFontMetrics,
   TerminalGpuTheme,
 } from "../gpu/terminalVisuals";
+import {
+  selectionBoundsContain,
+  type TerminalSelectionBounds,
+} from "../selection/TerminalSelectionController";
 import { WebGlGlyphAtlas, type WebGlGlyphEntry } from "./WebGlGlyphAtlas";
 
 const GLYPH_FLOATS = 15;
@@ -40,8 +44,7 @@ export type WebGlRendererFrame = {
   readonly damage: TerminalDamage;
   readonly cursorVisible: boolean;
   readonly textBlinkVisible: boolean;
-  readonly hasSelection: boolean;
-  readonly selectionContains: (line: number, column: number) => boolean;
+  readonly selection: TerminalSelectionBounds | null;
   readonly searchMatchAt: (row: number, column: number) => 0 | 1 | 2;
 };
 
@@ -54,6 +57,8 @@ export type XtermWebGlRendererStats = {
   readonly atlasUploads: number;
   readonly atlasUploadedBytes: number;
   readonly cpuBufferBytes: number;
+  readonly gpuBufferBytes: number;
+  readonly canvasColorBytes: number;
   readonly frames: number;
   readonly uploads: number;
   readonly uploadedGlyphBytes: number;
@@ -115,6 +120,7 @@ export class XtermWebGlRenderer {
     count: 0,
   };
   private glyphInstanceCount = 0;
+  private glyphGpuCapacity = 0;
   private cellCapacity = 0;
   private rowCapacity = 0;
   private cols = 0;
@@ -189,7 +195,7 @@ export class XtermWebGlRenderer {
     this.onContextFailure = null;
   }
 
-  resize(cols: number, rows: number): boolean {
+  resize(cols: number, rows: number, deferCompaction = false): boolean {
     this.assertLive();
     if (!this.profile) throw new Error("WebGL renderer is not configured");
     if (cols * rows > MAX_SURFACE_CELLS) {
@@ -217,8 +223,13 @@ export class XtermWebGlRenderer {
     );
     if (backingStoreChanged) this.viewportDirty = true;
     if (changed) this.resizeModel(cols, rows);
-    if (changed || backingStoreChanged) this.forceFullRedraw = true;
-    return changed || backingStoreChanged;
+    const capacityChanged = deferCompaction
+      ? false
+      : this.compactModelIfNeeded(cols * rows, rows);
+    if (changed || backingStoreChanged || capacityChanged) {
+      this.forceFullRedraw = true;
+    }
+    return changed || backingStoreChanged || capacityChanged;
   }
 
   render(frame: WebGlRendererFrame): boolean {
@@ -276,6 +287,8 @@ export class XtermWebGlRenderer {
       atlasUploads: this.atlas?.uploadCount ?? 0,
       atlasUploadedBytes: this.atlas?.uploadedBytes ?? 0,
       cpuBufferBytes:
+        (this.atlas?.cpuByteSize ?? 0) +
+        this.blinkingRows.byteLength +
         this.glyphAttributes.byteLength +
         this.backgrounds.byteLength +
         this.foregrounds.byteLength +
@@ -284,6 +297,10 @@ export class XtermWebGlRenderer {
         this.decorations.byteLength +
         this.backgroundVertices.attributes.byteLength +
         this.cursorVertices.attributes.byteLength,
+      gpuBufferBytes: this.glyphGpuCapacity * GLYPH_FLOATS * 4,
+      canvasColorBytes: this.disposed
+        ? 0
+        : this.canvas.width * this.canvas.height * 4,
       frames: this.frameCount,
       uploads: this.uploadCount,
       uploadedGlyphBytes: this.uploadedGlyphBytes,
@@ -309,6 +326,19 @@ export class XtermWebGlRenderer {
     this.atlas = null;
     this.deleteResources();
     this.gl.getExtension("WEBGL_lose_context")?.loseContext();
+    this.canvas.width = 1;
+    this.canvas.height = 1;
+    this.glyphAttributes = new Float32Array(0);
+    this.backgrounds = new Uint32Array(0);
+    this.foregrounds = new Uint32Array(0);
+    this.underlineColors = new Uint32Array(0);
+    this.flags = new Uint8Array(0);
+    this.decorations = new Uint8Array(0);
+    this.blinkingRows = new Uint8Array(0);
+    this.backgroundVertices.attributes = new Float32Array(0);
+    this.cursorVertices.attributes = new Float32Array(0);
+    this.glyphGpuCapacity = 0;
+    this.cellCapacity = 0;
     this.onContextRestored = null;
     this.onContextFailure = null;
   }
@@ -330,6 +360,7 @@ export class XtermWebGlRenderer {
     this.clearContextRestoreTimer();
     this.contextLost = false;
     this.atlas = null;
+    this.glyphGpuCapacity = 0;
     this.resources = this.createResources();
     if (this.profile) {
       this.atlas = new WebGlGlyphAtlas(
@@ -406,7 +437,9 @@ export class XtermWebGlRenderer {
         let foreground = cells.foregroundPacked(cellIndex);
         let background = cells.backgroundPacked(cellIndex);
         if ((flags & CellFlags.INVERSE) !== 0) {
-          [foreground, background] = [background, foreground];
+          const originalForeground = foreground;
+          foreground = background;
+          background = originalForeground;
         }
         const searchMatch = frame.searchMatchAt(row, column);
         if (searchMatch !== 0) {
@@ -416,8 +449,8 @@ export class XtermWebGlRenderer {
               : SEARCH_MATCH_BACKGROUND;
         }
         if (
-          frame.hasSelection &&
-          frame.selectionContains(viewportOrigin + row, column)
+          frame.selection &&
+          selectionBoundsContain(frame.selection, viewportOrigin + row, column)
         ) {
           background = blendPackedRgb(
             background,
@@ -657,7 +690,8 @@ export class XtermWebGlRenderer {
         0,
         this.cols * this.rows * GLYPH_FLOATS,
       );
-      gl.bufferData(gl.ARRAY_BUFFER, active, gl.DYNAMIC_DRAW);
+      this.ensureGlyphGpuCapacity();
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, active);
       this.uploadCount += 1;
       this.uploadedGlyphBytes += active.byteLength;
     } else {
@@ -796,6 +830,7 @@ export class XtermWebGlRenderer {
       this.underlineColors = new Uint32Array(this.cellCapacity);
       this.flags = new Uint8Array(this.cellCapacity);
       this.decorations = new Uint8Array(this.cellCapacity);
+      this.ensureGlyphGpuCapacity();
     }
     if (rows > this.rowCapacity) {
       this.rowCapacity = nextPowerOfTwo(rows);
@@ -806,6 +841,48 @@ export class XtermWebGlRenderer {
     this.blinkingRowCount = 0;
 
     resetGlyphGrid(this.glyphAttributes, cols, rows);
+  }
+
+  private compactModelIfNeeded(cells: number, rows: number): boolean {
+    const targetCells = nextWebGlCellCapacity(0, cells);
+    const compactCells =
+      this.cellCapacity >= targetCells * 2 &&
+      this.cellCapacity - targetCells >= 4_096;
+    const targetRows = nextPowerOfTwo(rows);
+    const compactRows = this.rowCapacity >= targetRows * 2;
+    if (!compactCells && !compactRows) return false;
+
+    if (compactCells) {
+      this.cellCapacity = targetCells;
+      this.glyphAttributes = new Float32Array(this.cellCapacity * GLYPH_FLOATS);
+      this.backgrounds = new Uint32Array(this.cellCapacity);
+      this.foregrounds = new Uint32Array(this.cellCapacity);
+      this.underlineColors = new Uint32Array(this.cellCapacity);
+      this.flags = new Uint8Array(this.cellCapacity);
+      this.decorations = new Uint8Array(this.cellCapacity);
+      this.ensureGlyphGpuCapacity(true);
+    }
+    if (compactRows) {
+      this.rowCapacity = targetRows;
+      this.blinkingRows = new Uint8Array(this.rowCapacity);
+    }
+    this.blinkingRowCount = 0;
+    resetGlyphGrid(this.glyphAttributes, this.cols, this.rows);
+    return true;
+  }
+
+  private ensureGlyphGpuCapacity(force = false): void {
+    const resources = this.resources;
+    if (!resources || (!force && this.glyphGpuCapacity >= this.cellCapacity)) {
+      return;
+    }
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, resources.glyphBuffer);
+    this.gl.bufferData(
+      this.gl.ARRAY_BUFFER,
+      this.cellCapacity * GLYPH_FLOATS * 4,
+      this.gl.DYNAMIC_DRAW,
+    );
+    this.glyphGpuCapacity = this.cellCapacity;
   }
 
   private createResources(): RendererResources {
@@ -917,6 +994,7 @@ export class XtermWebGlRenderer {
   private deleteResources(): void {
     const resources = this.resources;
     this.resources = null;
+    this.glyphGpuCapacity = 0;
     if (!resources || this.contextLost) return;
     for (const vao of resources.vaos) this.gl.deleteVertexArray(vao);
     for (const buffer of resources.buffers) this.gl.deleteBuffer(buffer);

@@ -6,6 +6,16 @@ import type {
 
 type SelectionMode = "character" | "word" | "line";
 
+export type TerminalSelectionBounds = {
+  readonly startLine: number;
+  readonly startColumn: number;
+  readonly endLine: number;
+  readonly endColumn: number;
+  readonly left: number;
+  readonly right: number;
+  readonly rectangular: boolean;
+};
+
 export type TerminalSelectionControllerOptions = {
   readonly model: GhosttyTerminalModelApi;
   readonly target: HTMLElement;
@@ -27,6 +37,8 @@ export class TerminalSelectionController {
   private disposed = false;
 
   constructor(private readonly options: TerminalSelectionControllerOptions) {
+    this.selection = options.model.trackedSelection?.() ?? null;
+    this.meaningful = this.selection !== null;
     options.target.addEventListener("pointerdown", this.handlePointerDown);
     options.target.addEventListener("pointermove", this.handlePointerMove);
     options.target.addEventListener("pointerup", this.handlePointerUp);
@@ -45,9 +57,13 @@ export class TerminalSelectionController {
   }
 
   contains(line: number, column: number): boolean {
+    const bounds = this.normalizedBounds();
+    return bounds ? selectionBoundsContain(bounds, line, column) : false;
+  }
+
+  normalizedBounds(): TerminalSelectionBounds | null {
     const selection = this.value;
-    if (!selection) return false;
-    return selectionContains(selection, { line, column });
+    return selection ? normalizeSelectionBounds(selection) : null;
   }
 
   reconcile(): boolean {
@@ -56,9 +72,9 @@ export class TerminalSelectionController {
       return false;
     }
     this.selection = tracked;
+    this.meaningful = tracked !== null;
     if (!tracked) {
       this.anchorRange = null;
-      this.meaningful = false;
       this.stopAutoScroll();
     }
     this.options.onChange();
@@ -79,12 +95,21 @@ export class TerminalSelectionController {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.stopAutoScroll();
+    this.suspend();
     const { target } = this.options;
     target.removeEventListener("pointerdown", this.handlePointerDown);
     target.removeEventListener("pointermove", this.handlePointerMove);
     target.removeEventListener("pointerup", this.handlePointerUp);
     target.removeEventListener("pointercancel", this.handlePointerUp);
+  }
+
+  suspend(): void {
+    this.stopAutoScroll();
+    const { target } = this.options;
+    if (this.pointerId !== null && target.hasPointerCapture(this.pointerId)) {
+      target.releasePointerCapture(this.pointerId);
+    }
+    this.pointerId = null;
   }
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
@@ -282,21 +307,51 @@ export function selectionContains(
   selection: TerminalBufferSelection,
   point: TerminalBufferPoint,
 ): boolean {
-  const { start, end, left, right } = normalizeSelection(selection);
-  if (selection.rectangular) {
+  return selectionBoundsContain(
+    normalizeSelectionBounds(selection),
+    point.line,
+    point.column,
+  );
+}
+
+export function selectionBoundsContain(
+  bounds: TerminalSelectionBounds,
+  line: number,
+  column: number,
+): boolean {
+  if (bounds.rectangular) {
     return (
-      point.line >= start.line &&
-      point.line <= end.line &&
-      point.column >= left &&
-      point.column <= right
+      line >= bounds.startLine &&
+      line <= bounds.endLine &&
+      column >= bounds.left &&
+      column <= bounds.right
     );
   }
-  if (point.line < start.line || point.line > end.line) return false;
-  if (start.line === end.line)
-    return point.column >= start.column && point.column <= end.column;
-  if (point.line === start.line) return point.column >= start.column;
-  if (point.line === end.line) return point.column <= end.column;
+  if (line < bounds.startLine || line > bounds.endLine) return false;
+  if (bounds.startLine === bounds.endLine) {
+    return column >= bounds.startColumn && column <= bounds.endColumn;
+  }
+  if (line === bounds.startLine) return column >= bounds.startColumn;
+  if (line === bounds.endLine) return column <= bounds.endColumn;
   return true;
+}
+
+export function normalizeSelectionBounds(
+  selection: TerminalBufferSelection,
+): TerminalSelectionBounds {
+  const anchorBeforeFocus =
+    comparePoints(selection.anchor, selection.focus) <= 0;
+  const start = anchorBeforeFocus ? selection.anchor : selection.focus;
+  const end = anchorBeforeFocus ? selection.focus : selection.anchor;
+  return {
+    startLine: start.line,
+    startColumn: start.column,
+    endLine: end.line,
+    endColumn: end.column,
+    left: Math.min(selection.anchor.column, selection.focus.column),
+    right: Math.max(selection.anchor.column, selection.focus.column),
+    rectangular: selection.rectangular,
+  };
 }
 
 export function normalizeSelection(selection: TerminalBufferSelection): {
