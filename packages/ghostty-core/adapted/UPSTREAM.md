@@ -6,13 +6,15 @@ without importing Restty's application runtime, PTY transport, perpetual
 per-terminal frame loop, or per-pane GPU lifecycle.
 
 - Ghostty source: `https://github.com/ghostty-org/ghostty`
-- Ghostty commit: `e9db8d2b0b827be035ab75658ea9faf4f0f56d3f`
+- Ghostty commit: `349f026087d948f8f898dca3231ff91438f83ab8`
 - Restty source: `https://github.com/wiedymi/restty`
 - Restty commit: `7700b14a7643ba9240818209ef1e0aa90d83ad77`
 - Zig: `0.16.0`
-- Optimization: `ReleaseFast`, baseline WebAssembly target
-- Artifact size: `650361` bytes
-- Artifact SHA-256: `ed4a16b152710c53039d3dd2ddbdb94e7b0ba0205c9e4d6811efb03150cd0633`
+- Optimization: `ReleaseFast`, WebAssembly SIMD and scalar variants
+- SIMD artifact size: `705529` bytes
+- Scalar artifact size: `710519` bytes
+- SIMD SHA-256: `fad6b01d7f1eca8b9cd6ca5b7de27048ba55121ef63de9cb4ab90e6598404ffd`
+- Scalar SHA-256: `51f66044e4c7f68dd98d671d71409ef1ea4cc289e47a2e9bd215ad906a144f4d`
 
 Terax-specific changes include:
 
@@ -31,12 +33,28 @@ Terax-specific changes include:
 - one shared WASM instance with one terminal handle per Terax model;
 - Ghostty's module-global exact-page WASM pool, avoiding per-terminal geometric
   page-pool growth while reusing released pages across tabs;
+- upstream OSC SIMD scanning plus row-recycling, cursor, hyperlink, C0/C1,
+  Kitty clipboard, and page-pointer correctness fixes through the pinned tip;
+- synchronous SIMD capability detection with a scalar Ghostty artifact for
+  older webviews, preserving the same model and renderer architecture;
 - cached typed views that are recreated only when WASM memory or pointers move;
 - capacity-aware render buffers with bounded headroom, preventing allocation
   churn during repeated window fitting and adjacent-size resize cycles;
+- one reallocatable cell-buffer arena instead of sixteen independent WASM
+  allocations, removing resize fragmentation and transient high-water growth;
+- explicit post-gesture bridge and render-state compaction with hysteresis;
+- periodic render-state renewal after 100,000 updates, releasing fragmented
+  row arenas and retained high-water allocations during long-running agents;
+- explicit presentation-state release for hidden panes and hidden documents,
+  with lazy rebuilding that preserves the terminal, selection, and scrollback;
 - bounded reusable PTY input, terminal-reply, grapheme, and hyperlink bridge
   storage with oversized transient buffers released after use;
-- row-level damage hashes computed inside WASM for bounded renderer uploads;
+- direct consumption of libghostty's global and per-row dirty state, avoiding
+  redundant full-viewport hashing and bridge-array rewrites;
+- stable append-only grapheme and hyperlink storage between partial frames,
+  with bounded full compaction after high-water thresholds;
+- persistent hyperlink interning by owned buffer offsets, avoiding both repeated
+  URI retention on dirty rows and borrowed pointers into recycled terminal pages;
 - direct typed render-state consumption without a per-frame JS cell repack;
 - extended underline styles and colors, overline, inverse-aware decoration
   colors, text blink, graphemes, and wide-cell state;
@@ -63,9 +81,17 @@ From `packages/ghostty-core/adapted/wasm`:
 ```sh
 zig build -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 cp zig-out/bin/terax-ghostty-vt.wasm ../ghostty-vt.wasm
-shasum -a 256 ../ghostty-vt.wasm
+zig build -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast -Dwasm-simd=false
+cp zig-out/bin/terax-ghostty-vt.wasm ../ghostty-vt-scalar.wasm
+shasum -a 256 ../ghostty-vt.wasm ../ghostty-vt-scalar.wasm
 ```
 
 `build.zig.zon` pins both the Ghostty archive URL and Zig package hash. A
 checksum change must be reviewed together with the source revision and the
 terminal compatibility and resource gates.
+
+Both variants run the same adapted-core regression suite. The Rust integration
+test `ghostty_artifacts` additionally validates the scalar binary with SIMD and
+relaxed SIMD disabled and confirms that the primary binary requires SIMD.
+`pnpm bench:ghostty` compares both variants at the same source revision; those
+measurements exclude IPC, webview presentation, process RSS, and energy.

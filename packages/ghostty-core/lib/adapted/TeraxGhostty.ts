@@ -6,6 +6,7 @@ import type {
   TeraxGhosttySearchViewportSpan,
   TeraxGhosttySelection,
   TeraxGhosttyTerminalOptions,
+  TeraxGhosttyTerminalResourceStats,
   TeraxGhosttyWasmExports,
   TypedArray,
   TypedArrayConstructor,
@@ -15,11 +16,30 @@ import { createViewCacheEntry, getCachedView } from "./viewCache";
 import type { GhosttyTerminalEvent } from "../types";
 
 export const ADAPTED_GHOSTTY_COMMIT =
-  "e9db8d2b0b827be035ab75658ea9faf4f0f56d3f";
+  "349f026087d948f8f898dca3231ff91438f83ab8";
 export const ADAPTED_RESTTY_COMMIT =
   "7700b14a7643ba9240818209ef1e0aa90d83ad77";
 export const ADAPTED_GHOSTTY_WASM_SHA256 =
-  "ed4a16b152710c53039d3dd2ddbdb94e7b0ba0205c9e4d6811efb03150cd0633";
+  "fad6b01d7f1eca8b9cd6ca5b7de27048ba55121ef63de9cb4ab90e6598404ffd";
+
+export const ADAPTED_GHOSTTY_SCALAR_WASM_SHA256 =
+  "51f66044e4c7f68dd98d671d71409ef1ea4cc289e47a2e9bd215ad906a144f4d";
+
+let wasmSimdAvailable: boolean | undefined;
+
+export function supportsWasmSimd(): boolean {
+  if (wasmSimdAvailable !== undefined) return wasmSimdAvailable;
+  try {
+    wasmSimdAvailable = WebAssembly.validate(Uint8Array.from([
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60,
+      0x00, 0x01, 0x7b, 0x03, 0x02, 0x01, 0x00, 0x0a, 0x08, 0x01, 0x06, 0x00,
+      0x41, 0x00, 0xfd, 0x0f, 0x0b,
+    ]));
+  } catch {
+    wasmSimdAvailable = false;
+  }
+  return wasmSimdAvailable;
+}
 
 const DEFAULT_SCROLLBACK_BYTES = 8 * 1024 * 1024;
 const MAX_SCROLLBACK_BYTES = 64 * 1024 * 1024;
@@ -44,6 +64,11 @@ const requiredExports = [
   "restty_resize",
   "restty_set_pixel_size",
   "restty_render_update",
+  "restty_render_release",
+  "restty_render_compact",
+  "restty_cell_capacity",
+  "restty_row_capacity",
+  "restty_render_reset_count",
   "restty_alloc",
   "restty_free",
   "restty_output_ptr",
@@ -118,6 +143,7 @@ const requiredExports = [
 const textDecoder = new TextDecoder();
 const emptyBytes = new Uint8Array(0);
 const emptyUint32 = new Uint32Array(0);
+const emptyEvents: GhosttyTerminalEvent[] = [];
 
 type RenderViewCache = {
   readonly codepoints: ViewCacheEntry<Uint32Array>;
@@ -153,7 +179,9 @@ export class TeraxGhostty {
     options: TeraxGhosttyLoadOptions = {},
   ): Promise<TeraxGhostty> {
     const path =
-      wasmPath ?? new URL("../../adapted/ghostty-vt.wasm", import.meta.url).href;
+      wasmPath ?? (supportsWasmSimd()
+        ? new URL("../../adapted/ghostty-vt.wasm", import.meta.url).href
+        : new URL("../../adapted/ghostty-vt-scalar.wasm", import.meta.url).href);
     const response = await fetch(path);
     if (!response.ok) {
       throw new Error(
@@ -337,6 +365,28 @@ export class TeraxGhosttyTerminal {
     return this.readRenderState();
   }
 
+  releaseRenderState(): void {
+    this.assertLive();
+    this.exports.restty_render_release(this.handle);
+  }
+
+  compactRenderState(): void {
+    this.assertLive();
+    checkResult(
+      this.exports.restty_render_compact(this.handle),
+      "compact render state",
+    );
+  }
+
+  resourceStats(): TeraxGhosttyTerminalResourceStats {
+    this.assertLive();
+    return {
+      cellCapacity: this.exports.restty_cell_capacity(this.handle),
+      rowCapacity: this.exports.restty_row_capacity(this.handle),
+      renderStateResets: this.exports.restty_render_reset_count(this.handle),
+    };
+  }
+
   drainOutputBytes(): Uint8Array {
     this.assertLive();
     const length = this.exports.restty_output_len(this.handle);
@@ -354,46 +404,45 @@ export class TeraxGhosttyTerminal {
 
   drainEvents(): GhosttyTerminalEvent[] {
     this.assertLive();
-    const events: GhosttyTerminalEvent[] = [];
     const length = this.exports.restty_events_len(this.handle);
-    if (length > 0) {
-      const pointer = this.exports.restty_events_ptr(this.handle);
-      validateRange(this.memory.buffer, pointer, length);
-      const bytes = new Uint8Array(this.memory.buffer, pointer, length);
-      let offset = 0;
-      try {
-        while (offset < bytes.byteLength) {
-          if (bytes.byteLength - offset < EVENT_HEADER_BYTES) {
-            throw new Error("Truncated Ghostty semantic event header");
-          }
-          const type = bytes[offset];
-          const payloadLength = new DataView(
-            bytes.buffer,
-            bytes.byteOffset + offset + 1,
-            4,
-          ).getUint32(0, true);
-          offset += EVENT_HEADER_BYTES;
-          if (
-            payloadLength > MAX_EVENT_PAYLOAD_BYTES ||
-            offset + payloadLength > bytes.byteLength
-          ) {
-            throw new Error("Invalid Ghostty semantic event payload");
-          }
-          const event = decodeTerminalEvent(
-            type,
-            bytes.subarray(offset, offset + payloadLength),
-          );
-          if (event) events.push(event);
-          offset += payloadLength;
-        }
-      } finally {
-        checkResult(
-          this.exports.restty_events_consume(this.handle, length),
-          "consume semantic events",
-        );
-      }
+    if (length === 0) {
+      const dropped = this.exports.restty_take_dropped_events(this.handle);
+      return dropped > 0 ? [{ type: "overflow", dropped }] : emptyEvents;
     }
 
+    const events: GhosttyTerminalEvent[] = [];
+    const pointer = this.exports.restty_events_ptr(this.handle);
+    validateRange(this.memory.buffer, pointer, length);
+    const bytes = new Uint8Array(this.memory.buffer, pointer, length);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let offset = 0;
+    try {
+      while (offset < bytes.byteLength) {
+        if (bytes.byteLength - offset < EVENT_HEADER_BYTES) {
+          throw new Error("Truncated Ghostty semantic event header");
+        }
+        const type = bytes[offset];
+        const payloadLength = view.getUint32(offset + 1, true);
+        offset += EVENT_HEADER_BYTES;
+        if (
+          payloadLength > MAX_EVENT_PAYLOAD_BYTES ||
+          offset + payloadLength > bytes.byteLength
+        ) {
+          throw new Error("Invalid Ghostty semantic event payload");
+        }
+        const event = decodeTerminalEvent(
+          type,
+          bytes.subarray(offset, offset + payloadLength),
+        );
+        if (event) events.push(event);
+        offset += payloadLength;
+      }
+    } finally {
+      checkResult(
+        this.exports.restty_events_consume(this.handle, length),
+        "consume semantic events",
+      );
+    }
     const dropped = this.exports.restty_take_dropped_events(this.handle);
     if (dropped > 0) events.push({ type: "overflow", dropped });
     return events;
@@ -435,8 +484,7 @@ export class TeraxGhosttyTerminal {
     readonly mouseTracking: boolean;
     readonly synchronizedOutput: boolean;
   } {
-    this.assertLive();
-    const bits = this.exports.restty_mode_bits(this.handle);
+    const bits = this.modeBits();
     return {
       alternateScreen: (bits & (1 << 0)) !== 0,
       bracketedPaste: (bits & (1 << 1)) !== 0,
@@ -444,6 +492,11 @@ export class TeraxGhosttyTerminal {
       mouseTracking: (bits & (1 << 3)) !== 0,
       synchronizedOutput: (bits & (1 << 4)) !== 0,
     };
+  }
+
+  modeBits(): number {
+    this.assertLive();
+    return this.exports.restty_mode_bits(this.handle);
   }
 
   setCursorOptions(

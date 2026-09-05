@@ -51,6 +51,11 @@ export type TerminalModelDiagnostics = {
   readonly writes?: number;
   /** libghostty render-state synchronizations, coalesced to presentation. */
   readonly renderStateUpdates?: number;
+  /** Retained WASM bridge capacity for the visible viewport. */
+  readonly bridgeCellCapacity?: number;
+  readonly bridgeRowCapacity?: number;
+  /** Periodic bridge resets that release fragmented render-state arenas. */
+  readonly renderStateResets?: number;
 };
 
 export interface TerminalModel {

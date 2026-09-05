@@ -1,7 +1,19 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    var target = b.standardTargetOptions(.{});
+    if (target.result.cpu.arch.isWasm()) {
+        var query = target.query;
+        const simd = b.option(bool, "wasm-simd", "Enable WebAssembly SIMD") orelse true;
+        const feature = @intFromEnum(std.Target.wasm.Feature.simd128);
+        if (simd) {
+            query.cpu_features_add.addFeature(feature);
+        } else {
+            query.cpu_features_add.removeFeature(feature);
+            query.cpu_features_sub.addFeature(feature);
+        }
+        target = b.resolveTargetQuery(query);
+    }
     const optimize = b.standardOptimizeOption(.{});
 
     retargetMacOS27Host(b);

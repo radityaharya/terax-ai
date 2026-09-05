@@ -79,6 +79,7 @@ fn nextBufferCapacity(current: usize, required: usize, alignment: usize) usize {
 }
 
 const CellBuffers = struct {
+    storage: []u64,
     codepoints: []u32,
     content_tags: []u8,
     wide: []u8,
@@ -94,7 +95,6 @@ const CellBuffers = struct {
     row_selection_start: []i16,
     row_selection_end: []i16,
     row_wrapped: []u8,
-    row_hashes: []u64,
     row_dirty: []u8,
 
     pub fn init(alloc: Allocator, rows: u16, cols: u16) !CellBuffers {
@@ -111,42 +111,8 @@ const CellBuffers = struct {
         cell_capacity: usize,
         row_capacity: usize,
     ) !CellBuffers {
-        var result: CellBuffers = undefined;
-        result.codepoints = try alloc.alloc(u32, cell_capacity);
-        errdefer alloc.free(result.codepoints);
-        result.content_tags = try alloc.alloc(u8, cell_capacity);
-        errdefer alloc.free(result.content_tags);
-        result.wide = try alloc.alloc(u8, cell_capacity);
-        errdefer alloc.free(result.wide);
-        result.flags = try alloc.alloc(u16, cell_capacity);
-        errdefer alloc.free(result.flags);
-        result.style_flags = try alloc.alloc(u16, cell_capacity);
-        errdefer alloc.free(result.style_flags);
-        result.underline_styles = try alloc.alloc(u8, cell_capacity);
-        errdefer alloc.free(result.underline_styles);
-        result.link_ids = try alloc.alloc(u32, cell_capacity);
-        errdefer alloc.free(result.link_ids);
-        result.fg_rgba = try alloc.alloc(u32, cell_capacity);
-        errdefer alloc.free(result.fg_rgba);
-        result.bg_rgba = try alloc.alloc(u32, cell_capacity);
-        errdefer alloc.free(result.bg_rgba);
-        result.ul_rgba = try alloc.alloc(u32, cell_capacity);
-        errdefer alloc.free(result.ul_rgba);
-        result.grapheme_offsets = try alloc.alloc(u32, cell_capacity);
-        errdefer alloc.free(result.grapheme_offsets);
-        result.grapheme_lengths = try alloc.alloc(u32, cell_capacity);
-        errdefer alloc.free(result.grapheme_lengths);
-        result.row_selection_start = try alloc.alloc(i16, row_capacity);
-        errdefer alloc.free(result.row_selection_start);
-        result.row_selection_end = try alloc.alloc(i16, row_capacity);
-        errdefer alloc.free(result.row_selection_end);
-        result.row_wrapped = try alloc.alloc(u8, row_capacity);
-        errdefer alloc.free(result.row_wrapped);
-        result.row_hashes = try alloc.alloc(u64, row_capacity);
-        errdefer alloc.free(result.row_hashes);
-        result.row_dirty = try alloc.alloc(u8, row_capacity);
-        errdefer alloc.free(result.row_dirty);
-        @memset(result.row_hashes, 0);
+        const storage = try alloc.alloc(u64, storageWordCount(cell_capacity, row_capacity));
+        const result = fromStorage(storage, cell_capacity, row_capacity);
         @memset(result.row_dirty, 1);
         return result;
     }
@@ -154,38 +120,112 @@ const CellBuffers = struct {
     fn ensureCapacity(self: *CellBuffers, alloc: Allocator, rows: u16, cols: u16) !bool {
         const required_cells: usize = @as(usize, rows) * @as(usize, cols);
         const required_rows: usize = rows;
-        if (required_cells <= self.codepoints.len and required_rows <= self.row_hashes.len) {
+        if (required_cells <= self.codepoints.len and required_rows <= self.row_dirty.len) {
             return false;
         }
 
-        const replacement = try initCapacity(
-            alloc,
-            nextBufferCapacity(self.codepoints.len, required_cells, cell_buffer_alignment),
-            nextBufferCapacity(self.row_hashes.len, required_rows, row_buffer_alignment),
+        const cell_capacity = nextBufferCapacity(
+            self.codepoints.len,
+            required_cells,
+            cell_buffer_alignment,
         );
-        self.deinit(alloc);
-        self.* = replacement;
+        const row_capacity = nextBufferCapacity(
+            self.row_dirty.len,
+            required_rows,
+            row_buffer_alignment,
+        );
+        const storage = try alloc.realloc(
+            self.storage,
+            storageWordCount(cell_capacity, row_capacity),
+        );
+        self.* = fromStorage(storage, cell_capacity, row_capacity);
+        @memset(self.row_dirty, 1);
+        return true;
+    }
+
+    fn compactCapacity(self: *CellBuffers, alloc: Allocator, rows: u16, cols: u16) !bool {
+        const cell_capacity = nextBufferCapacity(
+            0,
+            @as(usize, rows) * @as(usize, cols),
+            cell_buffer_alignment,
+        );
+        const row_capacity = nextBufferCapacity(0, rows, row_buffer_alignment);
+        const target_words = storageWordCount(cell_capacity, row_capacity);
+        if (target_words >= self.storage.len or target_words * 3 > self.storage.len * 2) {
+            return false;
+        }
+
+        const storage = try alloc.realloc(self.storage, target_words);
+        self.* = fromStorage(storage, cell_capacity, row_capacity);
+        @memset(self.row_dirty, 1);
         return true;
     }
 
     pub fn deinit(self: *CellBuffers, alloc: Allocator) void {
-        alloc.free(self.codepoints);
-        alloc.free(self.content_tags);
-        alloc.free(self.wide);
-        alloc.free(self.flags);
-        alloc.free(self.style_flags);
-        alloc.free(self.underline_styles);
-        alloc.free(self.link_ids);
-        alloc.free(self.fg_rgba);
-        alloc.free(self.bg_rgba);
-        alloc.free(self.ul_rgba);
-        alloc.free(self.grapheme_offsets);
-        alloc.free(self.grapheme_lengths);
-        alloc.free(self.row_selection_start);
-        alloc.free(self.row_selection_end);
-        alloc.free(self.row_wrapped);
-        alloc.free(self.row_hashes);
-        alloc.free(self.row_dirty);
+        alloc.free(self.storage);
+    }
+
+    fn storageWordCount(cell_capacity: usize, row_capacity: usize) usize {
+        var byte_offset: usize = 0;
+        _ = reserveSlice(u32, &byte_offset, cell_capacity);
+        _ = reserveSlice(u8, &byte_offset, cell_capacity);
+        _ = reserveSlice(u8, &byte_offset, cell_capacity);
+        _ = reserveSlice(u16, &byte_offset, cell_capacity);
+        _ = reserveSlice(u16, &byte_offset, cell_capacity);
+        _ = reserveSlice(u8, &byte_offset, cell_capacity);
+        _ = reserveSlice(u32, &byte_offset, cell_capacity);
+        _ = reserveSlice(u32, &byte_offset, cell_capacity);
+        _ = reserveSlice(u32, &byte_offset, cell_capacity);
+        _ = reserveSlice(u32, &byte_offset, cell_capacity);
+        _ = reserveSlice(u32, &byte_offset, cell_capacity);
+        _ = reserveSlice(u32, &byte_offset, cell_capacity);
+        _ = reserveSlice(i16, &byte_offset, row_capacity);
+        _ = reserveSlice(i16, &byte_offset, row_capacity);
+        _ = reserveSlice(u8, &byte_offset, row_capacity);
+        _ = reserveSlice(u8, &byte_offset, row_capacity);
+        return (byte_offset + @sizeOf(u64) - 1) / @sizeOf(u64);
+    }
+
+    fn fromStorage(storage: []u64, cell_capacity: usize, row_capacity: usize) CellBuffers {
+        const bytes = std.mem.sliceAsBytes(storage);
+        var byte_offset: usize = 0;
+        return .{
+            .storage = storage,
+            .codepoints = takeSlice(u32, bytes, &byte_offset, cell_capacity),
+            .content_tags = takeSlice(u8, bytes, &byte_offset, cell_capacity),
+            .wide = takeSlice(u8, bytes, &byte_offset, cell_capacity),
+            .flags = takeSlice(u16, bytes, &byte_offset, cell_capacity),
+            .style_flags = takeSlice(u16, bytes, &byte_offset, cell_capacity),
+            .underline_styles = takeSlice(u8, bytes, &byte_offset, cell_capacity),
+            .link_ids = takeSlice(u32, bytes, &byte_offset, cell_capacity),
+            .fg_rgba = takeSlice(u32, bytes, &byte_offset, cell_capacity),
+            .bg_rgba = takeSlice(u32, bytes, &byte_offset, cell_capacity),
+            .ul_rgba = takeSlice(u32, bytes, &byte_offset, cell_capacity),
+            .grapheme_offsets = takeSlice(u32, bytes, &byte_offset, cell_capacity),
+            .grapheme_lengths = takeSlice(u32, bytes, &byte_offset, cell_capacity),
+            .row_selection_start = takeSlice(i16, bytes, &byte_offset, row_capacity),
+            .row_selection_end = takeSlice(i16, bytes, &byte_offset, row_capacity),
+            .row_wrapped = takeSlice(u8, bytes, &byte_offset, row_capacity),
+            .row_dirty = takeSlice(u8, bytes, &byte_offset, row_capacity),
+        };
+    }
+
+    fn reserveSlice(comptime T: type, byte_offset: *usize, len: usize) usize {
+        byte_offset.* = std.mem.alignForward(usize, byte_offset.*, @alignOf(T));
+        const result = byte_offset.*;
+        byte_offset.* += @sizeOf(T) * len;
+        return result;
+    }
+
+    fn takeSlice(
+        comptime T: type,
+        bytes: []u8,
+        byte_offset: *usize,
+        len: usize,
+    ) []T {
+        const offset = reserveSlice(T, byte_offset, len);
+        const ptr: [*]T = @ptrCast(@alignCast(bytes.ptr + offset));
+        return ptr[0..len];
     }
 };
 
@@ -204,6 +244,7 @@ const max_apc_error_logs: u8 = 24;
 const max_retained_grapheme_codepoints: usize = 64 * 1024;
 const max_retained_link_bytes: usize = 64 * 1024;
 const max_retained_link_count: usize = 4 * 1024;
+const render_state_reset_interval: u32 = 100_000;
 
 const log = std.log.scoped(.restty_apc);
 
@@ -816,13 +857,16 @@ const Restty = struct {
     link_offsets: std.ArrayListUnmanaged(u32) = .empty,
     link_lengths: std.ArrayListUnmanaged(u32) = .empty,
     link_buffer: std.ArrayListUnmanaged(u8) = .empty,
+    link_map: std.HashMapUnmanaged(u32, void, LinkContext, std.hash_map.default_max_load_percentage) = .empty,
     kitty_placements: std.ArrayListUnmanaged(KittyPlacementAbi) = .empty,
     output: std.ArrayListUnmanaged(u8) = .empty,
     events: std.ArrayListUnmanaged(u8) = .empty,
     selection_text: ?[:0]const u8 = null,
     dropped_events: u32 = 0,
-    has_row_hashes: bool = false,
+    has_render_data: bool = false,
     damage_full: u8 = 1,
+    render_update_count: u32 = 0,
+    render_reset_count: u32 = 0,
     key_output: [max_key_output_bytes]u8 = undefined,
     key_output_len: u16 = 0,
     cursor: CursorInfo = .{
@@ -900,15 +944,35 @@ fn packRGBA(rgb: ghostty.color.RGB, a: u8) u32 {
     return @as(u32, rgb.r) | (@as(u32, rgb.g) << 8) | (@as(u32, rgb.b) << 16) | (@as(u32, a) << 24);
 }
 
-fn hashMix(hash: u64, value: u64) u64 {
-    return (hash ^ value) *% 0x00000100000001B3;
-}
+const LinkContext = struct {
+    h: *const Restty,
 
-fn hashBytes(initial: u64, bytes: []const u8) u64 {
-    var hash = initial;
-    for (bytes) |byte| hash = hashMix(hash, byte);
-    return hash;
-}
+    fn uri(self: LinkContext, key: u32) []const u8 {
+        const index = key - 1;
+        const start = self.h.link_offsets.items[index];
+        return self.h.link_buffer.items[start..][0..self.h.link_lengths.items[index]];
+    }
+
+    pub fn hash(self: LinkContext, key: u32) u64 {
+        return std.hash.Wyhash.hash(0, self.uri(key));
+    }
+
+    pub fn eql(self: LinkContext, a: u32, b: u32) bool {
+        return std.mem.eql(u8, self.uri(a), self.uri(b));
+    }
+};
+
+const LinkAdapter = struct {
+    context: LinkContext,
+
+    pub fn hash(_: LinkAdapter, uri: []const u8) u64 {
+        return std.hash.Wyhash.hash(0, uri);
+    }
+
+    pub fn eql(self: LinkAdapter, uri: []const u8, key: u32) bool {
+        return std.mem.eql(u8, uri, self.context.uri(key));
+    }
+};
 
 fn rgbFromU32(color: u32) ghostty.color.RGB {
     return .{
@@ -1380,6 +1444,7 @@ pub export fn restty_destroy(handle: ?*Restty) void {
     h.graphemes.deinit(h.alloc);
     h.link_offsets.deinit(h.alloc);
     h.link_lengths.deinit(h.alloc);
+    h.link_map.deinit(h.alloc);
     h.link_buffer.deinit(h.alloc);
     h.kitty_placements.deinit(h.alloc);
     h.output.deinit(h.alloc);
@@ -1827,7 +1892,15 @@ pub export fn restty_set_pixel_size(handle: ?*Restty, width_px: u32, height_px: 
 pub export fn restty_render_update(handle: ?*Restty) u32 {
     const h = handle orelse return @intFromEnum(ErrorCode.invalid_handle);
     collectKittyPlacements(h) catch return @intFromEnum(ErrorCode.out_of_memory);
+    if (h.render_update_count >= render_state_reset_interval) {
+        h.render_state.deinit(h.alloc);
+        h.render_state = .empty;
+        h.has_render_data = false;
+        h.render_update_count = 0;
+        h.render_reset_count +%= 1;
+    }
     h.render_state.update(h.alloc, &h.term) catch return @intFromEnum(ErrorCode.internal);
+    h.render_update_count += 1;
 
     const new_rows: u16 = @intCast(h.render_state.rows);
     const new_cols: u16 = @intCast(h.render_state.cols);
@@ -1838,34 +1911,45 @@ pub export fn restty_render_update(handle: ?*Restty) u32 {
             return @intFromEnum(ErrorCode.out_of_memory);
         h.rows = new_rows;
         h.cols = new_cols;
-        h.has_row_hashes = false;
+        h.has_render_data = false;
     }
 
-    const full_damage = !h.has_row_hashes;
+    const native_damage = h.render_state.dirty;
+    const dynamic_buffers_need_compaction =
+        h.graphemes.items.len > max_retained_grapheme_codepoints or
+        h.link_buffer.items.len > max_retained_link_bytes or
+        h.link_offsets.items.len > max_retained_link_count;
+    const full_damage = !h.has_render_data or
+        native_damage == .full or
+        dynamic_buffers_need_compaction;
 
-    h.graphemes.clearRetainingCapacity();
-    h.link_offsets.clearRetainingCapacity();
-    h.link_lengths.clearRetainingCapacity();
-    h.link_buffer.clearRetainingCapacity();
+    @memset(h.buffers.row_dirty[0..h.rows], 0);
+    if (full_damage) {
+        h.graphemes.clearRetainingCapacity();
+        h.link_offsets.clearRetainingCapacity();
+        h.link_lengths.clearRetainingCapacity();
+        h.link_map.clearRetainingCapacity();
+        h.link_buffer.clearRetainingCapacity();
+    }
 
     const row_data = h.render_state.row_data.slice();
     const row_pins = row_data.items(.pin);
     const row_cells = row_data.items(.cells);
     const row_selection = row_data.items(.selection);
     const row_raw = row_data.items(.raw);
+    const row_native_dirty = row_data.items(.dirty);
 
     const palette = &h.render_state.colors.palette;
     const default_fg = h.render_state.colors.foreground;
     const default_bg = h.render_state.colors.background;
 
-    var link_map: std.StringHashMapUnmanaged(u32) = .empty;
-    defer link_map.deinit(h.alloc);
+    const link_context: LinkContext = .{ .h = h };
 
-    var idx: usize = 0;
     var r: usize = 0;
     while (r < h.rows) : (r += 1) {
+        if (!full_damage and !row_native_dirty[r]) continue;
+        h.buffers.row_dirty[r] = 1;
         h.buffers.row_wrapped[r] = @intFromBool(row_raw[r].wrap_continuation);
-        var row_hash: u64 = hashMix(0xCBF29CE484222325, h.buffers.row_wrapped[r]);
         if (row_selection[r]) |sel| {
             h.buffers.row_selection_start[r] = clampI16Unsigned(sel[0]);
             h.buffers.row_selection_end[r] = clampI16Unsigned(sel[1]);
@@ -1882,6 +1966,7 @@ pub export fn restty_render_update(handle: ?*Restty) u32 {
         const pin = row_pins[r];
         const page_ptr = pin.node.page();
 
+        var idx: usize = r * @as(usize, h.cols);
         var c: usize = 0;
         while (c < h.cols) : (c += 1) {
             const raw = raw_cells[c];
@@ -1919,16 +2004,6 @@ pub export fn restty_render_update(handle: ?*Restty) u32 {
             h.buffers.bg_rgba[idx] = packRGBA(bg, 0xFF);
             h.buffers.ul_rgba[idx] = packRGBA(ul, 0xFF);
 
-            row_hash = hashMix(row_hash, h.buffers.codepoints[idx]);
-            row_hash = hashMix(row_hash, h.buffers.content_tags[idx]);
-            row_hash = hashMix(row_hash, h.buffers.wide[idx]);
-            row_hash = hashMix(row_hash, h.buffers.flags[idx]);
-            row_hash = hashMix(row_hash, h.buffers.style_flags[idx]);
-            row_hash = hashMix(row_hash, h.buffers.underline_styles[idx]);
-            row_hash = hashMix(row_hash, h.buffers.fg_rgba[idx]);
-            row_hash = hashMix(row_hash, h.buffers.bg_rgba[idx]);
-            row_hash = hashMix(row_hash, h.buffers.ul_rgba[idx]);
-
             if (raw.hasGrapheme() and !is_kitty_placeholder) {
                 const grapheme_slice = cell_graphemes[c];
                 const offset = h.graphemes.items.len;
@@ -1937,7 +2012,6 @@ pub export fn restty_render_update(handle: ?*Restty) u32 {
                         return @intFromEnum(ErrorCode.out_of_memory);
                     for (grapheme_slice) |cp| {
                         h.graphemes.appendAssumeCapacity(@intCast(cp));
-                        row_hash = hashMix(row_hash, cp);
                     }
                 }
                 h.buffers.grapheme_offsets[idx] = @intCast(offset);
@@ -1953,8 +2027,7 @@ pub export fn restty_render_update(handle: ?*Restty) u32 {
                     const link = page_ptr.hyperlink_set.get(page_ptr.memory, link_id);
                     const uri = link.uri.slice(page_ptr.memory);
                     if (uri.len > 0) {
-                        row_hash = hashBytes(row_hash, uri);
-                        const existing = link_map.get(uri);
+                        const existing = h.link_map.getKeyAdapted(uri, LinkAdapter{ .context = link_context });
                         const link_index: u32 = if (existing) |val| val else blk: {
                             const offset: usize = h.link_buffer.items.len;
                             h.link_buffer.appendSlice(h.alloc, uri) catch
@@ -1964,7 +2037,7 @@ pub export fn restty_render_update(handle: ?*Restty) u32 {
                             h.link_lengths.append(h.alloc, @intCast(uri.len)) catch
                                 return @intFromEnum(ErrorCode.out_of_memory);
                             const new_index: u32 = @intCast(h.link_offsets.items.len);
-                            link_map.put(h.alloc, uri, new_index) catch
+                            h.link_map.putContext(h.alloc, new_index, {}, link_context) catch
                                 return @intFromEnum(ErrorCode.out_of_memory);
                             break :blk new_index;
                         };
@@ -1975,11 +2048,9 @@ pub export fn restty_render_update(handle: ?*Restty) u32 {
 
             idx += 1;
         }
-        h.buffers.row_dirty[r] = @intFromBool(full_damage or h.buffers.row_hashes[r] != row_hash);
-        h.buffers.row_hashes[r] = row_hash;
     }
 
-    h.has_row_hashes = true;
+    h.has_render_data = true;
     h.damage_full = @intFromBool(full_damage);
 
     const cursor_state = h.render_state.cursor;
@@ -1998,21 +2069,29 @@ pub export fn restty_render_update(handle: ?*Restty) u32 {
     h.cursor.blinking = if (cursor_state.blinking) 1 else 0;
     h.cursor.color_rgba = if (h.render_state.colors.cursor) |c| packRGBA(c, 0xFF) else 0;
 
-    if (h.graphemes.items.len == 0 and h.graphemes.capacity > max_retained_grapheme_codepoints) {
-        h.graphemes.deinit(h.alloc);
-        h.graphemes = .empty;
-    }
-    if (h.link_buffer.items.len == 0 and h.link_buffer.capacity > max_retained_link_bytes) {
-        h.link_buffer.deinit(h.alloc);
-        h.link_buffer = .empty;
-    }
-    if (h.link_offsets.items.len == 0 and h.link_offsets.capacity > max_retained_link_count) {
-        h.link_offsets.deinit(h.alloc);
-        h.link_offsets = .empty;
-        h.link_lengths.deinit(h.alloc);
-        h.link_lengths = .empty;
-    }
+    h.render_state.clean();
 
+    return @intFromEnum(ErrorCode.ok);
+}
+
+pub export fn restty_render_release(handle: ?*Restty) void {
+    const h = handle orelse return;
+    h.render_state.deinit(h.alloc);
+    h.render_state = .empty;
+    h.has_render_data = false;
+    h.render_update_count = 0;
+    h.render_reset_count +%= 1;
+}
+
+pub export fn restty_render_compact(handle: ?*Restty) u32 {
+    const h = handle orelse return @intFromEnum(ErrorCode.invalid_handle);
+    _ = h.buffers.compactCapacity(h.alloc, h.rows, h.cols) catch
+        return @intFromEnum(ErrorCode.out_of_memory);
+    h.render_state.deinit(h.alloc);
+    h.render_state = .empty;
+    h.has_render_data = false;
+    h.render_update_count = 0;
+    h.render_reset_count +%= 1;
     return @intFromEnum(ErrorCode.ok);
 }
 
@@ -2024,6 +2103,21 @@ pub export fn restty_cells_ptr(handle: ?*Restty) usize {
 pub export fn restty_cells_len(handle: ?*Restty) u32 {
     const h = handle orelse return 0;
     return @intCast(h.buffers.codepoints.len);
+}
+
+pub export fn restty_cell_capacity(handle: ?*Restty) u32 {
+    const h = handle orelse return 0;
+    return @intCast(h.buffers.codepoints.len);
+}
+
+pub export fn restty_row_capacity(handle: ?*Restty) u32 {
+    const h = handle orelse return 0;
+    return @intCast(h.buffers.row_dirty.len);
+}
+
+pub export fn restty_render_reset_count(handle: ?*Restty) u32 {
+    const h = handle orelse return 0;
+    return h.render_reset_count;
 }
 
 pub export fn restty_cell_codepoints_ptr(handle: ?*Restty) usize {

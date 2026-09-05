@@ -40,6 +40,7 @@ export function canUseWebGpu(): boolean {
 export type TerminalRendererCapabilities = {
   readonly webGpu: boolean;
   readonly webGl2: boolean;
+  readonly wasmSimd: boolean;
 };
 
 export function resolveTerminalBackend(

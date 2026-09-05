@@ -47,6 +47,19 @@ type BufferLine = {
   readonly wrapped: boolean;
 };
 
+type ScrollPosition = {
+  readonly offset: number;
+  readonly history: number;
+};
+
+const DEFAULT_MODES: TerminalModes = Object.freeze({
+  alternateScreen: false,
+  bracketedPaste: false,
+  focusReporting: false,
+  mouseTracking: false,
+  synchronizedOutput: false,
+});
+
 /**
  * Terax-owned model adapter for the current Ghostty terminal and render-state
  * implementation. The terminal model is independent from GPU surfaces so it
@@ -70,8 +83,13 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
   private contentRevision = 0;
   private writeCount = 0;
   private renderStateUpdateCount = 0;
+  private presentationResourcesReleased = false;
   private damageNotificationPending = false;
   private damageNeedsResolution = false;
+  private modeBitsValue = 0;
+  private modesValue = DEFAULT_MODES;
+  private scrollPositionValue: ScrollPosition = { offset: 0, history: 0 };
+  private scrollPositionCurrent = false;
   private readonly promptPresentation: PromptPresentationGate;
   private readonly synchronizedOutputPresentation: SynchronizedOutputPresentationGate;
   private colsValue: number;
@@ -127,6 +145,30 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     return true;
   }
 
+  releasePresentationResources(): void {
+    this.assertLive();
+    if (this.presentationResourcesReleased) return;
+    this.renderState = null;
+    this.renderStateCurrent = false;
+    this.packedViewport = new Uint8Array(0);
+    this.packedRenderVersion = -1;
+    this.terminal.releaseRenderState();
+    this.presentationResourcesReleased = true;
+    this.pendingDamage = FULL_DAMAGE;
+    this.damageNeedsResolution = false;
+  }
+
+  compactPresentationResources(): void {
+    this.assertLive();
+    this.terminal.compactRenderState();
+    this.renderState = null;
+    this.renderStateCurrent = false;
+    this.packedViewport = new Uint8Array(0);
+    this.packedRenderVersion = -1;
+    this.pendingDamage = FULL_DAMAGE;
+    this.damageNeedsResolution = false;
+  }
+
   setColors(
     foreground: number,
     background: number,
@@ -149,12 +191,14 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     this.terminal.write(bytes);
     this.writeCount += 1;
     this.contentRevision += 1;
+    this.scrollPositionCurrent = false;
     this.invalidateRenderState();
     this.damageNeedsResolution = true;
+    this.refreshModes();
     this.drainReplies();
     this.drainEvents();
     this.synchronizedOutputPresentation.observe(
-      this.terminal.modes().synchronizedOutput,
+      this.modesValue.synchronizedOutput,
     );
     this.requestPresentation();
   }
@@ -168,6 +212,7 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     this.colsValue = cols;
     this.rowsValue = rows;
     this.contentRevision += 1;
+    this.scrollPositionCurrent = false;
     this.invalidateRenderState();
     this.pendingDamage = FULL_DAMAGE;
     this.notifyDamage();
@@ -298,14 +343,14 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     return this.terminal.hyperlinkAt(state, row * state.cols + column);
   }
 
-  scrollPosition(): { readonly offset: number; readonly history: number } {
+  scrollPosition(): ScrollPosition {
     this.assertLive();
-    const scrollbar = this.terminal.scrollbar();
-    const history = Math.max(0, scrollbar.total - scrollbar.length);
-    return {
-      offset: Math.max(0, history - Math.min(history, scrollbar.offset)),
-      history,
-    };
+    if (this.scrollPositionCurrent) return this.scrollPositionValue;
+    this.scrollPositionValue = scrollPositionFromScrollbar(
+      this.terminal.scrollbar(),
+    );
+    this.scrollPositionCurrent = true;
+    return this.scrollPositionValue;
   }
 
   scrollBy(lines: number): boolean {
@@ -323,6 +368,8 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     if (next === current.offset) return false;
 
     this.terminal.scrollViewportTo(current.history - next);
+    this.scrollPositionValue = { offset: next, history: current.history };
+    this.scrollPositionCurrent = true;
     this.invalidateRenderState();
     this.pendingDamage = FULL_DAMAGE;
     this.notifyDamage();
@@ -453,7 +500,15 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
 
   modes(): TerminalModes {
     this.assertLive();
-    return this.terminal.modes();
+    this.refreshModes();
+    return this.modesValue;
+  }
+
+  private refreshModes(): void {
+    const modeBits = this.terminal.modeBits();
+    if (modeBits === this.modeBitsValue) return;
+    this.modeBitsValue = modeBits;
+    this.modesValue = modesFromBits(modeBits);
   }
 
   readText(maxLines: number): string {
@@ -490,6 +545,7 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     const scrollbar = this.disposed
       ? { total: 0, length: 0 }
       : this.terminal.scrollbar();
+    const resources = this.disposed ? null : this.terminal.resourceStats();
     return {
       backend: this.backend,
       cols: this.colsValue,
@@ -498,6 +554,9 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
       disposed: this.disposed,
       writes: this.writeCount,
       renderStateUpdates: this.renderStateUpdateCount,
+      bridgeCellCapacity: resources?.cellCapacity ?? 0,
+      bridgeRowCapacity: resources?.rowCapacity ?? 0,
+      renderStateResets: resources?.renderStateResets ?? 0,
     };
   }
 
@@ -552,6 +611,7 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
       this.renderStateCurrent = true;
       this.renderVersion += 1;
       this.renderStateUpdateCount += 1;
+      this.presentationResourcesReleased = false;
     }
     const current = this.renderState;
     if (!current) throw new Error("Ghostty render state is unavailable");
@@ -631,6 +691,7 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
         this.terminal.scrollViewportTo(Math.min(line, history));
         const state = this.terminal.updateRenderState();
         this.renderStateUpdateCount += 1;
+        this.presentationResourcesReleased = false;
         if (this.damageNeedsResolution) {
           this.pendingDamage = mergeDamage(
             this.pendingDamage,
@@ -653,6 +714,8 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
       }
     } finally {
       this.terminal.scrollViewportTo(originalOffset);
+      this.scrollPositionValue = scrollPositionFromScrollbar(initialScrollbar);
+      this.scrollPositionCurrent = true;
       this.invalidateRenderState();
     }
     return result;
@@ -854,6 +917,29 @@ function mergeDamage(
   if (previous.kind === "none") return next;
   if (next.kind === "none") return previous;
   return { kind: "rows", ranges: [...previous.ranges, ...next.ranges] };
+}
+
+function modesFromBits(bits: number): TerminalModes {
+  if (bits === 0) return DEFAULT_MODES;
+  return Object.freeze({
+    alternateScreen: (bits & (1 << 0)) !== 0,
+    bracketedPaste: (bits & (1 << 1)) !== 0,
+    focusReporting: (bits & (1 << 2)) !== 0,
+    mouseTracking: (bits & (1 << 3)) !== 0,
+    synchronizedOutput: (bits & (1 << 4)) !== 0,
+  });
+}
+
+function scrollPositionFromScrollbar(scrollbar: {
+  readonly total: number;
+  readonly length: number;
+  readonly offset: number;
+}): ScrollPosition {
+  const history = Math.max(0, scrollbar.total - scrollbar.length);
+  return {
+    offset: Math.max(0, history - Math.min(history, scrollbar.offset)),
+    history,
+  };
 }
 
 function normalizeScrollbackLines(value: number | undefined): number {

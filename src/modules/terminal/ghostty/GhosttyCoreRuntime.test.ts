@@ -157,6 +157,49 @@ describe("GhosttyCoreRuntime", () => {
     model.dispose();
   });
 
+  it("reuses mode snapshots until terminal modes actually change", async () => {
+    const runtime = new GhosttyCoreRuntime(() =>
+      TeraxGhostty.loadBytes(wasmBytes.slice(0)),
+    );
+    const model = await runtime.createModel({
+      leafId: 81,
+      cols: 80,
+      rows: 24,
+    });
+
+    const initial = model.modes();
+    expect(model.modes()).toBe(initial);
+    model.write(new TextEncoder().encode("ordinary output"));
+    expect(model.modes()).toBe(initial);
+
+    model.write(new TextEncoder().encode("\x1b[?2004h"));
+    const bracketedPaste = model.modes();
+    expect(bracketedPaste).not.toBe(initial);
+    expect(bracketedPaste.bracketedPaste).toBe(true);
+    expect(model.modes()).toBe(bracketedPaste);
+    model.dispose();
+  });
+
+  it("exposes current modes during semantic callbacks in the same write", async () => {
+    const runtime = new GhosttyCoreRuntime(() =>
+      TeraxGhostty.loadBytes(wasmBytes.slice(0)),
+    );
+    const states: boolean[] = [];
+    const model = await runtime.createModel({
+      leafId: 82,
+      cols: 80,
+      rows: 24,
+      onEvent: () => states.push(model.modes().bracketedPaste),
+    });
+    try {
+      model.write(new TextEncoder().encode("\x1b[?2004h\x1b]2;title\x07"));
+      model.write(new TextEncoder().encode("\x1b[?2004l\x1b]2;title\x07"));
+      expect(states).toEqual([true, false]);
+    } finally {
+      runtime.dispose();
+    }
+  });
+
   it("presents an OSC 133 wrapped Starship prompt atomically", async () => {
     const runtime = new GhosttyCoreRuntime(() =>
       TeraxGhostty.loadBytes(wasmBytes.slice(0)),
@@ -325,11 +368,16 @@ describe("GhosttyCoreRuntime", () => {
     model.consumeDamage();
     model.write(new TextEncoder().encode("one\r\ntwo\r\nthree\r\nfour"));
 
-    expect(model.scrollPosition()).toEqual({ offset: 0, history: 1 });
+    const livePosition = model.scrollPosition();
+    expect(livePosition).toEqual({ offset: 0, history: 1 });
+    expect(model.scrollPosition()).toBe(livePosition);
     expect(readViewportRows(model)).toEqual(["two", "three", "four"]);
 
     expect(model.scrollBy(-1)).toBe(true);
-    expect(model.scrollPosition()).toEqual({ offset: 1, history: 1 });
+    const historyPosition = model.scrollPosition();
+    expect(historyPosition).not.toBe(livePosition);
+    expect(historyPosition).toEqual({ offset: 1, history: 1 });
+    expect(model.scrollPosition()).toBe(historyPosition);
     expect(readViewportRows(model)).toEqual(["one", "two", "three"]);
     expect(model.cursor().visible).toBe(false);
 

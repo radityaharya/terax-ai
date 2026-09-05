@@ -38,14 +38,33 @@ describe("terminal backend selection", () => {
       resolveTerminalBackend("ghostty-webgpu", {
         webGpu: false,
         webGl2: true,
+        wasmSimd: true,
       }),
     ).toBe("ghostty-webgl");
     expect(
       resolveTerminalBackend("ghostty-webgpu", {
         webGpu: false,
         webGl2: false,
+        wasmSimd: true,
       }),
     ).toBe("xterm-webgl");
+  });
+
+  it("keeps Ghostty available through its scalar core when SIMD is unavailable", () => {
+    expect(
+      resolveTerminalBackend("ghostty-webgpu", {
+        webGpu: true,
+        webGl2: true,
+        wasmSimd: false,
+      }),
+    ).toBe("ghostty-webgpu");
+    expect(
+      resolveTerminalBackend("ghostty-webgpu", {
+        webGpu: false,
+        webGl2: true,
+        wasmSimd: false,
+      }),
+    ).toBe("ghostty-webgl");
   });
 
   it("keeps an explicit xterm selection independent of GPU capability", () => {
@@ -53,6 +72,7 @@ describe("terminal backend selection", () => {
       resolveTerminalBackend("xterm-webgl", {
         webGpu: true,
         webGl2: true,
+        wasmSimd: false,
       }),
     ).toBe("xterm-webgl");
   });

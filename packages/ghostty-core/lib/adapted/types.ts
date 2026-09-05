@@ -51,6 +51,12 @@ export type TeraxGhosttyTerminalOptions = {
   readonly maxScrollbackLines?: number;
 };
 
+export type TeraxGhosttyTerminalResourceStats = {
+  readonly cellCapacity: number;
+  readonly rowCapacity: number;
+  readonly renderStateResets: number;
+};
+
 export type TeraxGhosttySearchStatus = {
   readonly active: boolean;
   readonly pending: boolean;
@@ -94,6 +100,11 @@ export type TeraxGhosttyWasmExports = WebAssembly.Exports & {
     heightPx: number,
   ) => number;
   readonly restty_render_update: (handle: number) => number;
+  readonly restty_render_release: (handle: number) => void;
+  readonly restty_render_compact: (handle: number) => number;
+  readonly restty_cell_capacity: (handle: number) => number;
+  readonly restty_row_capacity: (handle: number) => number;
+  readonly restty_render_reset_count: (handle: number) => number;
   readonly restty_alloc: (len: number) => number;
   readonly restty_free: (ptr: number, len: number) => void;
   readonly restty_output_ptr: (handle: number) => number;

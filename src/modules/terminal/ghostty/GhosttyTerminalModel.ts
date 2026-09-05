@@ -78,6 +78,8 @@ export interface GhosttyTerminalModelApi extends TerminalModel {
   renderCells(): TerminalCellReader;
   presentationSuppressed(): boolean;
   deferPresentation(): boolean;
+  releasePresentationResources(): void;
+  compactPresentationResources(): void;
   setColors(
     foreground: number,
     background: number,
@@ -186,6 +188,8 @@ export class GhosttyTerminalModel implements GhosttyTerminalModelApi {
     this.damageNotificationPending = false;
     return true;
   }
+
+  compactPresentationResources(): void {}
 
   setColors(
     _foreground: number,
@@ -584,6 +588,15 @@ export class GhosttyTerminalModel implements GhosttyTerminalModelApi {
       writes: this.writeCount,
       renderStateUpdates: this.renderStateUpdateCount,
     };
+  }
+
+  releasePresentationResources(): void {
+    this.assertLive();
+    this.renderStateCurrent = false;
+    this.renderStateDirty = DirtyState.FULL;
+    this.pendingDamage = FULL_DAMAGE;
+    this.scrolledViewport = new Uint8Array(0);
+    this.cellReader = null;
   }
 
   dispose(): void {
