@@ -24,6 +24,26 @@ const completeStatus: GhosttySearchStatus = {
 };
 
 describe("GhosttySearchController", () => {
+  it("renders block matches without starting a whole-terminal search", () => {
+    let active = true;
+    const model = {
+      cols: 5,
+      rows: 1,
+      blockSearchActive: () => active,
+      searchViewportMatches: () => [
+        { row: 0, startColumn: 1, endColumn: 4, selected: true },
+      ],
+      setSearchQuery: vi.fn(),
+    } as unknown as GhosttyTerminalModelApi;
+    const controller = new GhosttySearchController(model, vi.fn());
+    controller.refresh();
+    expect(controller.matchAt(0, 2)).toBe(2);
+    expect(model.setSearchQuery).not.toHaveBeenCalled();
+    active = false;
+    controller.refresh();
+    expect(controller.matchAt(0, 2)).toBe(0);
+    controller.dispose();
+  });
   it.each([false, true])(
     "restores the native search without resetting or skipping a match (pending: %s)",
     (pending) => {

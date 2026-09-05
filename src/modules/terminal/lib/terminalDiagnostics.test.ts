@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { traceEager } from "../../../../scripts/eager-graph.mjs";
-import { terminalDiagnosticsEnabled } from "@/modules/terminal/lib/terminalDiagnosticsRegistry";
+import { terminalDiagnosticsEnabled } from "@/modules/terminal/lib/terminalDiagnosticsEnabled";
 
 describe("terminal diagnostic startup", () => {
   afterEach(() => {

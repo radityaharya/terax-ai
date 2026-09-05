@@ -75,6 +75,7 @@ export type GhosttySearchViewportSpan = {
 };
 
 export interface GhosttyTerminalModelApi extends TerminalModel {
+  isDisposed?(): boolean;
   renderCells(): TerminalCellReader;
   presentationSuppressed(): boolean;
   deferPresentation(): boolean;
@@ -117,6 +118,21 @@ export interface GhosttyTerminalModelApi extends TerminalModel {
   encodeKey(event: KeyEvent): Uint8Array;
   mode(mode: number, isAnsi?: boolean): boolean;
   setReplySink(sink: ((bytes: Uint8Array) => void) | null): void;
+  enableSemanticMarkers?(enabled: boolean): void;
+  semanticMarkerColumn?(id: number): number | null;
+  semanticMarkerLine?(id: number): number | null;
+  readTextRange?(
+    startLine: number,
+    endLine: number,
+    startCol?: number,
+    endCol?: number,
+  ): string;
+  bufferCursorLine?(): number;
+  readCellLine?(line: number): readonly string[];
+  blockSearchActive?(): boolean;
+  setBlockSearchMatch?(
+    match: { line: number; col: number; len: number } | null,
+  ): void;
 }
 
 export class GhosttyTerminalModel implements GhosttyTerminalModelApi {

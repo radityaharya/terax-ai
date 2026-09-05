@@ -14,12 +14,12 @@ describe("terminal backend selection", () => {
     expect(selectedTerminalBackend()).toBe("ghostty-webgpu");
   });
 
-  it("keeps xterm WebGL as an explicit fallback", () => {
+  it("ignores a retired backend preference", () => {
     const storage = createStorage();
     vi.stubGlobal("window", { localStorage: storage });
-    setSelectedTerminalBackend("xterm-webgl");
+    storage.setItem(STORAGE_KEY, "xterm-webgl");
 
-    expect(selectedTerminalBackend()).toBe("xterm-webgl");
+    expect(selectedTerminalBackend()).toBe("ghostty-webgpu");
     expect(storage.getItem(STORAGE_KEY)).toBe("xterm-webgl");
   });
 
@@ -33,7 +33,7 @@ describe("terminal backend selection", () => {
     expect(selectedTerminalBackend()).toBe("ghostty-webgpu");
   });
 
-  it("falls back from WebGPU to Ghostty WebGL before xterm", () => {
+  it("falls back to Ghostty WebGL and lets renderer errors remain visible", () => {
     expect(
       resolveTerminalBackend("ghostty-webgpu", {
         webGpu: false,
@@ -47,7 +47,7 @@ describe("terminal backend selection", () => {
         webGl2: false,
         wasmSimd: true,
       }),
-    ).toBe("xterm-webgl");
+    ).toBe("ghostty-webgl");
   });
 
   it("keeps Ghostty available through its scalar core when SIMD is unavailable", () => {
@@ -65,16 +65,6 @@ describe("terminal backend selection", () => {
         wasmSimd: false,
       }),
     ).toBe("ghostty-webgl");
-  });
-
-  it("keeps an explicit xterm selection independent of GPU capability", () => {
-    expect(
-      resolveTerminalBackend("xterm-webgl", {
-        webGpu: true,
-        webGl2: true,
-        wasmSimd: false,
-      }),
-    ).toBe("xterm-webgl");
   });
 });
 

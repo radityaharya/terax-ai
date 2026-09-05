@@ -6,7 +6,7 @@ import ReactDOM from "react-dom/client";
 import App from "./app/App";
 import { initLaunchDir } from "./lib/launchDir";
 import { USE_CUSTOM_WINDOW_CONTROLS } from "./lib/platform";
-import { terminalDiagnosticsEnabled } from "@/modules/terminal/lib/terminalDiagnosticsRegistry";
+import { terminalDiagnosticsEnabled } from "@/modules/terminal/lib/terminalDiagnosticsEnabled";
 
 if (USE_CUSTOM_WINDOW_CONTROLS) {
   document.documentElement.dataset.chrome = "borderless";

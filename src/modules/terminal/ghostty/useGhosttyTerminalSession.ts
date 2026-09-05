@@ -1,3 +1,8 @@
+import {
+  ensureGhosttyBlocks,
+  ghosttyBlocks,
+  disposeGhosttyBlocks,
+} from "@/modules/terminal/ghostty/ghosttyBlockSessions";
 import { initializeSessionGeneration as startSessionInitialization } from "@/modules/terminal/ghostty/sessionInitialization";
 import { replaceSessionSurface } from "@/modules/terminal/ghostty/replaceSessionSurface";
 import { openExternalUrl } from "@/lib/external-link";
@@ -12,6 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openPty, type PtySession } from "../lib/pty-bridge";
 import { writeTerminalClipboard } from "../lib/terminalClipboard";
+import { LatestClipboardWrite } from "@/modules/terminal/lib/LatestClipboardWrite";
 import { GhosttySemanticEventRouter } from "./core/GhosttySemanticEventRouter";
 import { getGhosttyCoreRuntime } from "./GhosttyCoreRuntime";
 import type { GhosttyTerminalModelApi } from "./GhosttyTerminalModel";
@@ -44,6 +50,7 @@ const MAX_PENDING_INPUT_BYTES = 256 * 1024;
 const MAX_WRITE_BATCH_BYTES = 64 * 1024;
 
 type Callbacks = {
+  onModel?: (model: GhosttyTerminalModelApi | null) => void;
   onError?: (error: GhosttySessionFailure | null) => void;
   onSearchReady?: (search: TerminalSearchController) => void;
   onExit?: (code: number) => void;
@@ -92,6 +99,7 @@ type GhosttyStartupTimings = {
 
 const sessions = new Map<number, GhosttySession>();
 const textEncoder = new TextEncoder();
+const oscClipboard = new LatestClipboardWrite(writeTerminalClipboard);
 
 type Options = {
   leafId: number;
@@ -100,6 +108,7 @@ type Options = {
   visible: boolean;
   focused: boolean;
   initialCwd?: string;
+  blocks?: boolean;
   onExit?: (code: number) => void;
   onCwd?: (cwd: string) => void;
   onSearchReady?: (search: TerminalSearchController) => void;
@@ -112,10 +121,12 @@ export function useGhosttyTerminalSession({
   visible,
   focused,
   initialCwd,
+  blocks = false,
   onSearchReady,
   onExit,
   onCwd,
 }: Options) {
+  const [model, setModel] = useState<GhosttyTerminalModelApi | null>(null);
   const [error, setError] = useState<GhosttySessionFailure | null>(null);
   const { fontFamily, fontSize, fontWeight } = useTerminalFont();
   const letterSpacing = usePreferencesStore(
@@ -145,9 +156,12 @@ export function useGhosttyTerminalSession({
       initialCwdRef.current,
       fontRef.current,
     );
+    if (blocks) ensureGhosttyBlocks(leafId);
     const node = container.current;
     session.container = node;
+    setModel(session.model);
     session.callbacks = {
+      onModel: setModel,
       onError: setError,
       onSearchReady: (search) => callbackRef.current.onSearchReady?.(search),
       onExit: (code) => callbackRef.current.onExit?.(code),
@@ -166,7 +180,7 @@ export function useGhosttyTerminalSession({
         session.callbacks = {};
       }
     };
-  }, [leafId, backend, container]);
+  }, [leafId, backend, container, blocks]);
 
   useEffect(() => {
     const session = sessions.get(leafId);
@@ -178,6 +192,7 @@ export function useGhosttyTerminalSession({
     const session = ensureSession(leafId, backend, initialCwdRef.current);
     session.visible = visible;
     session.focused = focused;
+    ghosttyBlocks(leafId)?.setVisible(visible);
     const surface = session.surface;
     if (!surface || session.rendererError) return;
     if (visible && session.container) {
@@ -212,10 +227,7 @@ export function useGhosttyTerminalSession({
     },
     [leafId],
   );
-  const focus = useCallback(
-    () => sessions.get(leafId)?.surface?.focus(),
-    [leafId],
-  );
+  const focus = useCallback(() => focusGhosttySession(leafId), [leafId]);
   const getBuffer = useCallback(
     (maxLines = 200) => sessions.get(leafId)?.model?.readText(maxLines) ?? null,
     [leafId],
@@ -253,6 +265,7 @@ export function useGhosttyTerminalSession({
   return useMemo(
     () => ({
       error,
+      model,
       retry,
       write,
       focus,
@@ -260,7 +273,7 @@ export function useGhosttyTerminalSession({
       getSelection,
       applyTheme,
     }),
-    [write, focus, getBuffer, getSelection, applyTheme, error, retry],
+    [write, focus, getBuffer, getSelection, applyTheme, error, retry, model],
   );
 }
 
@@ -281,7 +294,16 @@ export function submitToGhosttySession(leafId: number, text: string): boolean {
     text,
     session.model?.modes().bracketedPaste ?? false,
   );
-  return session.writer.enqueue(textEncoder.encode(data));
+  const accepted = session.writer.enqueue(textEncoder.encode(data));
+  if (accepted) {
+    const blocks = ghosttyBlocks(leafId);
+    if (blocks) {
+      blocks.everSubmitted = true;
+      blocks.controller?.submitted(text);
+      blocks.changed();
+    }
+  }
+  return accepted;
 }
 
 export function interruptGhosttySession(leafId: number): boolean {
@@ -292,12 +314,18 @@ export function interruptGhosttySession(leafId: number): boolean {
 export function clearGhosttySession(leafId: number): boolean {
   const session = sessions.get(leafId);
   if (!session?.model || session.disposed) return false;
+  ghosttyBlocks(leafId)?.controller?.clear();
   session.model.clear();
-  session.surface?.focus();
+  focusGhosttySession(leafId);
   return true;
 }
 
 export function pasteIntoGhosttySession(leafId: number, text: string): boolean {
+  const blocks = ghosttyBlocks(leafId);
+  if (blocks?.getMode() === "prompt" && blocks.paste) {
+    blocks.paste(text);
+    return true;
+  }
   const session = sessions.get(leafId);
   if (!session?.input) return false;
   session.input.paste(text);
@@ -371,6 +399,7 @@ export function disposeGhosttySession(leafId: number): boolean {
   session.generation += 1;
   session.input?.dispose();
   session.surface?.dispose();
+  disposeGhosttyBlocks(leafId);
   session.model?.dispose();
   session.unsubscribeResizeInteraction();
   session.ptyResize.reset();
@@ -393,8 +422,10 @@ export async function respawnGhosttySession(
   session.surface?.dispose();
   session.surface = null;
   session.surfaceOptions = null;
+  ghosttyBlocks(leafId)?.detach();
   session.model?.dispose();
   session.model = null;
+  session.callbacks.onModel?.(null);
   session.ptyResize.reset();
   session.writer.detach();
   session.writer.clear();
@@ -414,6 +445,7 @@ export async function respawnGhosttySession(
 export function ghosttySessionDiagnostics() {
   return [...sessions.values()].map((session) => ({
     leafId: session.leafId,
+    blocks: ghosttyBlocks(session.leafId)?.controller?.diagnostics() ?? null,
     pty: session.pty?.id ?? null,
     visible: session.visible,
     focused: session.focused,
@@ -547,6 +579,7 @@ function initializeSession(session: GhosttySession): Promise<void> {
         session.surface?.dispose();
         session.surface = null;
         session.surfaceOptions = null;
+        ghosttyBlocks(session.leafId)?.detach();
         session.model?.dispose();
         session.model = null;
         session.writer.clear();
@@ -609,7 +642,7 @@ async function initializeSessionGeneration(
       session.callbacks.onCwd?.(cwd);
     },
     onClipboard: (text) => {
-      queueMicrotask(() => void writeTerminalClipboard(text));
+      oscClipboard.enqueue(text);
     },
     onOverflow: (dropped) => {
       console.warn(
@@ -635,7 +668,13 @@ async function initializeSessionGeneration(
       cursorBlink: preferences.terminalCursorBlink,
     },
     onReply: (bytes) => session.writer.enqueue(bytes),
-    onEvent: (event) => semanticEvents.handle(event),
+    onEvent: (event) => {
+      semanticEvents.handle(event);
+      ghosttyBlocks(session.leafId)?.controller?.handle(
+        event,
+        session.lastCwd ?? session.initialCwd ?? "",
+      );
+    },
   });
   if (session.disposed || generation !== session.generation) {
     model.dispose();
@@ -643,6 +682,14 @@ async function initializeSessionGeneration(
   }
   mark("modelReadyMs");
   session.model = model;
+  session.callbacks.onModel?.(model);
+  await ghosttyBlocks(session.leafId)?.attach(model);
+  if (!alive()) {
+    if (ghosttyBlocks(session.leafId)?.model === model)
+      ghosttyBlocks(session.leafId)?.detach();
+    model.dispose();
+    return;
+  }
 
   const surfaceBaseOptions: GhosttySurfaceBaseOptions = {
     model,
@@ -655,7 +702,7 @@ async function initializeSessionGeneration(
     },
     onFirstFrame: () => mark("firstFrameMs"),
     onOpenLink: (uri: string) => {
-      void openExternalUrl(uri, () => session.surface?.focus());
+      void openExternalUrl(uri, () => focusGhosttySession(session.leafId));
     },
   };
   session.surfaceOptions = surfaceBaseOptions;
@@ -746,6 +793,8 @@ async function initializeSessionGeneration(
         if (!session.disposed && generation === session.generation) {
           mark("firstOutputMs");
           model.write(bytes);
+          ghosttyBlocks(session.leafId)?.changed();
+          applyBlockInputMode(session);
         }
       },
       onExit: (code) => {
@@ -757,7 +806,7 @@ async function initializeSessionGeneration(
       },
     },
     session.initialCwd,
-    false,
+    !!ghosttyBlocks(session.leafId),
     preferences.terminalShell || undefined,
     session.leafId,
   );
@@ -791,6 +840,7 @@ function createGhosttyInput(
       height: surface.cellSize().height,
     }),
     onData: (bytes) => {
+      if (ghosttyBlocks(session.leafId)?.getMode() === "prompt") return;
       session.writer.enqueue(bytes);
     },
     onCopy: () => {
@@ -802,6 +852,47 @@ function createGhosttyInput(
   });
 }
 
+export function focusGhosttySession(leafId: number): void {
+  const session = sessions.get(leafId);
+  if (session) focusSessionSurface(session, session.surface);
+}
+
+function focusSessionSurface(
+  session: GhosttySession,
+  surface: GhosttySurface | null,
+): void {
+  const blocks = ghosttyBlocks(session.leafId);
+  if (blocks?.getMode() === "prompt" && blocks.focus) blocks.focus();
+  else surface?.focus();
+}
+
+function applyBlockInputMode(
+  session: GhosttySession,
+  surface = session.surface,
+): void {
+  const input = surface?.inputElement();
+  const blocks = ghosttyBlocks(session.leafId);
+  if (!input || !blocks) return;
+  const disabled = blocks.getMode() === "prompt";
+  const changed = input.disabled !== disabled;
+  input.disabled = disabled;
+  surface?.setCursorEnabled(!disabled);
+  if (changed && session.visible && session.focused)
+    focusSessionSurface(session, surface);
+}
+
+export function ghosttyBlockGeometry(
+  leafId: number,
+): { top: number; height: number } | null {
+  const surface = sessions.get(leafId)?.surface;
+  return surface
+    ? {
+        top: surface.eventTarget().getBoundingClientRect().top,
+        height: surface.cellSize().height,
+      }
+    : null;
+}
+
 function attachGhosttySurface(
   session: GhosttySession,
   surface: GhosttySurface,
@@ -810,7 +901,8 @@ function attachGhosttySurface(
   surface.attach(session.container);
   surface.setVisible(true);
   surface.setFocused(session.focused);
-  if (session.focused) surface.focus();
+  applyBlockInputMode(session, surface);
+  if (session.focused) focusSessionSurface(session, surface);
 }
 
 function createWebGlFallbackSurface(

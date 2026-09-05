@@ -11,21 +11,21 @@ import {
 import {
   rendererProfileKey,
   type WebGlRendererProfile,
-  XtermWebGlRenderer,
-} from "./XtermWebGlRenderer";
+  WebGlCellRenderer,
+} from "./WebGlCellRenderer";
 
 export const MAX_WEBGL_RENDERER_SLOTS = 5;
 export const MIN_WARM_WEBGL_RENDERER_SLOTS = 1;
 export const WEBGL_RENDERER_IDLE_TTL_MS = 30_000;
 
 export interface WebGlRuntimeSurface {
-  renderFrame(renderer: XtermWebGlRenderer): boolean;
+  renderFrame(renderer: WebGlCellRenderer): boolean;
   handleRendererError(error: Error): void;
   isFocused(): boolean;
 }
 
 export type WebGlRuntimeDependencies = {
-  readonly createRenderer: () => XtermWebGlRenderer;
+  readonly createRenderer: () => WebGlCellRenderer;
   readonly now: () => number;
   readonly isVisible: () => boolean;
   readonly isWindowFocused: () => boolean;
@@ -40,7 +40,7 @@ export type WebGlRuntimeDependencies = {
 };
 
 type RendererSlot = {
-  readonly renderer: XtermWebGlRenderer;
+  readonly renderer: WebGlCellRenderer;
   profileKey: string;
   owner: WebGlRuntimeSurface | null;
   lastUsed: number;
@@ -93,7 +93,7 @@ export class WebGlTerminalRuntime {
     surface: WebGlRuntimeSurface,
     host: HTMLElement,
     profile: WebGlRendererProfile,
-  ): XtermWebGlRenderer {
+  ): WebGlCellRenderer {
     this.assertLive();
     const existing = this.leases.get(surface);
     if (existing) {
@@ -394,7 +394,7 @@ function toError(error: unknown): Error {
 
 function browserDependencies(): WebGlRuntimeDependencies {
   return {
-    createRenderer: () => new XtermWebGlRenderer(),
+    createRenderer: () => new WebGlCellRenderer(),
     now: () => performance.now(),
     isVisible: () => terminalWindowPresentation().visible,
     isWindowFocused: terminalWindowFocused,

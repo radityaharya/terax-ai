@@ -5,7 +5,7 @@ import {
   rendererProfileKey,
   resetGlyphGrid,
   type WebGlRendererProfile,
-} from "./XtermWebGlRenderer";
+} from "./WebGlCellRenderer";
 
 const theme: TerminalGpuTheme = {
   background: [0, 0, 0],

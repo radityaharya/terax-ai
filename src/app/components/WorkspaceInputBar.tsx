@@ -149,16 +149,26 @@ export function WorkspaceInputBar({
             <div className="relative min-w-0 flex-1">
               {isBlockTab && controller && activeLeafId != null && (
                 <div className={cn(effectiveMode !== "shell" && "hidden")}>
-                  <Suspense fallback={null}>
-                    <ShellInput
-                      leafId={activeLeafId}
-                      mode={blockMode}
-                      focused={effectiveMode === "shell"}
-                      onSubmit={controller.submitCommand}
-                      onInterrupt={controller.interrupt}
-                      getCwd={controller.getCwd}
-                    />
-                  </Suspense>
+                  {blockMode === "plain" ? (
+                    <button
+                      type="button"
+                      className="text-sm text-muted-foreground hover:text-foreground"
+                      onClick={() => focusLeafInput(activeLeafId)}
+                    >
+                      Type directly in the terminal
+                    </button>
+                  ) : (
+                    <Suspense fallback={null}>
+                      <ShellInput
+                        leafId={activeLeafId}
+                        mode={blockMode}
+                        focused={effectiveMode === "shell"}
+                        onSubmit={controller.submitCommand}
+                        onInterrupt={controller.interrupt}
+                        getCwd={controller.getCwd}
+                      />
+                    </Suspense>
+                  )}
                 </div>
               )}
               {renderAi && (

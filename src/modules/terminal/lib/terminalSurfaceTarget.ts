@@ -1,5 +1,4 @@
-export const TERMINAL_SURFACE_SELECTOR =
-  ".xterm, [data-terax-terminal-surface]";
+export const TERMINAL_SURFACE_SELECTOR = "[data-terax-terminal-surface]";
 
 export function isTerminalSurfaceTarget(target: EventTarget | null): boolean {
   const candidate = target as {

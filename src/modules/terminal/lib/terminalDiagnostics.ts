@@ -10,7 +10,6 @@ import {
   ghosttySessionResourceTotals,
 } from "@/modules/terminal/ghostty/useGhosttyTerminalSession";
 import { ptyTransportDiagnostics } from "@/modules/terminal/lib/pty-bridge";
-import { readXtermDiagnostics } from "@/modules/terminal/lib/terminalDiagnosticsRegistry";
 import { terminalResizeInteractionActive } from "@/modules/terminal/lib/terminalResizeInteraction";
 import { windowPresentationDiagnostics } from "@/modules/terminal/ghostty/windowPresentation";
 
@@ -27,7 +26,6 @@ export function terminalDebugStats() {
     ghosttySessions: ghosttySessionDiagnostics(),
     ghosttyResources: ghosttySessionResourceTotals(),
     terminalResizeInteractionActive: terminalResizeInteractionActive(),
-    xterm: readXtermDiagnostics(),
     domCanvases: document.querySelectorAll("canvas").length,
     jsHeapBytes:
       (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory

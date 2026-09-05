@@ -24,6 +24,102 @@ describe("terminalMouseModifiers", () => {
 });
 
 describe("GhosttyInputController", () => {
+  it("commits IME text once and leaves dead-key composition to the webview", () => {
+    const input = new FakeTextArea();
+    const onData = vi.fn();
+    const model = inputModel();
+    const encodeKey = vi.fn(() => new Uint8Array(0));
+    const controller = new GhosttyInputController({
+      model: { ...model, encodeKey },
+      input: input as unknown as HTMLTextAreaElement,
+      pointerTarget: new FakeElement() as unknown as HTMLElement,
+      cellSize: () => ({ width: 10, height: 20 }),
+      onData,
+      onCopy: () => false,
+      isMac: false,
+    });
+    input.dispatchEvent(keyboardEvent({ key: "Dead", code: "Quote" }));
+    expect(encodeKey).not.toHaveBeenCalled();
+    input.dispatchEvent(new Event("compositionstart"));
+    input.dispatchEvent(
+      keyboardEvent({ key: "a", code: "KeyA", isComposing: true }),
+    );
+    input.dispatchEvent(
+      Object.assign(new Event("beforeinput"), {
+        inputType: "insertCompositionText",
+        data: "あ",
+        isComposing: true,
+      }),
+    );
+    expect(onData).not.toHaveBeenCalled();
+    input.dispatchEvent(
+      Object.assign(new Event("compositionend"), { data: "あ" }),
+    );
+    input.dispatchEvent(
+      Object.assign(new Event("beforeinput", { cancelable: true }), {
+        inputType: "insertText",
+        data: "あ",
+        isComposing: false,
+      }),
+    );
+    expect(onData).toHaveBeenCalledOnce();
+    expect(new TextDecoder().decode(onData.mock.calls[0][0])).toBe("あ");
+    controller.dispose();
+  });
+
+  it("encodes AltGr characters and keeps a duplicate beforeinput from typing twice", () => {
+    const input = new FakeTextArea();
+    const onData = vi.fn();
+    const controller = new GhosttyInputController({
+      model: inputModel(),
+      input: input as unknown as HTMLTextAreaElement,
+      pointerTarget: new FakeElement() as unknown as HTMLElement,
+      cellSize: () => ({ width: 10, height: 20 }),
+      onData,
+      onCopy: () => false,
+      isMac: false,
+    });
+    input.dispatchEvent(
+      keyboardEvent({
+        key: "@",
+        code: "KeyQ",
+        altKey: true,
+        ctrlKey: true,
+        getModifierState: (key) => key === "AltGraph",
+      }),
+    );
+    input.dispatchEvent(
+      Object.assign(new Event("beforeinput", { cancelable: true }), {
+        inputType: "insertText",
+        data: "@",
+        isComposing: false,
+      }),
+    );
+    expect(onData).toHaveBeenCalledOnce();
+    expect(new TextDecoder().decode(onData.mock.calls[0][0])).toBe("@");
+    controller.dispose();
+  });
+
+  it("does not deliver a late clipboard result after the input owner is disposed", () => {
+    const model = inputModel();
+    const modes = vi.fn(model.modes);
+    const onData = vi.fn();
+    const input = new FakeTextArea();
+    const controller = new GhosttyInputController({
+      model: { ...model, modes },
+      input: input as unknown as HTMLTextAreaElement,
+      pointerTarget: new FakeElement() as unknown as HTMLElement,
+      cellSize: () => ({ width: 10, height: 20 }),
+      onData,
+      onCopy: () => false,
+      isMac: false,
+    });
+    controller.dispose();
+    controller.paste("late clipboard");
+    input.dispatchEvent(keyboardEvent({ key: "x", code: "KeyX" }));
+    expect(onData).not.toHaveBeenCalled();
+    expect(modes).not.toHaveBeenCalled();
+  });
   it("emits macOS Option-produced Unicode as text by default", () => {
     const input = new FakeTextArea();
     const pointerTarget = new FakeElement();

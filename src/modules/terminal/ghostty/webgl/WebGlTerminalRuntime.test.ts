@@ -12,8 +12,8 @@ import {
 } from "./WebGlTerminalRuntime";
 import type {
   WebGlRendererProfile,
-  XtermWebGlRenderer,
-} from "./XtermWebGlRenderer";
+  WebGlCellRenderer,
+} from "./WebGlCellRenderer";
 
 describe("WebGlTerminalRuntime", () => {
   it("coalesces surface work into one window-scoped frame", () => {
@@ -244,7 +244,7 @@ function createHarness(options: { failFirstConfigure?: boolean } = {}) {
         })),
       };
       renderers.push(renderer);
-      return renderer as unknown as XtermWebGlRenderer;
+      return renderer as unknown as WebGlCellRenderer;
     },
     now: () => now,
     isVisible: () => harness.visible,

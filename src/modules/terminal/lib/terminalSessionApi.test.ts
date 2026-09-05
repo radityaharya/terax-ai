@@ -1,11 +1,14 @@
 import * as ghosttySession from "@/modules/terminal/ghostty/useGhosttyTerminalSession";
+import {
+  ensureGhosttyBlocks,
+  ghosttyBlocks,
+} from "@/modules/terminal/ghostty/ghosttyBlockSessions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearFocusedTerminal,
   disposeSession,
   leafCwd,
   leafGridSelection,
-  registerXtermSessionAdapter,
   whenSessionReady,
   writeToSession,
 } from "./terminalSessionApi";
@@ -13,6 +16,7 @@ import {
 vi.mock("@/modules/terminal/ghostty/useGhosttyTerminalSession", () => ({
   clearGhosttySession: vi.fn(() => false),
   disposeGhosttySession: vi.fn(() => false),
+  focusGhosttySession: vi.fn(),
   ghosttyFocusedLeaf: vi.fn(() => null),
   ghosttyLeafHasForegroundProcess: vi.fn(async () => false),
   ghosttyLeafIdForPty: vi.fn(() => null),
@@ -29,8 +33,6 @@ vi.mock("@/modules/terminal/ghostty/useGhosttyTerminalSession", () => ({
 }));
 
 describe("terminalSessionApi", () => {
-  let adapter: ReturnType<typeof createAdapter>;
-
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(ghosttySession.writeToGhosttySession).mockReturnValue(false);
@@ -38,51 +40,46 @@ describe("terminalSessionApi", () => {
     vi.mocked(ghosttySession.clearGhosttySession).mockReturnValue(false);
     vi.mocked(ghosttySession.disposeGhosttySession).mockReturnValue(false);
     vi.mocked(ghosttySession.hasGhosttySession).mockReturnValue(false);
-    adapter = createAdapter();
-    registerXtermSessionAdapter(adapter);
   });
 
-  it("uses the Ghostty session before touching the lazy xterm adapter", () => {
+  it("writes directly to the owning Ghostty session", () => {
     vi.mocked(ghosttySession.writeToGhosttySession).mockReturnValue(true);
 
     expect(writeToSession(7, "hello")).toBe(true);
-    expect(adapter.writeToSession).not.toHaveBeenCalled();
   });
 
-  it("routes a non-Ghostty leaf to the registered xterm adapter", () => {
-    adapter.writeToSession.mockReturnValue(true);
-
-    expect(writeToSession(8, "fallback")).toBe(true);
-    expect(adapter.writeToSession).toHaveBeenCalledWith(8, "fallback");
+  it("returns failure when there is no accepting session", () => {
+    expect(writeToSession(8, "data")).toBe(false);
   });
 
   it("routes cwd and grid selection to the owning Ghostty model", () => {
     vi.mocked(ghosttySession.hasGhosttySession).mockReturnValue(true);
     expect(leafCwd(7)).toBe("/workspace");
     expect(leafGridSelection(7)).toBe("selected output");
-    expect(adapter.leafCwd).not.toHaveBeenCalled();
-    expect(adapter.leafGridSelection).not.toHaveBeenCalled();
   });
 
-  it("clears and disposes focused Ghostty sessions without xterm work", () => {
+  it("clears and disposes focused Ghostty sessions through the Ghostty session", () => {
     vi.mocked(ghosttySession.ghosttyFocusedLeaf).mockReturnValue(9);
     vi.mocked(ghosttySession.clearGhosttySession).mockReturnValue(true);
     vi.mocked(ghosttySession.disposeGhosttySession).mockReturnValue(true);
 
     expect(clearFocusedTerminal()).toBe(true);
     disposeSession(9);
-
-    expect(adapter.clearFocusedTerminal).not.toHaveBeenCalled();
-    expect(adapter.disposeSession).not.toHaveBeenCalled();
+    expect(ghosttySession.disposeGhosttySession).toHaveBeenCalledWith(9);
   });
 
-  it("waits on an existing Ghostty model without loading xterm", async () => {
+  it("waits on an existing Ghostty model and releases its readiness timer", async () => {
     vi.mocked(ghosttySession.hasGhosttySession).mockReturnValue(true);
 
     await whenSessionReady(10);
 
     expect(ghosttySession.whenGhosttySessionReady).toHaveBeenCalledWith(10);
-    expect(adapter.whenSessionReady).not.toHaveBeenCalled();
+  });
+
+  it("releases precreated block state when a leaf closes before initialization", () => {
+    ensureGhosttyBlocks(12).draft = "pending input";
+    disposeSession(12);
+    expect(ghosttyBlocks(12)).toBeUndefined();
   });
 
   it("handles a Ghostty session created after the readiness request", async () => {
@@ -97,38 +94,8 @@ describe("terminalSessionApi", () => {
       await ready;
 
       expect(ghosttySession.whenGhosttySessionReady).toHaveBeenCalledWith(11);
-      expect(adapter.whenSessionReady).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
   });
 });
-
-function createAdapter() {
-  return {
-    blockWatermarkState: vi.fn(() => "hidden" as const),
-    clearFocusedTerminal: vi.fn(() => false),
-    clearLeafBlockSelection: vi.fn(() => false),
-    disposeSession: vi.fn(),
-    focusLeafInput: vi.fn(),
-    getLeafBlockMode: vi.fn(() => "prompt" as const),
-    getLeafDraft: vi.fn(() => ""),
-    hasXtermSession: vi.fn(() => false),
-    interruptLeaf: vi.fn(),
-    leafCwd: vi.fn(() => null),
-    leafGridSelection: vi.fn(() => null),
-    leafHasForegroundProcess: vi.fn(async () => false),
-    leafIdForPty: vi.fn(() => null),
-    navigateFocusedBlocks: vi.fn(() => false),
-    pasteIntoSession: vi.fn(() => false),
-    ptyIdForLeaf: vi.fn(() => null),
-    respawnSession: vi.fn(async () => undefined),
-    setLeafDraft: vi.fn(),
-    setLeafInputActivity: vi.fn(),
-    setLeafInputFocus: vi.fn(),
-    submitToLeaf: vi.fn(),
-    subscribeLeafBlockMode: vi.fn(() => () => {}),
-    whenSessionReady: vi.fn(async () => undefined),
-    writeToSession: vi.fn(() => false),
-  } satisfies Parameters<typeof registerXtermSessionAdapter>[0];
-}

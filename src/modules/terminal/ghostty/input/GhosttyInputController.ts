@@ -159,7 +159,7 @@ export class GhosttyInputController {
   }
 
   paste(text: string): void {
-    if (!text) return;
+    if (this.disposed || !text) return;
     this.emitText(
       encodeTerminalPaste(text, this.options.model.modes().bracketedPaste),
       "paste",
@@ -185,7 +185,14 @@ export class GhosttyInputController {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
-    if (this.composing || event.isComposing || event.keyCode === 229) return;
+    if (
+      this.composing ||
+      event.isComposing ||
+      event.keyCode === 229 ||
+      event.key === "Dead" ||
+      event.key === "Process"
+    )
+      return;
 
     const readline = terminalReadlineSequence(event, {
       isMac: this.isMac,
@@ -456,6 +463,7 @@ export class GhosttyInputController {
     deduplicate = true,
     scrollToBottom = true,
   ): void {
+    if (this.disposed) return;
     const now = performance.now();
     if (
       deduplicate &&

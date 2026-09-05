@@ -18,7 +18,7 @@ export type BlockController = {
 export function useBlockController(
   leafId: number | null,
 ): BlockController | null {
-  const [blockMode, setBlockMode] = useState<BlockMode>("prompt");
+  const [blockMode, setBlockMode] = useState<BlockMode>("plain");
 
   useEffect(() => {
     if (leafId == null) return;

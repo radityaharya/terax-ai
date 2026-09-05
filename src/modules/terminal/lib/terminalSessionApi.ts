@@ -2,6 +2,7 @@ import type { BlockMode } from "@/modules/terminal/block/lib/modeMachine";
 import {
   clearGhosttySession,
   disposeGhosttySession,
+  focusGhosttySession,
   ghosttyFocusedLeaf,
   ghosttyLeafHasForegroundProcess,
   ghosttyLeafIdForPty,
@@ -16,55 +17,13 @@ import {
   whenGhosttySessionReady,
   writeToGhosttySession,
 } from "@/modules/terminal/ghostty/useGhosttyTerminalSession";
-import type * as XtermSessionModule from "./useTerminalSession";
-
-type XtermSessionAdapter = Pick<
-  typeof XtermSessionModule,
-  | "blockWatermarkState"
-  | "clearFocusedTerminal"
-  | "clearLeafBlockSelection"
-  | "disposeSession"
-  | "focusLeafInput"
-  | "getLeafBlockMode"
-  | "getLeafDraft"
-  | "hasXtermSession"
-  | "interruptLeaf"
-  | "leafCwd"
-  | "leafGridSelection"
-  | "leafHasForegroundProcess"
-  | "leafIdForPty"
-  | "navigateFocusedBlocks"
-  | "pasteIntoSession"
-  | "ptyIdForLeaf"
-  | "respawnSession"
-  | "setLeafDraft"
-  | "setLeafInputActivity"
-  | "setLeafInputFocus"
-  | "submitToLeaf"
-  | "subscribeLeafBlockMode"
-  | "whenSessionReady"
-  | "writeToSession"
->;
-
-export type WatermarkState = XtermSessionModule.WatermarkState;
-
-let xtermAdapter: XtermSessionAdapter | null = null;
-let xtermAdapterPromise: Promise<XtermSessionAdapter> | null = null;
-
-export function registerXtermSessionAdapter(
-  adapter: XtermSessionAdapter,
-): void {
-  xtermAdapter = adapter;
-}
-
-async function loadXtermAdapter(): Promise<XtermSessionAdapter> {
-  if (xtermAdapter) return xtermAdapter;
-  xtermAdapterPromise ??= import("./useTerminalSession").then((module) => {
-    xtermAdapter = module;
-    return module;
-  });
-  return xtermAdapterPromise;
-}
+import {
+  disposeGhosttyBlocks,
+  ensureGhosttyBlocks,
+  ghosttyBlocks,
+} from "@/modules/terminal/ghostty/ghosttyBlockSessions";
+export type { WatermarkState } from "@/modules/terminal/ghostty/ghosttyBlockSessions";
+import type { WatermarkState } from "@/modules/terminal/ghostty/ghosttyBlockSessions";
 
 export async function whenSessionReady(
   leafId: number,
@@ -77,128 +36,129 @@ export async function whenSessionReady(
       await withTimeout(whenGhosttySessionReady(leafId), remaining);
       return;
     }
-    if (xtermAdapter?.hasXtermSession(leafId)) {
-      await xtermAdapter.whenSessionReady(leafId, remaining);
-      return;
-    }
     await delay(Math.min(10, remaining));
   }
 }
 
 export function writeToSession(leafId: number, data: string): boolean {
-  if (writeToGhosttySession(leafId, data)) return true;
-  return xtermAdapter?.writeToSession(leafId, data) ?? false;
+  return writeToGhosttySession(leafId, data);
 }
 
 export function submitToLeaf(leafId: number, text: string): void {
-  if (submitToGhosttySession(leafId, text)) return;
-  xtermAdapter?.submitToLeaf(leafId, text);
+  submitToGhosttySession(leafId, text);
 }
 
 export function interruptLeaf(leafId: number): void {
-  if (interruptGhosttySession(leafId)) return;
-  xtermAdapter?.interruptLeaf(leafId);
+  interruptGhosttySession(leafId);
 }
 
 export function pasteIntoSession(leafId: number, text: string): boolean {
-  if (pasteIntoGhosttySession(leafId, text)) return true;
-  return xtermAdapter?.pasteIntoSession(leafId, text) ?? false;
+  return pasteIntoGhosttySession(leafId, text);
 }
 
 export function leafCwd(leafId: number): string | null {
-  if (hasGhosttySession(leafId)) return ghosttyCwdForLeaf(leafId);
-  return xtermAdapter?.leafCwd(leafId) ?? null;
+  return ghosttyCwdForLeaf(leafId);
 }
 
 export function navigateFocusedBlocks(direction: -1 | 1): boolean {
-  return xtermAdapter?.navigateFocusedBlocks(direction) ?? false;
+  const leaf = ghosttyFocusedLeaf();
+  return (
+    leaf !== null &&
+    (ghosttyBlocks(leaf)?.controller?.navigate(direction) ?? false)
+  );
 }
 
 export function clearLeafBlockSelection(leafId: number): boolean {
-  return xtermAdapter?.clearLeafBlockSelection(leafId) ?? false;
+  return ghosttyBlocks(leafId)?.controller?.clearSelection() ?? false;
 }
 
 export function leafGridSelection(leafId: number): string | null {
-  if (hasGhosttySession(leafId)) return ghosttySelectionForLeaf(leafId);
-  return xtermAdapter?.leafGridSelection(leafId) ?? null;
+  return ghosttySelectionForLeaf(leafId);
 }
 
 export function getLeafBlockMode(leafId: number): BlockMode {
-  return xtermAdapter?.getLeafBlockMode(leafId) ?? "prompt";
+  return ghosttyBlocks(leafId)?.getMode() ?? "plain";
 }
 
 export function subscribeLeafBlockMode(
   leafId: number,
   callback: () => void,
 ): () => void {
-  return xtermAdapter?.subscribeLeafBlockMode(leafId, callback) ?? (() => {});
+  return ensureGhosttyBlocks(leafId).subscribeMode(callback);
 }
 
 export function setLeafInputFocus(
   leafId: number,
   callback: (() => void) | null,
 ): void {
-  xtermAdapter?.setLeafInputFocus(leafId, callback);
+  const state = callback ? ensureGhosttyBlocks(leafId) : ghosttyBlocks(leafId);
+  if (state) state.focus = callback;
+}
+
+export function setLeafInputPaste(
+  leafId: number,
+  paste: ((text: string) => void) | null,
+): void {
+  const state = paste ? ensureGhosttyBlocks(leafId) : ghosttyBlocks(leafId);
+  if (state) state.paste = paste;
 }
 
 export function focusLeafInput(leafId: number): void {
-  xtermAdapter?.focusLeafInput(leafId);
+  const state = ghosttyBlocks(leafId);
+  if (state?.getMode() === "prompt" && state.focus) state.focus();
+  else focusGhosttySession(leafId);
 }
 
 export function getLeafDraft(leafId: number): string {
-  return xtermAdapter?.getLeafDraft(leafId) ?? "";
+  return ghosttyBlocks(leafId)?.draft ?? "";
 }
 
 export function setLeafDraft(leafId: number, text: string): void {
-  xtermAdapter?.setLeafDraft(leafId, text);
+  const state = ghosttyBlocks(leafId);
+  if (state) state.draft = text;
 }
 
 export function setLeafInputActivity(leafId: number, active: boolean): void {
-  xtermAdapter?.setLeafInputActivity(leafId, active);
+  const blocks = ghosttyBlocks(leafId);
+  if (!blocks) return;
+  blocks.inputActive = active;
+  blocks.changed();
 }
 
 export function blockWatermarkState(leafId: number): WatermarkState {
-  return xtermAdapter?.blockWatermarkState(leafId) ?? "hidden";
+  return ghosttyBlocks(leafId)?.watermark() ?? "hidden";
 }
 
 export function clearFocusedTerminal(): boolean {
   const ghosttyLeaf = ghosttyFocusedLeaf();
   if (ghosttyLeaf !== null) return clearGhosttySession(ghosttyLeaf);
-  return xtermAdapter?.clearFocusedTerminal() ?? false;
+  return false;
 }
 
 export function leafIdForPty(ptyId: number): number | null {
-  return (
-    ghosttyLeafIdForPty(ptyId) ?? xtermAdapter?.leafIdForPty(ptyId) ?? null
-  );
+  return ghosttyLeafIdForPty(ptyId);
 }
 
 export function ptyIdForLeaf(leafId: number): number | null {
-  return (
-    ghosttyPtyIdForLeaf(leafId) ?? xtermAdapter?.ptyIdForLeaf(leafId) ?? null
-  );
+  return ghosttyPtyIdForLeaf(leafId);
 }
 
 export async function respawnSession(
   leafId: number,
   cwd?: string,
 ): Promise<void> {
-  if (await respawnGhosttySession(leafId, cwd)) return;
-  await (await loadXtermAdapter()).respawnSession(leafId, cwd);
+  await respawnGhosttySession(leafId, cwd);
 }
 
 export async function leafHasForegroundProcess(
   leafId: number,
 ): Promise<boolean> {
-  if (hasGhosttySession(leafId)) {
-    return ghosttyLeafHasForegroundProcess(leafId);
-  }
-  return (await loadXtermAdapter()).leafHasForegroundProcess(leafId);
+  return ghosttyLeafHasForegroundProcess(leafId);
 }
 
 export function disposeSession(leafId: number): void {
-  if (disposeGhosttySession(leafId)) return;
-  xtermAdapter?.disposeSession(leafId);
+  disposeGhosttySession(leafId);
+  disposeGhosttyBlocks(leafId);
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -209,5 +169,15 @@ async function withTimeout(
   promise: Promise<unknown>,
   timeoutMs: number,
 ): Promise<void> {
-  await Promise.race([promise, delay(timeoutMs)]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }

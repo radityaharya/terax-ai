@@ -28,9 +28,9 @@ import {
   type WebGlTerminalRuntime,
 } from "./WebGlTerminalRuntime";
 import type {
-  XtermWebGlRenderer,
-  XtermWebGlRendererStats,
-} from "./XtermWebGlRenderer";
+  WebGlCellRenderer,
+  WebGlCellRendererStats,
+} from "./WebGlCellRenderer";
 
 const CURSOR_BLINK_MS = 600;
 const TEXT_BLINK_MS = 600;
@@ -55,7 +55,7 @@ export type WebGlTerminalSurfaceStats = {
   readonly visible: boolean;
   readonly documentSuspended: boolean;
   readonly focused: boolean;
-  readonly renderer: XtermWebGlRendererStats | null;
+  readonly renderer: WebGlCellRendererStats | null;
   readonly rendererRecoveries: number;
   readonly fit: TerminalFitQueueDiagnostics;
 };
@@ -77,7 +77,7 @@ export class WebGlTerminalSurface
   private readonly runtime: WebGlTerminalRuntime;
   private readonly pixelRatioMonitor: DevicePixelRatioMonitor;
   private readonly fitQueue = new TerminalFitQueue();
-  private renderer: XtermWebGlRenderer | null = null;
+  private renderer: WebGlCellRenderer | null = null;
   private metrics: TerminalFontMetrics;
   private theme: TerminalGpuTheme;
   private host: HTMLElement | null = null;
@@ -88,6 +88,7 @@ export class WebGlTerminalSurface
   private resizeInteractionActive = terminalResizeInteractionActive();
   private compactAfterResize = false;
   private cursorVisible = true;
+  private cursorEnabled = true;
   private cursorBlinking: boolean;
   private cursorTimer: number | null = null;
   private textBlinkVisible = true;
@@ -293,7 +294,16 @@ export class WebGlTerminalSurface
     return { width: this.metrics.cellWidth, height: this.metrics.cellHeight };
   }
 
+  setCursorEnabled(enabled: boolean): void {
+    if (this.cursorEnabled === enabled) return;
+    this.cursorEnabled = enabled;
+    this.cursorVisible = true;
+    this.armCursorBlink();
+    this.runtime.schedule(this);
+  }
+
   getSelection(): string | null {
+    this.selection.reconcile();
     return this.selection.text();
   }
 
@@ -313,7 +323,7 @@ export class WebGlTerminalSurface
     return this.focused;
   }
 
-  renderFrame(renderer: XtermWebGlRenderer): boolean {
+  renderFrame(renderer: WebGlCellRenderer): boolean {
     if (
       this.disposed ||
       !this.visible ||
@@ -328,10 +338,12 @@ export class WebGlTerminalSurface
       return false;
     }
     if (this.options.model.deferPresentation()) return false;
+    this.selection.reconcile();
+    this.search.refreshOverlay();
     const rendered = renderer.render({
       model: this.options.model,
       damage: this.options.model.consumeDamage(),
-      cursorVisible: this.cursorVisible,
+      cursorVisible: this.cursorEnabled && this.cursorVisible,
       textBlinkVisible: this.textBlinkVisible,
       selection: this.selection.normalizedBounds(),
       searchMatchAt: (row, column) => this.search.matchAt(row, column),
@@ -634,6 +646,7 @@ export class WebGlTerminalSurface
 
   private armCursorBlink(): void {
     if (
+      !this.cursorEnabled ||
       !this.cursorBlinking ||
       !this.focused ||
       !this.visible ||

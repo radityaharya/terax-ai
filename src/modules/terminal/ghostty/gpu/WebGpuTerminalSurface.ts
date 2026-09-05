@@ -133,6 +133,7 @@ export class WebGpuTerminalSurface
   private resizeInteractionActive = terminalResizeInteractionActive();
   private compactAfterResize = false;
   private cursorVisible = true;
+  private cursorEnabled = true;
   private cursorBlinking: boolean;
   private cursorTimer: number | null = null;
   private textBlinkVisible = true;
@@ -365,7 +366,16 @@ export class WebGpuTerminalSurface
     return { width: this.metrics.cellWidth, height: this.metrics.cellHeight };
   }
 
+  setCursorEnabled(enabled: boolean): void {
+    if (this.cursorEnabled === enabled) return;
+    this.cursorEnabled = enabled;
+    this.cursorVisible = true;
+    this.armCursorBlink();
+    this.runtime.schedule(this);
+  }
+
   getSelection(): string | null {
+    this.selection.reconcile();
     return this.selection.text();
   }
 
@@ -406,6 +416,8 @@ export class WebGpuTerminalSurface
     }
     this.applyQueuedFit();
     if (this.options.model.deferPresentation()) return false;
+    this.selection.reconcile();
+    this.search.refreshOverlay();
     if (this.backingStore.commit()) {
       this.backingStoreResizeCount += 1;
       this.forceFullRedraw = true;
@@ -1112,6 +1124,7 @@ export class WebGpuTerminalSurface
       this.armCursorBlink();
     }
     if (
+      this.cursorEnabled &&
       this.cursorVisible &&
       cursor.visible &&
       cursor.x >= 0 &&
@@ -1150,6 +1163,7 @@ export class WebGpuTerminalSurface
 
   private armCursorBlink(): void {
     if (
+      !this.cursorEnabled ||
       !this.cursorBlinking ||
       !this.focused ||
       !this.visible ||

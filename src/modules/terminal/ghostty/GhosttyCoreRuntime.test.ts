@@ -480,6 +480,26 @@ describe("GhosttyCoreRuntime", () => {
     model.dispose();
   });
 
+  it("finds plain URLs across wrapped rows without linking trailing blank cells", async () => {
+    const runtime = new GhosttyCoreRuntime(() =>
+      TeraxGhostty.loadBytes(wasmBytes.slice(0)),
+    );
+    const model = await runtime.createModel({ leafId: 31, cols: 16, rows: 4 });
+    model.write(
+      new TextEncoder().encode("日本 https://example.com/docs\r\nblank"),
+    );
+    expect(model.hyperlinkAtViewportCell(0, 5)).toBe(
+      "https://example.com/docs",
+    );
+    expect(model.hyperlinkAtViewportCell(1, 3)).toBe(
+      "https://example.com/docs",
+    );
+    expect(model.hyperlinkAtViewportCell(1, 15)).toBeNull();
+    model.write(new TextEncoder().encode("\x1bc"));
+    expect(model.hyperlinkAtViewportCell(0, 5)).toBeNull();
+    runtime.dispose();
+  });
+
   it("updates model colors in place without changing terminal content", async () => {
     const runtime = new GhosttyCoreRuntime(() =>
       TeraxGhostty.loadBytes(wasmBytes.slice(0)),

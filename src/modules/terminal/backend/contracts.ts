@@ -1,7 +1,4 @@
-export type TerminalBackendKind =
-  | "xterm-webgl"
-  | "ghostty-webgl"
-  | "ghostty-webgpu";
+export type TerminalBackendKind = "ghostty-webgl" | "ghostty-webgpu";
 
 export type TerminalRowRange = {
   readonly start: number;

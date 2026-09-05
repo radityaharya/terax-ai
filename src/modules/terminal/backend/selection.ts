@@ -47,17 +47,15 @@ export function resolveTerminalBackend(
   preferred: TerminalBackendKind,
   capabilities: TerminalRendererCapabilities,
 ): TerminalBackendKind {
-  if (preferred === "xterm-webgl") return preferred;
   if (preferred === "ghostty-webgpu" && capabilities.webGpu) return preferred;
   if (capabilities.webGl2) return "ghostty-webgl";
-  return "xterm-webgl";
+  return "ghostty-webgl";
 }
 
 export function resolvedTerminalBackend(): TerminalBackendKind {
   const preferred = selectedTerminalBackend();
-  if (preferred === "xterm-webgl") return preferred;
   if (preferred === "ghostty-webgpu" && canUseWebGpu()) return preferred;
-  return canUseWebGl2() ? "ghostty-webgl" : "xterm-webgl";
+  return "ghostty-webgl";
 }
 
 let webGl2Available: boolean | null = null;
@@ -67,7 +65,7 @@ export function canUseWebGl2(): boolean {
   if (typeof document === "undefined") return false;
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("webgl2", {
-    failIfMajorPerformanceCaveat: true,
+    failIfMajorPerformanceCaveat: false,
   });
   const available = context !== null;
   context?.getExtension("WEBGL_lose_context")?.loseContext();
@@ -82,7 +80,7 @@ export function isGhosttyBackend(
 }
 
 function parseTerminalBackend(value: unknown): TerminalBackendKind | null {
-  return value === "xterm-webgl" || GHOSTTY_BACKENDS.has(value as never)
+  return GHOSTTY_BACKENDS.has(value as never)
     ? (value as TerminalBackendKind)
     : null;
 }

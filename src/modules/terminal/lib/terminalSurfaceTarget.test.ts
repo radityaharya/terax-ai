@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { isTerminalSurfaceTarget } from "./terminalSurfaceTarget";
 
 describe("isTerminalSurfaceTarget", () => {
-  it("recognizes xterm and Ghostty descendants", () => {
+  it("recognizes terminal surface descendants", () => {
     const terminalTarget = {
       closest: vi.fn(() => ({ terminal: true }) as unknown as Element),
     } as unknown as EventTarget;

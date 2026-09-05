@@ -39,7 +39,7 @@ export function useSelectionAskAi({
       const inContentArea =
         isTerminalSurfaceTarget(e.target) || el?.closest?.(".cm-editor");
       if (!inContentArea) return;
-      // Defer one tick so xterm/CodeMirror finalize the selection.
+      // Defer one tick so the terminal and CodeMirror finalize the selection.
       setTimeout(() => {
         const text = captureActiveSelection();
         if (text && text.trim().length > 0) {

@@ -74,8 +74,18 @@ export class GhosttySearchController implements TerminalSearchController {
     this.onChange();
   }
 
+  refreshOverlay(): void {
+    if (this.disposed || this.query) return;
+    if (this.model.blockSearchActive?.()) this.rebuildViewportMask();
+    else if (this.viewportMask.length) this.viewportMask = new Uint8Array(0);
+  }
+
   refresh(): void {
-    if (this.disposed || !this.query) return;
+    if (this.disposed) return;
+    if (!this.query) {
+      this.refreshOverlay();
+      return;
+    }
     this.step();
   }
 

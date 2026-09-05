@@ -1,3 +1,4 @@
+import { writeTerminalClipboard } from "@/modules/terminal/lib/terminalClipboard";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,13 +28,13 @@ import type {
   BlockMatch,
   PositionedBlock,
   VisibleBlocks,
-} from "./lib/blockDecorations";
+} from "./lib/blockTypes";
 import { capAttachOutput } from "./lib/outputCap";
 
 let cachedHome: string | null = null;
 void homeDir()
   .then((h) => {
-    cachedHome = h.replace(/\/+$/, "");
+    cachedHome = h.replace(/\\/g, "/").replace(/\/+$/, "");
   })
   .catch(() => {});
 
@@ -80,18 +81,13 @@ function relPath(p: string): string {
 }
 
 function copy(text: string, message: string) {
-  void navigator.clipboard
-    .writeText(text)
+  void writeTerminalClipboard(text)
     .then(() => toast.success(message))
     .catch(() => {});
 }
 
 function signature(v: VisibleBlocks): string {
-  let s = v.sticky?.id ?? "";
-  for (const b of v.blocks) {
-    s += `|${b.id}:${Math.round(b.top)}:${Math.round(b.bottom)}:${b.running}`;
-  }
-  return s;
+  return JSON.stringify([v.sticky, v.blocks]);
 }
 
 export function BlockOverlay(props: Props) {
@@ -197,7 +193,7 @@ function Toolbar({ block, all, onSearch }: ChromeProps) {
     <div className="bt-tools">
       {failed && <span className="bt-exit">exit {block.exitCode}</span>}
       {duration && <span className="bt-dur">{duration}</span>}
-      {!block.running && !!block.command && (
+      {!block.running && block.canRerun && (
         <button
           type="button"
           title="Run again"
@@ -242,7 +238,7 @@ function BlockMenu({ block, all, onSearch }: ChromeProps) {
         <MenuItem
           icon={Refresh01Icon}
           label="Run again"
-          disabled={block.running || !all.promptReady || !block.command}
+          disabled={block.running || !all.promptReady || !block.canRerun}
           onClick={() => all.onRunAgain(block.command)}
         />
         <MenuItem

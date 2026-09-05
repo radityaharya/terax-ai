@@ -48,7 +48,7 @@ export type WebGlRendererFrame = {
   readonly searchMatchAt: (row: number, column: number) => 0 | 1 | 2;
 };
 
-export type XtermWebGlRendererStats = {
+export type WebGlCellRendererStats = {
   readonly cells: number;
   readonly cellCapacity: number;
   readonly backingStoreResizes: number;
@@ -96,7 +96,7 @@ type RendererResources = {
   readonly programs: readonly WebGLProgram[];
 };
 
-export class XtermWebGlRenderer {
+export class WebGlCellRenderer {
   readonly canvas = document.createElement("canvas");
 
   private readonly backingStore = new CanvasBackingStore(this.canvas);
@@ -147,7 +147,7 @@ export class XtermWebGlRenderer {
       antialias: false,
       depth: false,
       desynchronized: true,
-      failIfMajorPerformanceCaveat: true,
+      failIfMajorPerformanceCaveat: false,
       powerPreference: "low-power",
       preserveDrawingBuffer: false,
       stencil: false,
@@ -277,7 +277,7 @@ export class XtermWebGlRenderer {
     this.glyphInstanceCount = 0;
   }
 
-  diagnostics(): XtermWebGlRendererStats {
+  diagnostics(): WebGlCellRendererStats {
     return {
       cells: this.cols * this.rows,
       cellCapacity: this.cellCapacity,
