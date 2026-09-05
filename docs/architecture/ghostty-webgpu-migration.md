@@ -169,18 +169,20 @@ Runtime replies otherwise belong to libghostty-vt.
 ## Rendering path
 
 1. PTY bytes enter the model and are parsed immediately.
-2. The model produces replies and ordered semantic events immediately, while
+2. The frontend returns native transport credit only after parsing finishes,
+   bounding native plus IPC backlog without dropping terminal bytes.
+3. The model produces replies and ordered semantic events immediately, while
    coalescing render-state synchronization across all chunks before a frame.
-3. The window scheduler marks the attached surface dirty once.
-4. On the next frame, the model computes dirty-row ranges once and only changed
+4. The window scheduler marks the attached surface dirty once.
+5. On the next frame, the model computes dirty-row ranges once and only changed
    rows update retained GPU ranges.
-5. Cursor blink updates the shared screen uniform without rebuilding cell or
+6. Cursor blink updates the shared screen uniform without rebuilding cell or
    glyph instances.
-6. Hidden surfaces do not request frames.
-7. Synchronized output defers presentation until mode 2026 is reset. A
+7. Hidden surfaces do not request frames.
+8. Synchronized output defers presentation until mode 2026 is reset. A
    one-second watchdog presents a recovery frame if an application leaves the
    mode stuck.
-8. Text blink schedules work only when a visible viewport contains blinking
+9. Text blink schedules work only when a visible viewport contains blinking
    cells. Hidden panes and hidden webviews have no blink timer.
 
 The WebGPU surface stores one 32-byte cell instance and one 32-byte glyph
@@ -203,7 +205,23 @@ If a contended atlas fills, only the glyph-heavy pane moves to an isolated
 atlas, leaving the other panes and their instance UVs valid. Cold glyphs may be
 reset only after the atlas is isolated. This prevents cross-pane reset storms
 without charging every pane for a private atlas in the common case. Only one
-unused atlas is kept warm, and it is released after 30 seconds.
+unused atlas is kept warm, and it is released after 30 seconds. On sustained
+window invisibility its textures are released while this bounded CPU cache
+remains available. Restoration uploads only the occupied atlas rectangle and
+reuses existing rasterized glyphs.
+
+Each pane has its own presentation deadline: 60 fps focused, 30 fps for visible
+background panes, and 15 fps with the window unfocused. A focused pane does not
+raise another pane's cadence. Eligible panes still share one encoder and queue
+submission. At most two submitted frames await GPU completion; further damage
+coalesces until credit returns. Staging buffers and replaced atlas textures stay
+owned through submission and are released deterministically.
+
+macOS native window occlusion and sleep notifications augment DOM visibility.
+Rendering pauses immediately, presentation is retained for short transitions,
+and continuous invisibility reclaims it after two seconds. Sleep requests
+immediate reclamation. Device recovery is deferred while hidden. Details and
+measurement limits are in [resource efficiency](ghostty-resource-efficiency.md).
 
 ## Current vertical-slice status
 
@@ -229,6 +247,8 @@ Implemented in the Terax branch:
   the visible-cell hot path;
 - direct structure-of-arrays WASM render reads without a per-frame JavaScript
   viewport repack;
+- lossless two-chunk PTY flow control with cumulative parser-completion acknowledgement,
+  adaptive burst coalescing, and a 2 MiB native plus IPC byte bound;
 - retained WebGL glyph buffers with dirty-row uploads and exact uploaded-byte
   diagnostics;
 - live fractional fitting for font, zoom, letter spacing, and device-scale
@@ -326,7 +346,8 @@ Measurements use production builds and identical scripted workloads. Report both
 - GPU instance buffers: 256-cell-aligned growth with 12.5 percent initial
   headroom, 50 percent subsequent headroom, a 262,144-cell hard limit, and
   release on hidden surfaces.
-- Pending PTY output: existing 4 MiB Rust cap.
+- Pending PTY output: 2 MiB native pending plus in-flight data and two chunks.
+  Cumulative parser acknowledgments are idempotent, validated, and retried.
 - Pending PTY input: bounded queue with byte accounting.
 - Scrollback: user setting with a hard validated maximum.
 - Hidden leaves: no canvas presentation and no cursor timers.
@@ -362,3 +383,10 @@ Record launch latency, frame time percentiles, main-thread long tasks, PTY throu
 8. [In progress] Ghostty WebGPU is the capability-gated branch default with
    Ghostty WebGL and xterm WebGL fallbacks; stable-release selection remains
    gated on measured results.
+
+## Production hardening evidence
+
+See [release readiness](ghostty-release-readiness.md) for verified changes and
+remaining release gates. The scalar core removes SIMD as a reason to select
+xterm. Block support, accessibility, full platform validation, and packaged
+resource measurements remain prerequisites to removing the compatibility path.

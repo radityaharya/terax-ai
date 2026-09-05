@@ -48,7 +48,9 @@ The first implementation uses these bounds:
 - at most five simultaneous renderer slots, matching the existing Terax pool;
 - one warm idle renderer slot;
 - surplus idle WebGL contexts reclaimed after 30 seconds;
-- one requestAnimationFrame scheduler for every Ghostty WebGL surface;
+- one requestAnimationFrame scheduler shared by all Ghostty WebGL surfaces;
+- adaptive 60 fps focused, 30 fps background-pane, and 15 fps unfocused-window
+  presentation limits;
 - no frame for hidden panes, clean models, or inactive cursor blink;
 - hidden mounted panes immediately release their WebGL lease while their
   libghostty model keeps parsing raw PTY bytes;
@@ -82,6 +84,14 @@ unregisters it from the frame scheduler, destroys its per-surface vertex and
 uniform buffers, unconfigures its canvas, and releases its atlas reference.
 The window-scoped WebGPU device and pipelines remain warm. Showing the pane
 recreates only the bounded per-surface resources and performs a full redraw.
+Whole-window invisibility pauses frames, blink, selection autoscroll, and search
+immediately. Short desktop transitions retain presentation for two seconds;
+continuous invisibility then releases surface buffers and render-state arenas.
+macOS native window occlusion participates in the same policy, and native sleep
+requests immediate reclamation. WebGL destroys hidden-window contexts. WebGPU
+releases atlas textures and retains at most one CPU glyph cache for its existing
+30-second idle lifetime. PTY parsing continues throughout. See
+[resource efficiency](ghostty-resource-efficiency.md) for evidence and limits.
 
 The WebGL pool has deterministic unit tests for the five-context hard limit,
 single warm idle renderer, 30-second idle reclamation, hidden-webview frame
@@ -120,14 +130,14 @@ reproducible and keep a moving prerelease from entering a release build.
 ## Maintained libghostty adaptation
 
 The active experimental model is built from Ghostty commit
-`e9db8d2b0b827be035ab75658ea9faf4f0f56d3f` in `ReleaseFast` mode. The bridge
+`349f026087d948f8f898dca3231ff91438f83ab8` in `ReleaseFast` mode. The bridge
 started from the useful low-level Restty work at commit
 `7700b14a7643ba9240818209ef1e0aa90d83ad77`, but the Restty application,
 component model, renderer lifecycle, and package runtime are not used. Terax
 owns the bridge, build, JavaScript boundary, renderers, and product integration.
 
-The production artifact is 650,361 bytes with SHA-256
-`ed4a16b152710c53039d3dd2ddbdb94e7b0ba0205c9e4d6811efb03150cd0633`.
+The production artifact is 705,544 bytes with SHA-256
+`af98c4962a76af43b5e5350e5fc157a2d3c9de89e20368e225743d6fe55eee73`.
 The source pins, licenses, reproducible Zig build, artifact size, and checksum
 are tracked in `packages/ghostty-core/adapted`.
 
@@ -136,10 +146,13 @@ The maintained bridge provides:
 - one shared WASM instance with independent, explicitly disposed terminals;
 - Ghostty's `TinyIo`, avoiding the threaded IO implementation in a browser;
 - raw `Uint8Array` PTY input, replies, and parser-owned semantic events;
+- lossless parser-completion acknowledgements that bound native and IPC output
+  backlog and apply PTY backpressure instead of dropping protocol bytes;
 - line and byte scrollback caps, bounded replies, and a bounded event queue;
 - structure-of-arrays render state borrowed directly from WASM memory;
 - native Ghostty key encoding and live terminal-mode state;
-- row hashes and dirty bits computed in WASM before the JavaScript boundary;
+- libghostty global and per-row dirty state consumed directly before the
+  JavaScript boundary;
 - built-in scrollback viewport control, wrapping, selection extraction,
   graphemes, OSC 8 links, and cursor state;
 - DA, DSR, DECRQM, XTWINOPS, XTVERSION, OSC color, DECRQSS, and generated
@@ -177,7 +190,10 @@ applies Ghostty reflow, WebGL grid geometry, CSS and intrinsic canvas sizing,
 the full resized cell upload, and drawing as one presentation transaction. This
 prevents both cleared-canvas flashes and compositor stretching of the previous
 frame during continuous split dragging, while avoiding redundant WASM
-pixel-size calls and renderer frames for coalesced samples.
+pixel-size calls and renderer frames for coalesced samples. Intrinsic and CSS
+canvas dimensions remain exact so WebKit never scales terminal glyphs during a
+drag. Pointer release compacts any materially oversized CPU, WASM, or GPU cell
+buffer once.
 User-driven pane layouts explicitly suspend the renderer-independent session
 PTY scheduler for the entire separator gesture while continuing local Ghostty
 reflow and GPU fitting. The final grid is delivered to the PTY only after
