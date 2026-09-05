@@ -5,7 +5,9 @@ import {
   ghosttyFocusedLeaf,
   ghosttyLeafHasForegroundProcess,
   ghosttyLeafIdForPty,
+  ghosttyCwdForLeaf,
   ghosttyPtyIdForLeaf,
+  ghosttySelectionForLeaf,
   hasGhosttySession,
   interruptGhosttySession,
   pasteIntoGhosttySession,
@@ -104,6 +106,7 @@ export function pasteIntoSession(leafId: number, text: string): boolean {
 }
 
 export function leafCwd(leafId: number): string | null {
+  if (hasGhosttySession(leafId)) return ghosttyCwdForLeaf(leafId);
   return xtermAdapter?.leafCwd(leafId) ?? null;
 }
 
@@ -116,6 +119,7 @@ export function clearLeafBlockSelection(leafId: number): boolean {
 }
 
 export function leafGridSelection(leafId: number): string | null {
+  if (hasGhosttySession(leafId)) return ghosttySelectionForLeaf(leafId);
   return xtermAdapter?.leafGridSelection(leafId) ?? null;
 }
 

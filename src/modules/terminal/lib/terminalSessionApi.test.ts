@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearFocusedTerminal,
   disposeSession,
+  leafCwd,
+  leafGridSelection,
   registerXtermSessionAdapter,
   whenSessionReady,
   writeToSession,
@@ -14,7 +16,9 @@ vi.mock("@/modules/terminal/ghostty/useGhosttyTerminalSession", () => ({
   ghosttyFocusedLeaf: vi.fn(() => null),
   ghosttyLeafHasForegroundProcess: vi.fn(async () => false),
   ghosttyLeafIdForPty: vi.fn(() => null),
+  ghosttyCwdForLeaf: vi.fn(() => "/workspace"),
   ghosttyPtyIdForLeaf: vi.fn(() => null),
+  ghosttySelectionForLeaf: vi.fn(() => "selected output"),
   hasGhosttySession: vi.fn(() => false),
   interruptGhosttySession: vi.fn(() => false),
   pasteIntoGhosttySession: vi.fn(() => false),
@@ -50,6 +54,14 @@ describe("terminalSessionApi", () => {
 
     expect(writeToSession(8, "fallback")).toBe(true);
     expect(adapter.writeToSession).toHaveBeenCalledWith(8, "fallback");
+  });
+
+  it("routes cwd and grid selection to the owning Ghostty model", () => {
+    vi.mocked(ghosttySession.hasGhosttySession).mockReturnValue(true);
+    expect(leafCwd(7)).toBe("/workspace");
+    expect(leafGridSelection(7)).toBe("selected output");
+    expect(adapter.leafCwd).not.toHaveBeenCalled();
+    expect(adapter.leafGridSelection).not.toHaveBeenCalled();
   });
 
   it("clears and disposes focused Ghostty sessions without xterm work", () => {
