@@ -1,8 +1,9 @@
 # Ghostty release readiness
 
-Status on 2026-09-05: migration in progress, not ready for a stable release.
-The branch uses Ghostty by default on capable webviews. xterm remains installed
-for block terminals and final backend selection fallback.
+Status on 2026-09-05: Ghostty-only implementation, with packaged release validation
+still open. xterm and its addons are removed. All terminals, including blocks,
+use Ghostty with WebGPU or Terax WebGL. This is a testable release candidate,
+not evidence of multi-platform, multi-day production certification.
 
 ## Verified hardening
 
@@ -59,7 +60,7 @@ for block terminals and final backend selection fallback.
   reproducible five-model WASM stress run reaches a memory plateau for both
   artifacts. See [resource efficiency](ghostty-resource-efficiency.md).
 
-## Local verification
+## Checkpoint verification before final migration
 
 Completed on macOS arm64:
 
@@ -84,7 +85,7 @@ Full Windows cross-compilation was attempted, but this host lacks the Windows
 C headers required by `ring` (`assert.h` was unavailable). This is not Windows
 validation. Windows, Linux, old webviews, and packaged GUI testing remain open.
 
-### Artifact costs
+### Checkpoint artifact costs
 
 | Artifact | Raw bytes | Production Vite gzip |
 | --- | ---: | ---: |
@@ -116,16 +117,16 @@ or long-duration stability. Do not use them as application performance claims.
 
 | Gate | Required evidence or implementation |
 | --- | --- |
-| Ghostty blocks | Tracked command ranges through pruning and reflow, block overlays, sticky headers, search, input modes, navigation, copy, and Ask AI |
-| Accessibility | Accessible output and scrollback with real screen-reader validation, beyond the current input label |
-| Product events | Title, bell, and notification routing; plain-text URL detection |
+| Ghostty blocks | Native boundaries, reflow/pruning/reset, exact output, Unicode search, metadata caps, navigation, and occlusion tests pass. Validate overlay placement and shared input with real shells in packaged webviews. |
+| Accessibility | Bounded accessible output, history paging, and announcements are implemented. VoiceOver, NVDA, and Orca validation remains required. |
+| Product events | Plain-text URLs and OSC 8 are implemented. Title, bell, and generic notification events remain exposed by the bridge; product routing beyond existing agent notifications is not implemented. |
 | Renderer recovery | Packaged GPU/context loss, recovery exhaustion, font/DPR changes, hidden panes, and sleep/wake; preserve model, PTY, selection, and history |
 | Shell and input parity | Fish/Starship drag resizing, zsh, bash, pwsh, cmd, WSL, IME, dead keys, AltGr, mouse protocols, synchronized output, and agent TUIs |
 | Glyph resources | Cold-glyph eviction under Unicode, emoji, and Nerd Font pressure; verify shared and isolated atlas bounds |
 | Scheduling | Per-pane pacing, RAF timestamps, native macOS occlusion, and bounded submissions are implemented; packaged cadence, sleep/wake, resize churn, and other-platform occlusion still need measurements |
 | Transport throughput | Packaged 100 MiB plain and ANSI output with end-to-end parsing completion and fault injection, including final output and ConPTY close |
 | Memory and energy | Attributed host, WebContent, and GPU processes; 1/5/10/20 tabs, hidden streaming, sustained agents, and multi-hour or multi-day timelines |
-| xterm removal | Complete the feature and platform gates, then remove runtime dependencies, addons, CSS, pool, snapshots, DormantRing, and compatibility API seams |
+| xterm removal | Implemented: no dependencies, addons, CSS, legacy pool, snapshots, dormant ring, or compatibility adapter remain. Renderer provenance/license files are retained. |
 
 The checked-in Tauri configuration currently declares macOS 13.0 as its minimum
 (the migration handoff and earlier TERAX.md text said 10.15). The configuration
@@ -189,3 +190,62 @@ would double-count memory. Transport throughput uses differences in parsed or
 acknowledged byte counters over elapsed time; shell timing alone can end before
 the frontend finishes parsing. Keep diagnostics disabled for final idle-energy
 measurements unless the cost of sampling is recorded separately.
+
+## Final migration implementation
+
+- Six checkpoint commits preserve the pre-migration hardening independently.
+- Every leaf now owns a Ghostty model. Block history and selection survive live
+  WebGPU/WebGL replacement. Failed graphics remain visible and retryable.
+- Commands are anchored at parser time, bounded by 2,048 native pins and 1,000
+  JavaScript records / 512 KiB estimated text metadata. Exact endpoint columns
+  prevent copying subsequent commands. Native range reads preserve the viewport
+  and selection; block search maps Unicode offsets to grid cells.
+- Scrollbar status marks retain at most 256 positions in two SVG paths, updated
+  at most four times per second while visible. Rerun uses complete submitted
+  commands, never truncated metadata. Shells without prompt integration retain
+  direct input; Bash before 4.4 explicitly declines the shared input bar.
+- Block code/UI and accessible output load only when used. Both suspend when
+  hidden or occluded. A closed session cannot acquire late block resources.
+- Removed the xterm model, six dependencies, addons, CSS, old renderer pool,
+  serialization, dormant ring, and adapter dispatch. WebGL uses software contexts
+  when the webview supports them; failure remains explicit.
+- Settings select Automatic/WebGL for new terminals and optional screen reader
+  output. Retired renderer overrides no longer select xterm.
+- Added IME, dead-key, AltGr, late clipboard disposal, bounded OSC clipboard,
+  ordinary URL, block lifecycle, native range, and metadata retention coverage.
+- CI now runs terminal tests on Windows and macOS in addition to Linux; this
+  configuration has not been run on remote hosts during the local session.
+
+The new block-enabled stress report is
+[ghostty-resource-soak-2026-09-05-blocks.json](ghostty-resource-soak-2026-09-05-blocks.json).
+It records exact artifact hashes. Both variants parse 655,360 updates across five
+models and settle at 68.125 MiB WASM linear memory, with zero growth across the
+last 16 epochs and exactly 2,048 retained markers per model. This measures the
+native core; it excludes React, IPC, WebKit, GPU, and application energy.
+
+### Final local verification
+
+The Ghostty-only candidate passed on macOS arm64:
+
+- `pnpm check-types` and 151 frontend test files / 946 tests.
+- Frontend lint: successful exit, 94 existing warnings and one informational
+  diagnostic. The changed terminal files introduce no lint diagnostics.
+- Rust Clippy with warnings denied and all 333 unit/integration tests, including
+  scalar validation with SIMD instructions and types disabled.
+- Both rebuilt WASM variants pass exact block-boundary and input-mode tests.
+  The real `/bin/bash` test verifies that pre-4.4 Bash retains direct input.
+- Production Vite build and all existing `size-limit` budgets: total JavaScript
+  1.42 MB gzip, Ghostty core/session JavaScript 54.48 kB / 55 kB, and both WASM
+  variants 417.01 kB / 450 kB. Total JavaScript was approximately 1.58 MB gzip
+  at the checkpoint. File-group startup totals are not full startup measurements.
+- Final SIMD artifact: 707,988 bytes, 211.82 kB Vite gzip. Scalar artifact:
+  713,015 bytes, 211.78 kB Vite gzip. Vite and size-limit use different gzip
+  settings; use like-for-like measurements.
+- Local release `.app` built with updater artifacts disabled, then ad-hoc signed
+  and verified with `codesign --verify --deep --strict`. The arm64 `.app` uses
+  about 9.6 MiB on disk; this is not a compressed installer-size measurement.
+
+The candidate is at `src-tauri/target/release/bundle/macos/Terax.app`. It was not
+launched or installed, and no measurements were taken from another running Terax.
+This verification leaves the platform, packaged GUI, accessibility, and sustained
+resource release gates above open.

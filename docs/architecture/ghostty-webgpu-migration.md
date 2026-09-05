@@ -1,11 +1,14 @@
 # Ghostty terminal migration
 
-This document defines the migration from xterm.js with WebGL to libghostty-vt
-with Terax-owned WebGPU and WebGL renderers. Ghostty WebGPU is the branch
-default on webviews that expose WebGPU. Ghostty WebGL is the first capability
-and live-runtime fallback, followed by xterm WebGL when neither Ghostty GPU
-surface can run. Release selection remains gated by the acceptance matrix
-below.
+This is the original migration design and staged implementation record. Its
+milestones and fallback descriptions are historical. Current implementation and
+release gates are maintained in [release readiness](ghostty-release-readiness.md)
+and [renderer ownership](terminal-renderer-pool.md).
+
+As of 2026-09-05, xterm is removed. All leaves use libghostty-vt with WebGPU or
+Terax WebGL, including command blocks. Both SIMD and scalar artifacts ship.
+Accessible output is available on demand. Actual platform, GUI, and sustained
+resource validation remains required before stable release.
 
 ## Goals
 

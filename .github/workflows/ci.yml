@@ -52,6 +52,24 @@ jobs:
         run: pnpm knip
         continue-on-error: true
 
+  terminal-platforms:
+    name: terminal-test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Terminal models, input, blocks, transport, and renderer lifecycle
+        run: pnpm exec vitest run src/modules/terminal
+
   rust:
     runs-on: ubuntu-22.04
     steps:

@@ -154,3 +154,23 @@ input latency, frame cadence, host/WebContent/GPU memory, and idle/streaming
 energy. Exact canvas resizing, scroll-aware GPU storage, and cold-glyph eviction
 remain measured optimization candidates. This pass does not establish battery
 savings or eliminate the broader migration release gates.
+
+## Ghostty-only block workload
+
+The final migration removes the xterm parser and compatibility resources entirely.
+Block metadata retains at most 1,000 records and 512 KiB of estimated UTF-16 text;
+native markers retain at most 2,048 tracked pins. Block code and UI are lazy.
+Accessible text is opt-in and limited to 256 rows / 64 KiB with 250 ms coalescing.
+OSC clipboard writes retain one in-flight call and the newest pending value.
+
+Run native command tracking under the same streaming/reflow workload with:
+
+```sh
+TERAX_SOAK_BLOCKS=1 TERAX_SOAK_REPORT=/tmp/terax-block-soak.json pnpm soak:ghostty
+```
+
+The [recorded block run](ghostty-resource-soak-2026-09-05-blocks.json) uses five models,
+655,360 writes and 62,684,160 bytes per artifact. SIMD completed in 13.59 seconds,
+scalar in 15.29 seconds. Both plateaued at 71,434,240 bytes (68.125 MiB) of WASM
+memory with zero growth in the final 16 epochs. The marker rings stayed bounded
+at 2,048 pins per model. This does not measure full application RSS or battery use.

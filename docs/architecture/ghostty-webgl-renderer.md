@@ -11,8 +11,8 @@ portable-pty bytes
 ```
 
 WebGPU is selected first on supported webviews. This WebGL renderer is the
-live-runtime and capability fallback for the same Ghostty model, followed by
-`xterm-webgl` when a Ghostty GPU surface cannot run.
+live-runtime and capability fallback for the same Ghostty model. If both GPU
+paths fail, the pane retains its model and PTY and offers Retry display.
 
 ## Why the renderer is a fork
 
@@ -101,45 +101,26 @@ rollback when renderer setup fails.
 ## Backend selection
 
 The default backend is `ghostty-webgpu`. A missing or quarantined WebGPU device
-routes the existing Ghostty session to `ghostty-webgl`; WebGL2 capability
-failure routes the pane to `xterm-webgl`. An explicit backend can be selected
-before a reload:
+routes the existing Ghostty session to `ghostty-webgl`. The WebGL setting forces
+this renderer for new terminals. Retired xterm overrides are ignored.
+WebGL2 creation permits software contexts where the webview supports them.
+Graphics failure stays visible and retryable without changing terminal models.
 
-```js
-localStorage.setItem("terax.experimental.terminal-backend", "xterm-webgl")
-```
-
-Use `ghostty-webgl` to force this renderer, or remove the key to return to the
-capability-gated WebGPU default. Production builds may also set
-`VITE_TERMINAL_BACKEND` to one of the three backend identifiers.
-
-## xterm.js fallback version
-
-The fallback is pinned to exact beta versions instead of semver ranges:
-
-- `@xterm/xterm` 6.1.0-beta.302
-- `@xterm/addon-webgl` 0.20.0-beta.298
-- matching beta releases for fit, search, serialize, and web-links addons
-
-These versions include parser fast paths, bounded control-sequence payload
-handling, viewport synchronization improvements, cursor idle work reduction,
-IME corrections, atlas overflow limits, and WebGL lifecycle fixes that are
-important for long-running AI-agent sessions. Exact pins make the beta upgrade
-reproducible and keep a moving prerelease from entering a release build.
+Terax ships no xterm model, addon, CSS, snapshot, or legacy renderer-pool code.
+The WebGL source retains its MIT license and upstream provenance.
 
 ## Maintained libghostty adaptation
 
-The active experimental model is built from Ghostty commit
+The active model is built from Ghostty commit
 `349f026087d948f8f898dca3231ff91438f83ab8` in `ReleaseFast` mode. The bridge
 started from the useful low-level Restty work at commit
 `7700b14a7643ba9240818209ef1e0aa90d83ad77`, but the Restty application,
 component model, renderer lifecycle, and package runtime are not used. Terax
 owns the bridge, build, JavaScript boundary, renderers, and product integration.
 
-The production artifact is 705,544 bytes with SHA-256
-`af98c4962a76af43b5e5350e5fc157a2d3c9de89e20368e225743d6fe55eee73`.
-The source pins, licenses, reproducible Zig build, artifact size, and checksum
-are tracked in `packages/ghostty-core/adapted`.
+SIMD and scalar artifacts share the pinned source and bridge. The loader fetches
+one variant. Exact sizes, checksums, source pins, and rebuild commands live in
+`packages/ghostty-core/adapted/UPSTREAM.md`.
 
 The maintained bridge provides:
 
@@ -169,11 +150,10 @@ only as an on-demand compatibility API and is tree-shaken from the production
 path where unused. The production bundle contains the adapted artifact only,
 not both the legacy and adapted WASM binaries.
 
-The xterm fallback is behind a dynamic pane and backend-neutral session
-boundary. A normal Ghostty launch does not preload xterm JavaScript, CSS,
-addons, or the renderer pool. A startup-graph regression test enforces this
-property while block tabs and explicit xterm sessions continue to load the full
-fallback on demand.
+Block terminals use the same persistent Ghostty model. Native pins anchor
+command ranges through reflow and pruning; lazy block UI owns headers, status
+marks, search, rerun, and shared input. Accessibility also loads on demand.
+Regression tests reject xterm dependencies in the manifest and lockfile.
 
 Ghostty's incremental search API owns query matching and scrollback traversal.
 Terax keeps only a viewport-sized byte mask for renderer highlights and advances
@@ -232,7 +212,7 @@ the workload fell from 20,119,552 bytes with the previous artifact to 8,978,432
 bytes with the rebased artifact. These are linear-memory measurements, not
 total application RSS claims.
 
-The core microbenchmark on the same machine measured approximately 545 MB/s
+An earlier core microbenchmark on the same machine measured approximately 545 MB/s
 for a 58,282-byte agent-streaming parse payload and about 0.041 ms to
 synchronize a one-row 120 by 40 update. These are model-boundary measurements,
 not end-to-end application claims. RSS, WebKit allocations, actual GPU memory,
