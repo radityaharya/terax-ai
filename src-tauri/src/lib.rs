@@ -247,6 +247,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             pty::pty_open,
             pty::pty_write,
+            pty::pty_ack_output,
+            pty::pty_diagnostics,
             pty::pty_resize,
             pty::pty_close,
             pty::pty_close_all,

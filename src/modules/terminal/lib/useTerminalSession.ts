@@ -1,7 +1,5 @@
 import { ensureMonoFontsLoaded } from "@/lib/fonts";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { ghosttyCoreRuntimeDiagnostics } from "@/modules/terminal/ghostty/GhosttyCoreRuntime";
-import { webGpuTerminalRuntimeDiagnostics } from "@/modules/terminal/ghostty/gpu/WebGpuTerminalRuntime";
 import { encodeTerminalSubmission } from "@/modules/terminal/ghostty/input/terminalInputEncoding";
 import {
   clearGhosttySession,
@@ -11,7 +9,6 @@ import {
   ghosttyLeafIdForPty,
   ghosttyPtyIdForLeaf,
   ghosttySelectionForLeaf,
-  ghosttySessionDiagnostics,
   hasGhosttySession,
   interruptGhosttySession,
   respawnGhosttySession,
@@ -19,7 +16,6 @@ import {
   whenGhosttySessionReady,
   writeToGhosttySession,
 } from "@/modules/terminal/ghostty/useGhosttyTerminalSession";
-import { webGlTerminalRuntimeDiagnostics } from "@/modules/terminal/ghostty/webgl/WebGlTerminalRuntime";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -44,7 +40,7 @@ import {
   registerPromptTracker,
 } from "./osc-handlers";
 import { openPty, type PtySession } from "./pty-bridge";
-import { terminalResizeInteractionActive } from "./terminalResizeInteraction";
+import { registerXtermDiagnostics } from "@/modules/terminal/lib/terminalDiagnosticsRegistry";
 import "../block/block.css";
 import { ensureAgentActivityListener, isAgentActivePty } from "./agentActivity";
 import {
@@ -531,14 +527,20 @@ function ensureSession(
   return session;
 }
 
-function deliverPtyBytes(leafId: number, bytes: Uint8Array): void {
+function deliverPtyBytes(
+  leafId: number,
+  bytes: Uint8Array,
+): void | Promise<void> {
   const s = sessions.get(leafId);
   if (!s) return;
   // Retained slots keep parsing live (render paused); the ring is only for
   // leaves whose buffer was stolen or never bound.
   const slot = getLiveSlotForLeaf(leafId);
-  if (slot) slot.term.write(bytes);
-  else s.dormantRing.push(bytes);
+  if (!slot) {
+    s.dormantRing.push(bytes);
+    return;
+  }
+  return new Promise((resolve) => slot.term.write(bytes, resolve));
 }
 
 const SPAWN_RETRY_DELAY_MS = 250;
@@ -750,6 +752,10 @@ function attachSession(
           pty.close();
           return;
         }
+        if (s.shellExited) {
+          void pty.close();
+          return;
+        }
         s.pty = pty;
         if (s.pendingInput) {
           void pty.write(s.pendingInput);
@@ -812,6 +818,10 @@ export async function respawnSession(
   s.ptyOpening = false;
   if (s.disposed) {
     pty.close();
+    return;
+  }
+  if (s.shellExited) {
+    await pty.close();
     return;
   }
   s.pty = pty;
@@ -1142,7 +1152,7 @@ function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, "");
 }
 
-export function terminalDebugStats() {
+function xtermDebugStats() {
   const liveSessions = [...sessions.entries()].map(([leafId, s]) => ({
     leafId,
     pty: !!s.pty,
@@ -1157,11 +1167,6 @@ export function terminalDebugStats() {
   const snapshotTotal = liveSessions.reduce((n, s) => n + s.snapshotLen, 0);
   const slots = poolSlotStats();
   return {
-    ghosttyCore: ghosttyCoreRuntimeDiagnostics(),
-    ghosttyWebGpu: webGpuTerminalRuntimeDiagnostics(),
-    ghosttyWebGl: webGlTerminalRuntimeDiagnostics(),
-    ghosttySessions: ghosttySessionDiagnostics(),
-    terminalResizeInteractionActive: terminalResizeInteractionActive(),
     poolSize: poolSize(),
     webglContexts: slots.filter((s) => s.webgl).length,
     idleSlots: slots.filter((s) => s.leafId === null).length,
@@ -1170,16 +1175,8 @@ export function terminalDebugStats() {
     sessions: liveSessions,
     ringBytesTotal: ringTotal,
     snapshotCharsTotal: snapshotTotal,
-    domCanvases: document.querySelectorAll("canvas").length,
-    domScreens: document.querySelectorAll(".xterm-screen").length,
-    domRows: document.querySelectorAll(".xterm-rows > div").length,
-    jsHeapBytes:
-      (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
-        ?.usedJSHeapSize ?? null,
+
   };
 }
 
-if (import.meta.env?.DEV && typeof window !== "undefined") {
-  (window as unknown as { __teraxTerm?: unknown }).__teraxTerm =
-    terminalDebugStats;
-}
+registerXtermDiagnostics(xtermDebugStats);

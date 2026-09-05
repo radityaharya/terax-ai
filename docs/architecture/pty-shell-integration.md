@@ -15,17 +15,43 @@ pub struct PtyState {
 
 IDs start at 1 and monotonically increase; they are never reused so the frontend can treat `0` as unset.
 
-`pty_open` (`mod.rs:44`) spawns a session on a blocking thread, inserts it into the map, and returns the id. Output streams through a `Channel<Response>`; exit codes stream through a separate `Channel<i32>`. `pty_write` (`mod.rs:100`) accepts raw bytes with an `x-pty-id` header to avoid JSON serialization on every keystroke.
+`pty_open` (`mod.rs:44`) spawns a session on a blocking thread, inserts it into the map, and returns the id. Output streams through a `Channel<Response>`; exit codes stream through a separate `Channel<i32>`. `pty_write` accepts raw bytes with an `x-pty-id` header and performs pipe writes on a blocking worker so a full input pipe cannot block acknowledgment IPC.
 
 ## Reader / flusher / waiter threads
 
 `session::spawn` (`session.rs:102`) starts three threads per session:
 
 1. **Reader** - reads bytes from the PTY master, runs the DA filter and agent detector, and pushes filtered bytes into a pending buffer.
-2. **Flusher** - coalesces output and sends it to the frontend over the data channel.
-3. **Waiter** - waits for the child process to exit, flushes the tail, and emits the exit code.
+2. **Flusher** - adaptively coalesces output and sends it to the frontend over the data channel.
+3. **Waiter** - waits for the child process to exit, drains the flusher, and emits the exit code.
 
-The pending buffer is capped at 4 MiB; on overflow it is discarded and replaced with an SGR-reset notice so xterm state is not corrupted by a sliced CSI sequence.
+Output delivery is lossless and credit-based. The frontend acknowledges a
+chunk only after Ghostty has parsed it or xterm's write callback completes.
+Native pending plus in-flight data is capped at 2 MiB, and at most two chunks
+may be in flight. When either limit is reached, the reader stops draining the
+PTY and lets the operating system apply backpressure. No terminal bytes or
+partial escape sequences are discarded during normal delivery or acknowledgment retries.
+
+`pty_ack_output({ id, bytes })` carries a cumulative count of successfully parsed
+bytes, not a credit delta. Rust validates the count against sent chunk boundaries.
+Duplicate and stale counts do nothing; invalid or future boundaries are rejected.
+The frontend retains unconfirmed progress, retries rejected calls with capped
+backoff, and bounds unresolved acknowledgment calls to two. A stuck call or
+parser is visible after five seconds. If the entire IPC connection remains
+unresponsive, delivery stays paused with retained state rather than accumulating
+requests. A parser error never returns credit for unconsumed bytes.
+
+Reader completion and queue wakeups share the same mutex, preventing missed
+EOF notifications. Neither child exit nor EOF bypasses the byte or message
+limits. The exit channel is sent only after the final parser acknowledgment;
+registration checks completed draining rather than mere child exit.
+
+On Windows the waiter closes the ConPTY master on its own thread while the
+reader continues through EOF, including the final frame emitted during close.
+Explicit user close releases queue waiters and drains unwanted pipe bytes until
+EOF. This follows the [ClosePseudoConsole contract](https://learn.microsoft.com/en-us/windows/console/closepseudoconsole)
+and avoids the previous 50 ms final-output heuristic. Windows runtime testing
+remains a release gate.
 
 ## Shell bootstrapping
 
