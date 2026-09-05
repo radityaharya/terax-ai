@@ -119,6 +119,7 @@ export type TeraxGhosttyWasmExports = WebAssembly.Exports & {
   readonly restty_scrollbar_total: (handle: number) => number;
   readonly restty_scrollbar_offset: (handle: number) => number;
   readonly restty_scrollbar_len: (handle: number) => number;
+  readonly restty_active_cursor_y: (handle: number) => number;
   readonly restty_selection_set: (
     handle: number,
     startLine: number,
@@ -127,6 +128,11 @@ export type TeraxGhosttyWasmExports = WebAssembly.Exports & {
     endColumn: number,
     rectangular: number,
   ) => number;
+  readonly restty_semantic_markers_enable: (handle: number, enabled: number) => void;
+  readonly restty_semantic_marker_column: (handle: number, id: number) => number;
+  readonly restty_semantic_marker_line: (handle: number, id: number) => number;
+  readonly restty_semantic_marker_count: (handle: number) => number;
+  readonly restty_text_range_prepare: (handle: number, startLine: number, startCol: number, endLine: number, endCol: number) => number;
   readonly restty_selection_clear: (handle: number) => number;
   readonly restty_selection_active: (handle: number) => number;
   readonly restty_selection_start_line: (handle: number) => number;

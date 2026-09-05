@@ -28,6 +28,91 @@ describe.each([
   });
 
   describe("Terax Ghostty WASM adaptation", () => {
+    it("reports when a shell requires direct terminal input", () => {
+      const terminal = ghostty.createTerminal(16, 4);
+      try {
+        terminal.write(
+          new TextEncoder().encode(
+            "\x1b]133;B;terax_blocks=0\x07\x1b]133;B\x07",
+          ),
+        );
+        expect(terminal.drainEvents()).toEqual([
+          { type: "prompt-end", blockInput: false },
+          { type: "prompt-end" },
+        ]);
+      } finally {
+        terminal.dispose();
+      }
+    });
+
+    it("tracks exact command boundaries through batching, reflow and reset", () => {
+      const terminal = ghostty.createTerminal(16, 4);
+      try {
+        terminal.enableSemanticMarkers(true);
+        terminal.write(
+          new TextEncoder().encode(
+            "\x1b]133;C;printf alpha\x07abcdefghijklmnopQRST\r\n\x1b]133;D;255\x07\x1b]133;C;second\x07second\r\n\x1b]133;D;1000\x07",
+          ),
+        );
+        const events = terminal.drainEvents();
+        const first = events[0];
+        const end = events[1];
+        expect(first).toMatchObject({
+          type: "end-of-input",
+          command: "printf alpha",
+        });
+        expect(end).toMatchObject({ type: "end-of-command", exitCode: 255 });
+        expect(events[3]).toMatchObject({ exitCode: 1000 });
+        if (
+          first.type !== "end-of-input" ||
+          end.type !== "end-of-command" ||
+          !first.marker ||
+          !end.marker
+        )
+          throw new Error("Missing command events");
+        expect(terminal.semanticMarkerLine(first.marker)).toBe(0);
+        expect(terminal.semanticMarkerLine(end.marker)).toBe(2);
+        terminal.resize(8, 4);
+        expect(terminal.semanticMarkerLine(end.marker)).toBe(3);
+        expect(terminal.readTextRange(0, 2)).toBe("abcdefghijklmnopQRST");
+        terminal.write(new TextEncoder().encode("\x1bc"));
+        expect(terminal.semanticMarkerLine(first.marker)).toBeNull();
+      } finally {
+        terminal.dispose();
+      }
+    });
+
+    it("bounds semantic pins and releases them when blocks are disabled", () => {
+      const terminal = ghostty.createTerminal(16, 4, {
+        maxScrollbackLines: 10,
+      });
+      try {
+        terminal.write(new TextEncoder().encode("\x1b]133;C;x\x07"));
+        expect(terminal.semanticMarkerCount()).toBe(0);
+        terminal.enableSemanticMarkers(true);
+        terminal.write(new TextEncoder().encode("\x1b]133;C;x\x07"));
+        const first = terminal.drainEvents().slice(-1)[0];
+        if (first.type !== "end-of-input" || !first.marker)
+          throw new Error("Missing marker");
+        terminal.write(new TextEncoder().encode("line\r\n".repeat(10_000)));
+        expect(terminal.semanticMarkerLine(first.marker)).toBeNull();
+        terminal.write(
+          new TextEncoder().encode("\x1b]133;C;x\x07".repeat(3000)),
+        );
+        expect(terminal.semanticMarkerCount()).toBe(2048);
+        terminal.enableSemanticMarkers(false);
+        expect(terminal.semanticMarkerCount()).toBe(0);
+        terminal.enableSemanticMarkers(true);
+        terminal.write(new TextEncoder().encode("\x1b]133;C;new\x07"));
+        const last = terminal.drainEvents().slice(-1)[0];
+        if (last.type !== "end-of-input" || !last.marker)
+          throw new Error("Missing marker");
+        expect(terminal.semanticMarkerLine(last.marker)).not.toBeNull();
+        expect(terminal.semanticMarkerLine(first.marker)).toBeNull();
+      } finally {
+        terminal.dispose();
+      }
+    });
     it("pins the audited Ghostty and Restty sources", () => {
       expect(ADAPTED_GHOSTTY_COMMIT).toBe(
         "349f026087d948f8f898dca3231ff91438f83ab8",

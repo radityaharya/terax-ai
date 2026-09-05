@@ -588,11 +588,12 @@ export type GhosttyTerminalEvent =
     }
   | { readonly type: "prompt-start" }
   | { readonly type: "prompt-continuation" }
-  | { readonly type: "prompt-end" }
-  | { readonly type: "end-of-input" }
+  | { readonly type: "prompt-end"; readonly blockInput?: boolean }
+  | { readonly type: "end-of-input"; readonly marker?: number; readonly command?: string }
   | {
       readonly type: "end-of-command";
       readonly exitCode: number | null;
+      readonly marker?: number;
     }
   | { readonly type: "overflow"; readonly dropped: number };
 

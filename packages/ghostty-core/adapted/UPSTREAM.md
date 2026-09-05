@@ -11,10 +11,10 @@ per-terminal frame loop, or per-pane GPU lifecycle.
 - Restty commit: `7700b14a7643ba9240818209ef1e0aa90d83ad77`
 - Zig: `0.16.0`
 - Optimization: `ReleaseFast`, WebAssembly SIMD and scalar variants
-- SIMD artifact size: `705529` bytes
-- Scalar artifact size: `710519` bytes
-- SIMD SHA-256: `fad6b01d7f1eca8b9cd6ca5b7de27048ba55121ef63de9cb4ab90e6598404ffd`
-- Scalar SHA-256: `51f66044e4c7f68dd98d671d71409ef1ea4cc289e47a2e9bd215ad906a144f4d`
+- SIMD artifact size: `707988` bytes
+- Scalar artifact size: `713015` bytes
+- SIMD SHA-256: `306d3e49c683299c35d2df18b69683a50c13949c674bfc11c90e01256ae068fb`
+- Scalar SHA-256: `b34d7a1ca6a5ccb2f63629c04baf0929bda6537725f511ffcea41f68ca0882a8`
 
 Terax-specific changes include:
 
@@ -23,10 +23,15 @@ Terax-specific changes include:
 - independent hard byte and line limits for scrollback;
 - a 256 KB maximum retained terminal-reply queue per terminal;
 - raw `Uint8Array` PTY writes and replies with no UTF-8 round trip;
+- prompt input capability for shells that need direct input instead of blocks;
 - native Ghostty key encoding and terminal mode queries in the same instance;
 - native tracked selections that survive streaming and reflow, clamp when
   partially pruned, and release their tracked pins deterministically;
 - bounded parser-owned semantic events for shell and product integration;
+- optional parser-time command markers with 2,048 tracked pins per terminal,
+  exact endpoint columns, full signed exit codes, and deterministic cleanup;
+- direct text range extraction independent of viewport or selection state;
+- current geometry queries even before a hidden terminal synchronizes rendering;
 - native mode, size, color, visibility, and version query replies;
 - generated upstream Ghostty XTGETTCAP responses and native DECRQSS replies;
 - synchronized-output state for damage suppression with bounded recovery;

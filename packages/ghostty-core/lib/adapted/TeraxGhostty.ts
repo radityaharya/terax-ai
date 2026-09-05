@@ -20,10 +20,10 @@ export const ADAPTED_GHOSTTY_COMMIT =
 export const ADAPTED_RESTTY_COMMIT =
   "7700b14a7643ba9240818209ef1e0aa90d83ad77";
 export const ADAPTED_GHOSTTY_WASM_SHA256 =
-  "fad6b01d7f1eca8b9cd6ca5b7de27048ba55121ef63de9cb4ab90e6598404ffd";
+  "306d3e49c683299c35d2df18b69683a50c13949c674bfc11c90e01256ae068fb";
 
 export const ADAPTED_GHOSTTY_SCALAR_WASM_SHA256 =
-  "51f66044e4c7f68dd98d671d71409ef1ea4cc289e47a2e9bd215ad906a144f4d";
+  "b34d7a1ca6a5ccb2f63629c04baf0929bda6537725f511ffcea41f68ca0882a8";
 
 let wasmSimdAvailable: boolean | undefined;
 
@@ -83,7 +83,13 @@ const requiredExports = [
   "restty_scrollbar_total",
   "restty_scrollbar_offset",
   "restty_scrollbar_len",
+  "restty_active_cursor_y",
   "restty_selection_set",
+  "restty_semantic_markers_enable",
+  "restty_semantic_marker_line",
+  "restty_semantic_marker_column",
+  "restty_semantic_marker_count",
+  "restty_text_range_prepare",
   "restty_selection_clear",
   "restty_selection_active",
   "restty_selection_start_line",
@@ -446,6 +452,47 @@ export class TeraxGhosttyTerminal {
     const dropped = this.exports.restty_take_dropped_events(this.handle);
     if (dropped > 0) events.push({ type: "overflow", dropped });
     return events;
+  }
+
+  enableSemanticMarkers(enabled: boolean): void {
+    this.assertLive();
+    this.exports.restty_semantic_markers_enable(this.handle, Number(enabled));
+  }
+
+  semanticMarkerLine(id: number): number | null {
+    this.assertLive();
+    if (!Number.isInteger(id) || id <= 0 || id > 0xffff_ffff) return null;
+    const line = this.exports.restty_semantic_marker_line(this.handle, id);
+    return line < 0 ? null : line;
+  }
+
+  bufferCursorLine(): number {
+    this.assertLive();
+    const bar = this.scrollbar();
+    return bar.total - bar.length + this.exports.restty_active_cursor_y(this.handle);
+  }
+
+  semanticMarkerColumn(id: number): number | null {
+    this.assertLive();
+    if (!Number.isInteger(id) || id <= 0 || id > 0xffff_ffff) return null;
+    const column = this.exports.restty_semantic_marker_column(this.handle, id);
+    return column < 0 ? null : column;
+  }
+
+  semanticMarkerCount(): number {
+    this.assertLive();
+    return this.exports.restty_semantic_marker_count(this.handle);
+  }
+
+  readTextRange(startLine: number, endLine: number, startCol = 0, endCol = this.cols - 1): string {
+    this.assertLive();
+    const total = this.scrollbar().total;
+    if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || startLine < 0 || endLine < startLine || startLine >= total) return "";
+    checkResult(this.exports.restty_text_range_prepare(this.handle, startLine, clampInteger(startCol, 0, this.cols - 1), Math.min(total - 1, endLine), clampInteger(endCol, 0, this.cols - 1)), "read terminal text range");
+    const length = this.exports.restty_selection_text_len(this.handle);
+    const pointer = this.exports.restty_selection_text_ptr(this.handle);
+    validateRange(this.memory.buffer, pointer, length);
+    return textDecoder.decode(new Uint8Array(this.memory.buffer, pointer, length));
   }
 
   scrollViewport(deltaRows: number): void {
@@ -1182,15 +1229,24 @@ function decodeTerminalEvent(
     case 7:
       return { type: "prompt-continuation" };
     case 8:
-      return { type: "prompt-end" };
-    case 9:
-      return { type: "end-of-input" };
-    case 10:
+      return payload.byteLength > 0 && payload[0] === 0
+        ? { type: "prompt-end", blockInput: false }
+        : { type: "prompt-end" };
+    case 9: {
+      if (payload.byteLength < 4) return null;
+      const marker = new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0, true);
+      return marker ? { type: "end-of-input", marker, command: textDecoder.decode(payload.subarray(4)) } : { type: "end-of-input" };
+    }
+    case 10: {
+      if (payload.byteLength < 9) return null;
+      const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      const marker = view.getUint32(0, true);
       return {
         type: "end-of-command",
-        exitCode:
-          payload[0] === undefined || payload[0] === 255 ? null : payload[0],
+        exitCode: payload[4] ? view.getInt32(5, true) : null,
+        ...(marker ? { marker } : {}),
       };
+    }
     default:
       return null;
   }

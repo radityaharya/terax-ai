@@ -279,6 +279,7 @@ const StreamHandler = struct {
     output: *std.ArrayListUnmanaged(u8),
     events: *std.ArrayListUnmanaged(u8),
     dropped_events: *u32,
+    semantic_markers: *SemanticMarkers,
     apc: ghostty.apc.Handler = .{},
     dcs: ghostty.dcs.Handler = .{},
     apc_debug: std.ArrayListUnmanaged(u8) = .empty,
@@ -291,6 +292,7 @@ const StreamHandler = struct {
         output: *std.ArrayListUnmanaged(u8),
         events: *std.ArrayListUnmanaged(u8),
         dropped_events: *u32,
+        semantic_markers: *SemanticMarkers,
     ) StreamHandler {
         return .{
             .alloc = alloc,
@@ -299,6 +301,7 @@ const StreamHandler = struct {
             .output = output,
             .events = events,
             .dropped_events = dropped_events,
+            .semantic_markers = semantic_markers,
             .apc = .{},
             .dcs = .{},
             .apc_debug = .empty,
@@ -818,15 +821,26 @@ const StreamHandler = struct {
                 self.readonly.vt(action, value);
                 switch (value.action) {
                     .fresh_line_new_prompt, .prompt_start => try self.emitEvent(.prompt_start, &.{}),
-                    .end_prompt_start_input, .end_prompt_start_input_terminate_eol => try self.emitEvent(.prompt_end, &.{}),
-                    .end_input_start_output => try self.emitEvent(.end_of_input, &.{}),
+                    .end_prompt_start_input, .end_prompt_start_input_terminate_eol => {
+                        const block_input = [_]u8{@intFromBool(!std.mem.eql(u8, value.options_unvalidated, "terax_blocks=0"))};
+                        try self.emitEvent(.prompt_end, &.{&block_input});
+                    },
+                    .end_input_start_output => {
+                        var marker: [4]u8 = undefined;
+                        std.mem.writeInt(u32, &marker, try self.semantic_markers.capture(self.alloc, self.term), .little);
+                        const command = if (self.semantic_markers.enabled)
+                            value.options_unvalidated[0..@min(value.options_unvalidated.len, 8192)]
+                        else
+                            "";
+                        try self.emitEvent(.end_of_input, &.{ &marker, command });
+                    },
                     .end_command => {
                         const exit_value = value.readOption(.exit_code);
-                        const exit_code = [_]u8{if (exit_value) |code|
-                            if (code >= 0 and code < 255) @intCast(code) else 255
-                        else
-                            255};
-                        try self.emitEvent(.end_of_command, &.{&exit_code});
+                        var payload: [9]u8 = undefined;
+                        std.mem.writeInt(u32, payload[0..4], try self.semantic_markers.capture(self.alloc, self.term), .little);
+                        payload[4] = @intFromBool(exit_value != null);
+                        std.mem.writeInt(i32, payload[5..9], exit_value orelse 0, .little);
+                        try self.emitEvent(.end_of_command, &.{&payload});
                     },
                     else => {},
                 }
@@ -847,6 +861,51 @@ const StreamHandler = struct {
 
 const TerminalStream = ghostty.Stream(StreamHandler);
 
+const SemanticMarkers = struct {
+    const capacity = 2048;
+    const Entry = struct { id: u32, pin: *ghostty.PageList.Pin };
+    enabled: bool = false,
+    entries: std.ArrayListUnmanaged(Entry) = .empty,
+    next_id: u32 = 1,
+    first_id: u32 = 1,
+
+    fn clear(self: *SemanticMarkers, alloc: Allocator, term: *ghostty.Terminal) void {
+        const screen = term.screens.get(.primary).?;
+        for (self.entries.items) |entry| screen.pages.untrackPin(entry.pin);
+        self.entries.deinit(alloc);
+        self.entries = .empty;
+        self.first_id = self.next_id;
+    }
+
+    fn capture(self: *SemanticMarkers, alloc: Allocator, term: *ghostty.Terminal) !u32 {
+        if (!self.enabled or term.screens.active_key != .primary or self.next_id == 0) return 0;
+        const screen = term.screens.active;
+        const id = self.next_id;
+        const slot = (id - self.first_id) % capacity;
+        const pin = try screen.pages.trackPin(screen.cursor.page_pin.*);
+        errdefer screen.pages.untrackPin(pin);
+        if (self.entries.items.len == capacity) {
+            screen.pages.untrackPin(self.entries.items[slot].pin);
+            self.entries.items[slot] = .{ .id = id, .pin = pin };
+        } else {
+            try self.entries.append(alloc, .{ .id = id, .pin = pin });
+        }
+        self.next_id +%= 1;
+        return id;
+    }
+
+    fn line(self: *const SemanticMarkers, term: *ghostty.Terminal, id: u32) i32 {
+        if (id == 0 or id < self.first_id) return -1;
+        const slot = (id - self.first_id) % capacity;
+        if (slot >= self.entries.items.len) return -1;
+        const entry = self.entries.items[slot];
+        if (entry.id != id or entry.pin.garbage) return -1;
+        const screen = term.screens.get(.primary).?;
+        const point = screen.pages.pointFromPin(.screen, entry.pin.*) orelse return -1;
+        return @intCast(point.screen.y);
+    }
+};
+
 const Restty = struct {
     alloc: Allocator,
     term: ghostty.Terminal,
@@ -863,6 +922,7 @@ const Restty = struct {
     events: std.ArrayListUnmanaged(u8) = .empty,
     selection_text: ?[:0]const u8 = null,
     dropped_events: u32 = 0,
+    semantic_markers: SemanticMarkers = .{},
     has_render_data: bool = false,
     damage_full: u8 = 1,
     render_update_count: u32 = 0,
@@ -1428,6 +1488,7 @@ fn createWithLimits(
             &handle.output,
             &handle.events,
             &handle.dropped_events,
+            &handle.semantic_markers,
         ),
     });
     return handle;
@@ -1439,6 +1500,7 @@ pub export fn restty_destroy(handle: ?*Restty) void {
     h.stream.deinit();
     h.render_state.deinit(h.alloc);
     h.search.deinit(h.alloc);
+    h.semantic_markers.clear(h.alloc, &h.term);
     h.term.deinit(h.alloc);
     h.buffers.deinit(h.alloc);
     h.graphemes.deinit(h.alloc);
@@ -1658,6 +1720,47 @@ pub export fn restty_scrollbar_len(handle: ?*Restty) u32 {
     const h = handle orelse return 0;
     const sb = h.term.screens.active.pages.scrollbar();
     return @intCast(sb.len);
+}
+
+pub export fn restty_semantic_markers_enable(handle: ?*Restty, enabled: u8) void {
+    const h = handle orelse return;
+    h.semantic_markers.enabled = enabled != 0;
+    if (enabled == 0) h.semantic_markers.clear(h.alloc, &h.term);
+}
+
+pub export fn restty_semantic_marker_line(handle: ?*Restty, id: u32) i32 {
+    const h = handle orelse return -1;
+    return h.semantic_markers.line(&h.term, id);
+}
+
+pub export fn restty_semantic_marker_count(handle: ?*Restty) u32 {
+    const h = handle orelse return 0;
+    return @intCast(h.semantic_markers.entries.items.len);
+}
+
+pub export fn restty_semantic_marker_column(handle: ?*Restty, id: u32) i32 {
+    const h = handle orelse return -1;
+    if (h.semantic_markers.line(&h.term, id) < 0) return -1;
+    return h.semantic_markers.entries.items[(id - h.semantic_markers.first_id) % SemanticMarkers.capacity].pin.x;
+}
+
+pub export fn restty_text_range_prepare(
+    handle: ?*Restty,
+    start_line: u32,
+    start_col: u16,
+    end_line: u32,
+    end_col: u16,
+) u32 {
+    const h = handle orelse return @intFromEnum(ErrorCode.invalid_handle);
+    clearSelectionText(h);
+    const screen = h.term.screens.active;
+    const start = pinForBufferPoint(screen, start_line, start_col) orelse return @intFromEnum(ErrorCode.invalid_arg);
+    const end = pinForBufferPoint(screen, end_line, end_col) orelse return @intFromEnum(ErrorCode.invalid_arg);
+    h.selection_text = screen.selectionString(h.alloc, .{
+        .sel = ghostty.Selection.init(start, end, false),
+        .trim = true,
+    }) catch return @intFromEnum(ErrorCode.out_of_memory);
+    return @intFromEnum(ErrorCode.ok);
 }
 
 pub export fn restty_selection_set(
@@ -2247,12 +2350,12 @@ pub export fn restty_cursor_info_ptr(handle: ?*Restty) usize {
 
 pub export fn restty_rows(handle: ?*Restty) u32 {
     const h = handle orelse return 0;
-    return h.rows;
+    return h.term.rows;
 }
 
 pub export fn restty_cols(handle: ?*Restty) u32 {
     const h = handle orelse return 0;
-    return h.cols;
+    return h.term.cols;
 }
 
 pub export fn restty_active_cursor_x(handle: ?*Restty) u32 {
