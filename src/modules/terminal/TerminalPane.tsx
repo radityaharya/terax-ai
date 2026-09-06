@@ -170,7 +170,7 @@ const GhosttyTerminalPane = memo(
         )}
         {blocks && (
           <Suspense fallback={null}>
-            <GhosttyBlockOverlay leafId={leafId} visible={visible} />
+            <GhosttyBlockOverlay leafId={leafId} />
           </Suspense>
         )}
         {session.error && (

@@ -24,6 +24,7 @@ export type PositionedBlock = {
 export type VisibleBlocks = {
   blocks: PositionedBlock[];
   sticky: PositionedBlock | null;
+  generation: number;
 };
 
 export type BlockMatch = { line: number; col: number; len: number };

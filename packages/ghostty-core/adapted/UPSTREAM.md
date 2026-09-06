@@ -11,10 +11,10 @@ per-terminal frame loop, or per-pane GPU lifecycle.
 - Restty commit: `7700b14a7643ba9240818209ef1e0aa90d83ad77`
 - Zig: `0.16.0`
 - Optimization: `ReleaseFast`, WebAssembly SIMD and scalar variants
-- SIMD artifact size: `707988` bytes
-- Scalar artifact size: `713015` bytes
-- SIMD SHA-256: `306d3e49c683299c35d2df18b69683a50c13949c674bfc11c90e01256ae068fb`
-- Scalar SHA-256: `b34d7a1ca6a5ccb2f63629c04baf0929bda6537725f511ffcea41f68ca0882a8`
+- SIMD artifact size: `708426` bytes
+- Scalar artifact size: `713453` bytes
+- SIMD SHA-256: `b41c89cd5463fd4493432b5593f1e86b31597174bbdc9c43891eaf1243571fd6`
+- Scalar SHA-256: `6292f24c619279d6d4872b9b697728780f755639ddd8b73f2d9b73370b4332f7`
 
 Terax-specific changes include:
 
@@ -30,6 +30,8 @@ Terax-specific changes include:
 - bounded parser-owned semantic events for shell and product integration;
 - optional parser-time command markers with 2,048 tracked pins per terminal,
   exact endpoint columns, full signed exit codes, and deterministic cleanup;
+- parser-time block invalidation for primary-screen clear and reset, retaining
+  bounded marker capacity and preserving later markers within the same write;
 - direct text range extraction independent of viewport or selection state;
 - current geometry queries even before a hidden terminal synchronizes rendering;
 - native mode, size, color, visibility, and version query replies;

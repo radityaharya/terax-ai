@@ -82,6 +82,34 @@ describe.each([
       }
     });
 
+    it("invalidates clear markers at parse time without allocating events for plain terminals", () => {
+      const terminal = ghostty.createTerminal(16, 4);
+      const write = (text: string) =>
+        terminal.write(new TextEncoder().encode(text));
+      try {
+        write("\x1b[2J\x1b[3J\x1bc");
+        expect(terminal.drainEvents()).toEqual([]);
+        terminal.enableSemanticMarkers(true);
+        for (let index = 0; index < 256; index++) {
+          write("\x1b]133;C;old\x07\x1b[2J\x1b]133;C;new\x07");
+          const [before, clear, after] = terminal.drainEvents();
+          expect(clear).toEqual({ type: "screen-cleared" });
+          if (
+            before.type !== "end-of-input" ||
+            !before.marker ||
+            after.type !== "end-of-input" ||
+            !after.marker
+          )
+            throw new Error("Missing markers");
+          expect(terminal.semanticMarkerLine(before.marker)).toBeNull();
+          expect(terminal.semanticMarkerLine(after.marker)).toBe(0);
+          expect(terminal.semanticMarkerCount()).toBe(1);
+        }
+      } finally {
+        terminal.dispose();
+      }
+    });
+
     it("bounds semantic pins and releases them when blocks are disabled", () => {
       const terminal = ghostty.createTerminal(16, 4, {
         maxScrollbackLines: 10,

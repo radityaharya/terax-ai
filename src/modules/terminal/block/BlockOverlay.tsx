@@ -53,7 +53,7 @@ type Props = {
   onRestoreFocus: () => void;
 };
 
-const EMPTY: VisibleBlocks = { blocks: [], sticky: null };
+const EMPTY: VisibleBlocks = { blocks: [], sticky: null, generation: 0 };
 
 function fmtDuration(ms: number): string | null {
   if (!Number.isFinite(ms) || ms <= 0) return null;
@@ -113,7 +113,11 @@ function sameBlock(
 }
 
 function sameVisibleBlocks(a: VisibleBlocks, b: VisibleBlocks): boolean {
-  if (!sameBlock(a.sticky, b.sticky) || a.blocks.length !== b.blocks.length)
+  if (
+    a.generation !== b.generation ||
+    !sameBlock(a.sticky, b.sticky) ||
+    a.blocks.length !== b.blocks.length
+  )
     return false;
   for (let index = 0; index < a.blocks.length; index++) {
     if (!sameBlock(a.blocks[index], b.blocks[index])) return false;
@@ -131,9 +135,14 @@ export function BlockOverlay(props: Props) {
     const update = (synchronous = false) => {
       const v = getVisible();
       if (sameVisibleBlocks(v, lastVisible.current)) return;
+      const cleared = v.generation !== lastVisible.current.generation;
       lastVisible.current = v;
-      if (synchronous) flushSync(() => setVis(v));
-      else setVis(v);
+      const commit = () => {
+        if (cleared) setSearchId(null);
+        setVis(v);
+      };
+      if (synchronous) flushSync(commit);
+      else commit();
     };
     update();
     return subscribe(() => update(true));

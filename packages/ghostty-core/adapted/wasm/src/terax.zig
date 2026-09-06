@@ -31,6 +31,7 @@ const TerminalEvent = enum(u8) {
     prompt_end = 8,
     end_of_input = 9,
     end_of_command = 10,
+    screen_cleared = 11,
 };
 
 const CursorInfo = extern struct {
@@ -783,6 +784,15 @@ const StreamHandler = struct {
         value: StreamAction.Value(action),
     ) !void {
         switch (action) {
+            .erase_display_complete, .erase_display_scrollback => {
+                defer self.readonly.vt(action, value);
+                if (!value and self.term.screens.active_key == .primary)
+                    try self.clearSemanticMarkers();
+            },
+            .full_reset => {
+                defer self.readonly.vt(action, value);
+                try self.clearSemanticMarkers();
+            },
             .request_mode => try self.requestMode(value.mode),
             .request_mode_unknown => try self.requestModeUnknown(value.mode, value.ansi),
             .size_report => try self.sizeReport(value),
@@ -857,6 +867,12 @@ const StreamHandler = struct {
             else => self.readonly.vt(action, value),
         }
     }
+
+    fn clearSemanticMarkers(self: *StreamHandler) !void {
+        if (!self.semantic_markers.enabled) return;
+        self.semantic_markers.invalidate(self.term);
+        try self.emitEvent(.screen_cleared, &.{});
+    }
 };
 
 const TerminalStream = ghostty.Stream(StreamHandler);
@@ -870,10 +886,15 @@ const SemanticMarkers = struct {
     first_id: u32 = 1,
 
     fn clear(self: *SemanticMarkers, alloc: Allocator, term: *ghostty.Terminal) void {
-        const screen = term.screens.get(.primary).?;
-        for (self.entries.items) |entry| screen.pages.untrackPin(entry.pin);
+        self.invalidate(term);
         self.entries.deinit(alloc);
         self.entries = .empty;
+    }
+
+    fn invalidate(self: *SemanticMarkers, term: *ghostty.Terminal) void {
+        const screen = term.screens.get(.primary).?;
+        for (self.entries.items) |entry| screen.pages.untrackPin(entry.pin);
+        self.entries.clearRetainingCapacity();
         self.first_id = self.next_id;
     }
 

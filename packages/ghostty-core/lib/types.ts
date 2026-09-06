@@ -595,6 +595,7 @@ export type GhosttyTerminalEvent =
       readonly exitCode: number | null;
       readonly marker?: number;
     }
+  | { readonly type: "screen-cleared" }
   | { readonly type: "overflow"; readonly dropped: number };
 
 /**

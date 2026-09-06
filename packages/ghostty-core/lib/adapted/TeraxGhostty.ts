@@ -20,10 +20,10 @@ export const ADAPTED_GHOSTTY_COMMIT =
 export const ADAPTED_RESTTY_COMMIT =
   "7700b14a7643ba9240818209ef1e0aa90d83ad77";
 export const ADAPTED_GHOSTTY_WASM_SHA256 =
-  "306d3e49c683299c35d2df18b69683a50c13949c674bfc11c90e01256ae068fb";
+  "b41c89cd5463fd4493432b5593f1e86b31597174bbdc9c43891eaf1243571fd6";
 
 export const ADAPTED_GHOSTTY_SCALAR_WASM_SHA256 =
-  "b34d7a1ca6a5ccb2f63629c04baf0929bda6537725f511ffcea41f68ca0882a8";
+  "6292f24c619279d6d4872b9b697728780f755639ddd8b73f2d9b73370b4332f7";
 
 let wasmSimdAvailable: boolean | undefined;
 
@@ -1247,6 +1247,8 @@ function decodeTerminalEvent(
         ...(marker ? { marker } : {}),
       };
     }
+    case 11:
+      return { type: "screen-cleared" };
     default:
       return null;
   }

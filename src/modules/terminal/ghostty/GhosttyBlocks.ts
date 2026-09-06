@@ -10,7 +10,6 @@ import type { GhosttyTerminalModelApi } from "@/modules/terminal/ghostty/Ghostty
 
 const MAX_BLOCKS = 1000;
 const MAX_METADATA_UNITS = 256 * 1024;
-const EMPTY: VisibleBlocks = { blocks: [], sticky: null };
 type BlockModel = GhosttyTerminalModelApi &
   Required<
     Pick<
@@ -48,6 +47,7 @@ export class GhosttyBlocks {
   private pendingCommandComplete = false;
   private sequence = 0;
   private metadataUnits = 0;
+  private clearGeneration = 0;
 
   constructor(model: GhosttyTerminalModelApi) {
     requireBlockModel(model);
@@ -118,6 +118,8 @@ export class GhosttyBlocks {
     } else if (event.type === "end-of-command") {
       this.phase = "prompt";
       if (event.marker) this.finish(event.marker, event.exitCode);
+    } else if (event.type === "screen-cleared") {
+      this.clearMetadata();
     } else if (event.type === "overflow") {
       this.clear();
     }
@@ -132,14 +134,20 @@ export class GhosttyBlocks {
   }
 
   clear(): void {
+    this.model.enableSemanticMarkers(false);
+    this.model.enableSemanticMarkers(true);
+    this.clearMetadata();
+  }
+
+  private clearMetadata(): void {
+    this.clearSelection();
+    this.clearGeneration++;
     this.entries = [];
     this.metadataUnits = 0;
     this.live = null;
     this.selected = null;
     this.pendingCommand = "";
     this.pendingCommandComplete = false;
-    this.model.enableSemanticMarkers?.(false);
-    this.model.enableSemanticMarkers?.(true);
     this.model.setBlockSearchMatch?.(null);
   }
 
@@ -189,7 +197,7 @@ export class GhosttyBlocks {
 
   visibleBlocks(cellHeight: number): VisibleBlocks {
     if (this.mode === "alt" || this.mode === "plain" || cellHeight <= 0)
-      return EMPTY;
+      return { blocks: [], sticky: null, generation: this.clearGeneration };
     const viewport = this.model.viewportOriginLine();
     const blocks: PositionedBlock[] = [];
     let sticky: PositionedBlock | null = null;
@@ -229,7 +237,7 @@ export class GhosttyBlocks {
       blocks.push(block);
       if (range.start < viewport) sticky = block;
     }
-    return { blocks, sticky };
+    return { blocks, sticky, generation: this.clearGeneration };
   }
 
   selectAtLine(line: number): boolean {
@@ -312,21 +320,6 @@ export class GhosttyBlocks {
 
   clearSearch(): void {
     this.model.setBlockSearchMatch?.(null);
-  }
-
-  overviewRows(): Uint8Array {
-    const rows = new Uint8Array(256);
-    if (this.mode === "alt" || this.mode === "plain") return rows;
-    const total = this.model.scrollPosition().history + this.model.rows;
-    for (const entry of this.entries) {
-      if (entry.end === null) continue;
-      const line = this.model.semanticMarkerLine(entry.end);
-      if (line === null) continue;
-      const row = Math.min(255, Math.floor((line / Math.max(1, total)) * 256));
-      const status = entry.exitCode === null || entry.exitCode === 0 ? 1 : 2;
-      rows[row] = Math.max(rows[row], status);
-    }
-    return rows;
   }
 
   private revealLine(line: number): void {
