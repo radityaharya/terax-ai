@@ -55,6 +55,13 @@ platforms. Context clicks expose the selected text through the input element to
 restore the webview's native text menu; no persistent DOM scrollback is maintained.
 The block prompt retains an enabled terminal input proxy for native menus and
 routes editing keys, composed text and paste back to its command editor.
+Character drags retain a native selection pin from pointerdown, including before
+the first pointermove. Unmoved clicks and lost captures discard provisional pins.
+Key encoding supplies the base character required by Kitty keyboard mode; plain
+keys and key releases also use Ghostty encoding when the application requests it.
+The bundled private-use symbol font supplies Nerd Font icons without replacing
+the user's text font or native color emoji. Its fixed 772 kB asset is loaded once
+before terminal glyph rasterization and has a separate 800 kB release budget.
 Scrollbar status marks use two SVG paths with at most 256 positions, refreshed
 at most four times per second while visible. Rerun requires the complete command
 submitted through Terax; truncated shell labels are never executed.
@@ -94,6 +101,10 @@ short desktop transitions, and then reclaims hidden-window GPU resources.
 Sleep requests immediate reclamation; hidden tabs still release their leases
 immediately. Per-pane pacing prevents focused output from raising background
 pane cadence. WebGPU permits at most two outstanding frame submissions.
+User wheel, drag, and keyboard interaction gives only its pane 150 ms of focused
+cadence, including in an unfocused visible window. It starts no idle timer or
+frame loop. Reclaimed WebGPU canvases shrink to 1x1 while retaining their target
+geometry for the next presentation transaction.
 `window.__teraxTermTrace()` explicitly starts a bounded ten-minute resource trace;
 it is never started automatically. `pnpm soak:ghostty` exercises real WASM models
 without launching the application. Resource evidence and limitations live in

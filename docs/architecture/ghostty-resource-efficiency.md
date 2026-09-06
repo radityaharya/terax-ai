@@ -25,11 +25,19 @@ native covered-window reporting is not implemented there.
 | Visible, focused pane | Damage-driven, at most 60 fps |
 | Visible, background pane | Independent deadline, at most 30 fps |
 | Visible, unfocused window | At most 15 fps per pane |
+| Visible pane receiving user input | At most 60 fps, with a 150 ms interaction deadline even while unfocused |
 | Hidden or fully occluded window | Frames, blink timers, search work, and selection autoscroll pause immediately |
 | Invisible for less than two seconds | Retain presentation to avoid desktop-transition allocation churn |
 | Invisible for at least two seconds | Release surface buffers, native render state, canvas configuration, and atlas textures; destroy WebGL contexts |
 | Native sleep notification | Request immediate reclamation |
 | Hidden terminal tab | Release its presentation lease immediately |
+
+Interaction deadlines are per pane and expire without a timer. Wheel, scrollbar,
+drag, and keyboard events can preempt a pending background pacing delay; they do
+not schedule a frame without damage or wake hidden surfaces. Reclamation now
+also shrinks the WebGPU canvas to 1x1 before unconfiguring it. CSS dimensions and
+the pending target size survive, and exact storage returns in the next rendered
+transaction. Short desktop transitions still preserve presentation unchanged.
 
 All states retain the PTY and terminal model. The OS and webview determine when
 sleep notifications reach JavaScript, so native notification delivery and
@@ -103,6 +111,32 @@ Regression tests additionally cover 1,000 rapid window transitions without
 surface buffer recreation, selection preservation through reclamation, font
 and DPR changes while paused, two-frame GPU backlog bounds, stale native
 snapshots, late cleanup, and focused/background pane pacing.
+
+### September 6 follow-up
+
+The [block-tracking stress report](ghostty-resource-soak-2026-09-06.json) records
+655,360 updates and 62,684,160 input bytes per variant with native block pins
+enabled. Both finished at 68.125 MiB of WASM memory with zero growth in the final
+16 samples and 2,048 retained markers per model. This run overlapped a production
+build; its approximately 26 seconds per variant is not a throughput comparison.
+
+Selection autoscroll now stops at the history boundary, and moves within the same
+selected cell do not rewrite native selection or request another redraw. Block
+overlays compare their fields without serializing command/cwd metadata on every
+frame. Repeated command-editor activity states do not request terminal rendering;
+empty scrollbar-ruler positions do not allocate SVG command strings.
+
+The symbol fallback adds a fixed 772,032-byte WOFF2 asset (1,816,952-byte expanded
+SFNT, not an RSS estimate). One face is loaded per window; no font installation,
+network font request, or additional renderer is needed. Its source, license,
+rebuild procedure and hash are in `src/assets/fonts/README.md`.
+
+A read-only `footprint --noCategories` sample of the existing packaged Terax host
+on September 6 reported 59,934,016 bytes of physical footprint and a 63,472,960-byte
+peak. This was the user's running earlier build, not the candidate built in this
+pass. It excludes WebContent, GPU and compositor ownership and cannot attribute
+the reported desktop-switch spike. No controlled native transition or energy
+timeline was captured in this pass.
 
 ## Capturing a desktop-transition trace
 

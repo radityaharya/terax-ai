@@ -1,9 +1,46 @@
 # Ghostty release readiness
 
-Status on 2026-09-05: Ghostty-only implementation, with packaged release validation
+Status on 2026-09-06: Ghostty-only implementation, with packaged release validation
 still open. xterm and its addons are removed. All terminals, including blocks,
 use Ghostty with WebGPU or Terax WebGL. This is a testable release candidate,
 not evidence of multi-platform, multi-day production certification.
+
+## September 6 interaction and resource verification
+
+- Drag selection now pins the initial character through rendering and incoming
+  output; an ordinary click remains unselected. Real-model tests cover forward,
+  backward and fast drags, plus cancellation and history-boundary autoscroll.
+- The Ctrl+C regression was reproduced against both artifacts after enabling
+  Kitty keyboard mode: missing base codepoints produced literal `c`. Controller
+  integration tests now assert `CSI 99;5u` in that mode, ETX after leaving it, and
+  printable press/release encoding when requested. An isolated Fish 4.8.0 PTY
+  probe with user configuration and history disabled confirmed foreground
+  `sleep` interruption and clearing prompt input while Fish used `CSI =5u`.
+- Nerd Font private-use fallback covers 10,071 symbols from the pinned Ghostty
+  source. Font detection no longer mistakes `FontFaceSet.check()` for installed
+  font detection. Existing selected fonts remain first in the fallback stack.
+- User interaction can temporarily use focused cadence in an unfocused window;
+  other panes retain their own deadlines. Hidden output and idle interaction
+  still start no presentation. Reclamation releases intrinsic canvas storage.
+- 153 frontend files / 974 tests, TypeScript, Vite production build and size
+  budgets passed. Lint passed with 94 existing warnings and one informational
+  diagnostic; temporary browser fixtures were removed before final checks.
+- Rust Clippy with warnings denied and 333 Rust tests passed. The five-model
+  stress run with native block pins enabled passed for both artifacts with no
+  growth in its final sampling window; see the resource-efficiency report.
+- The macOS arm64 `.app` built and its local ad-hoc signature passed
+  `codesign --verify --deep --strict`. It occupies 10,600 KiB on disk (about
+  10.35 MiB), not an installer size. The 772,032-byte symbol font accounts for
+  the principal bundle increase from the previous 9,848 KiB local app.
+- Main startup group: 226.34 kB gzip; total client JS: 1.42 MB gzip; lazy terminal
+  JS: 55.93 kB / 56 kB gzip; combined WASM variants: 417.01 kB / 450 kB gzip.
+  Symbols have their own 800 kB uncompressed asset budget. No existing JS or
+  WASM budget was increased.
+
+The computer-use permission control denied the isolated Safari check, so this
+pass does not establish native WKWebView selection, font appearance, or scrolling
+quality. Packaged macOS interaction, Windows/Linux coverage, desktop-transition
+process attribution, and long-duration energy/resource testing remain open.
 
 ## Verified hardening
 
