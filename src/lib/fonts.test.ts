@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveFontFamily } from "./fonts";
 
-const FALLBACK =
-  '"JetBrains Mono", "Terax Terminal Symbols", SFMono-Regular, Menlo, monospace';
+const FALLBACK = '"JetBrains Mono", SFMono-Regular, Menlo, monospace';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -49,18 +48,16 @@ describe("terminal font availability", () => {
     expect(context.measureText).toHaveBeenCalledTimes(calls);
   });
 
-  it("loads symbols before canvas rasterization, only once per window", async () => {
+  it("loads text fonts before canvas rasterization, only once per window", async () => {
     const load = vi.fn(async () => []);
     vi.stubGlobal("document", { fonts: { load } });
     const { ensureMonoFontsLoaded } = await import("./fonts");
     const first = ensureMonoFontsLoaded();
     expect(ensureMonoFontsLoaded()).toBe(first);
     await first;
-    expect(load).toHaveBeenCalledWith(
-      '400 14px "Terax Terminal Symbols"',
-      "\ue0a0\ue718\u{f0001}",
-    );
-    expect(load).toHaveBeenCalledTimes(3);
+    expect(load).toHaveBeenCalledWith('400 14px "JetBrains Mono"');
+    expect(load).toHaveBeenCalledWith('700 14px "JetBrains Mono"');
+    expect(load).toHaveBeenCalledTimes(2);
   });
 });
 

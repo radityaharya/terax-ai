@@ -16,8 +16,7 @@ const NERD_FONT_CANDIDATES = [
   "Hasklug Nerd Font",
 ];
 
-const FALLBACK_CHAIN =
-  '"JetBrains Mono", "Terax Terminal Symbols", SFMono-Regular, Menlo, monospace';
+const FALLBACK_CHAIN = '"JetBrains Mono", SFMono-Regular, Menlo, monospace';
 
 let detected: string | null = null;
 let monoReady: Promise<void> | null = null;
@@ -31,10 +30,6 @@ export function ensureMonoFontsLoaded(): Promise<void> {
   monoReady = Promise.allSettled([
     document.fonts.load('400 14px "JetBrains Mono"'),
     document.fonts.load('700 14px "JetBrains Mono"'),
-    document.fonts.load(
-      '400 14px "Terax Terminal Symbols"',
-      "\ue0a0\ue718\u{f0001}",
-    ),
   ]).then(() => undefined);
   return monoReady;
 }
