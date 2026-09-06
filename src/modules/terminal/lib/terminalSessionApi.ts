@@ -128,7 +128,7 @@ export function setLeafDraft(leafId: number, text: string): void {
 
 export function setLeafInputActivity(leafId: number, active: boolean): void {
   const blocks = ghosttyBlocks(leafId);
-  if (!blocks) return;
+  if (!blocks || blocks.inputActive === active) return;
   blocks.inputActive = active;
   blocks.changed();
 }

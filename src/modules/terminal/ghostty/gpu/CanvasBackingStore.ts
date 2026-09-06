@@ -67,6 +67,11 @@ export class CanvasBackingStore {
     }
     return true;
   }
+
+  release(): void {
+    if (this.canvas.width !== 1) this.canvas.width = 1;
+    if (this.canvas.height !== 1) this.canvas.height = 1;
+  }
 }
 
 function positivePixelSize(value: number): number {

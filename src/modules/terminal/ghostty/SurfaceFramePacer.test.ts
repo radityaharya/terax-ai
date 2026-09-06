@@ -2,6 +2,22 @@ import { describe, expect, it } from "vitest";
 import { SurfaceFramePacer } from "@/modules/terminal/ghostty/SurfaceFramePacer";
 
 describe("per-pane frame pacing", () => {
+  it("gives only the interacting pane foreground cadence while the window is unfocused", () => {
+    const pacer = new SurfaceFramePacer();
+    const scrolling = { isFocused: () => false };
+    const streaming = { isFocused: () => true };
+    pacer.presented(scrolling, 0);
+    pacer.presented(streaming, 0);
+    pacer.interact(scrolling, 5);
+    expect(pacer.delay(new Set([scrolling]), false, 5)).toBe(0);
+    expect(pacer.due(scrolling, false, 17)).toBe(true);
+    expect(pacer.due(streaming, false, 17)).toBe(false);
+    pacer.presented(scrolling, 140);
+    expect(pacer.due(scrolling, false, 160)).toBe(false);
+    expect(pacer.due(scrolling, false, 207)).toBe(true);
+    expect(pacer.delay(new Set(), false, 207)).toBe(Number.POSITIVE_INFINITY);
+  });
+
   it("does not pull background panes to the focused pane's cadence", () => {
     const pacer = new SurfaceFramePacer();
     const focused = { isFocused: () => true };

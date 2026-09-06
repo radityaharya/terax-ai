@@ -153,6 +153,16 @@ export class WebGpuTerminalRuntime {
     if (this.dirtySurfaces.size === 0) this.cancelScheduledFrame();
   }
 
+  interact(surface: WebGpuRuntimeSurface): void {
+    if (this.disposed || !this.surfaces.has(surface)) return;
+    this.pacer.interact(surface, performance.now());
+    if (this.frameTimer !== null) {
+      clearTimeout(this.frameTimer);
+      this.frameTimer = null;
+    }
+    this.requestFrame();
+  }
+
   schedule(surface: WebGpuRuntimeSurface): void {
     if (this.disposed || this.fatalError || !this.surfaces.has(surface)) return;
     this.dirtySurfaces.add(surface);

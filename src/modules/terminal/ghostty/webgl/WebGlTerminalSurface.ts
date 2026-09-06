@@ -1,3 +1,4 @@
+import { bindTerminalInteraction } from "@/modules/terminal/ghostty/input/terminalInteraction";
 import { syncTerminalScrollbar } from "@/modules/terminal/ghostty/gpu/terminalScrollbar";
 import {
   subscribeWindowPresentation,
@@ -75,6 +76,7 @@ export class WebGlTerminalSurface
   private readonly resizeObserver: ResizeObserver;
   private readonly unsubscribeDamage: () => void;
   private readonly unsubscribeResizeInteraction: () => void;
+  private readonly unsubscribeInteraction: () => void;
   private readonly selection: TerminalSelectionController;
   private readonly search: GhosttySearchController;
   private readonly runtime: WebGlTerminalRuntime;
@@ -138,6 +140,10 @@ export class WebGlTerminalSurface
     this.scrollbar.append(this.scrollbarContent);
     this.root.append(this.input, this.scrollbar);
 
+    this.unsubscribeInteraction = bindTerminalInteraction(
+      this.root,
+      this.handleInteraction,
+    );
     this.selection = new TerminalSelectionController({
       model: options.model,
       target: this.root,
@@ -426,6 +432,7 @@ export class WebGlTerminalSurface
     this.unsubscribeResizeInteraction();
     this.search.dispose();
     this.selection.dispose();
+    this.unsubscribeInteraction();
     this.root.removeEventListener("pointerdown", this.handlePointerDown);
     this.root.removeEventListener("mousemove", this.handleLinkMouseMove);
     this.root.removeEventListener("mousedown", this.handleLinkMouseDown);
@@ -500,12 +507,20 @@ export class WebGlTerminalSurface
     }
   };
 
+  private readonly handleInteraction = (): void => {
+    if (!this.host || !this.visible || this.documentSuspended) return;
+    this.runtime.interact(this);
+  };
+
   private readonly handleScroll = (): void => {
     if (!this.host || !this.visible || this.documentSuspended) return;
     if (this.scrollbar.scrollTop === this.synchronizedScrollTop) return;
     const { history, offset } = this.options.model.scrollPosition();
     const line = Math.round(this.scrollbar.scrollTop / this.metrics.cellHeight);
-    if (history - line !== offset) this.options.model.scrollTo(history - line);
+    if (history - line !== offset) {
+      this.handleInteraction();
+      this.options.model.scrollTo(history - line);
+    }
   };
 
   private profile() {

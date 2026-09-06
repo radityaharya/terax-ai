@@ -16,6 +16,28 @@ import type {
 } from "./WebGlCellRenderer";
 
 describe("WebGlTerminalRuntime", () => {
+  it("interrupts an unfocused pacing timer for user input and returns to idle afterward", () => {
+    const h = createHarness();
+    h.windowFocused = false;
+    const runtime = new WebGlTerminalRuntime(h.dependencies);
+    const surface = createSurface();
+    runtime.acquire(surface, {} as HTMLElement, PROFILE);
+    runtime.schedule(surface);
+    h.flushFrame();
+    runtime.schedule(surface);
+    expect(h.timers).toHaveLength(1);
+    runtime.interact(surface);
+    expect(h.timers).toHaveLength(0);
+    expect(h.frames).toHaveLength(1);
+    h.advanceTime(17);
+    h.flushFrame();
+    expect(surface.renderFrame).toHaveBeenCalledTimes(2);
+    runtime.interact(surface);
+    expect(h.frames).toHaveLength(0);
+    expect(h.timers).toHaveLength(0);
+    runtime.dispose();
+  });
+
   it("coalesces surface work into one window-scoped frame", () => {
     const harness = createHarness();
     const runtime = new WebGlTerminalRuntime(harness.dependencies);

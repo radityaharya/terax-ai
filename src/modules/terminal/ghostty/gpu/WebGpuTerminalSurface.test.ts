@@ -20,6 +20,18 @@ afterEach(() => {
 });
 
 describe("WebGPU surface resource lifecycle", () => {
+  it("prioritizes wheel interaction without scheduling idle or hidden work", async () => {
+    const h = await harness();
+    h.schedule.mockClear();
+    h.surface.eventTarget().dispatchEvent(new Event("wheel"));
+    expect(h.interact).toHaveBeenCalledWith(h.surface);
+    expect(h.schedule).not.toHaveBeenCalled();
+    h.visibility(false, false);
+    h.interact.mockClear();
+    h.surface.eventTarget().dispatchEvent(new Event("wheel"));
+    expect(h.interact).not.toHaveBeenCalled();
+  });
+
   it("keeps pane pacing focused when the block command editor takes keyboard focus", async () => {
     const h = await harness();
     h.surface.setFocused(true);
@@ -174,10 +186,12 @@ async function harness() {
     release: vi.fn(),
   }));
   const schedule = vi.fn();
+  const interact = vi.fn();
   bridge.runtime = {
     register: vi.fn(),
     unregister: vi.fn(),
     schedule,
+    interact,
     acquireGlyphAtlas,
     resources: () => ({
       device: { createBuffer, createBindGroup: vi.fn() },
@@ -238,6 +252,7 @@ async function harness() {
     position,
     domWork,
     schedule,
+    interact,
     elements,
     damage: () => damage(),
     createBuffer,

@@ -2,6 +2,24 @@ import { describe, expect, it } from "vitest";
 import { CanvasBackingStore } from "./CanvasBackingStore";
 
 describe("CanvasBackingStore", () => {
+  it("releases hidden canvas storage while retaining the exact next presentation size", () => {
+    const canvas = fakeCanvas(300, 150);
+    const backing = new CanvasBackingStore(canvas);
+    backing.stage(3840, 2160, 1920, 1080);
+    backing.commit();
+    backing.release();
+    expect(canvas).toMatchObject({
+      width: 1,
+      height: 1,
+      style: { width: "1920px", height: "1080px" },
+    });
+    expect(backing.pending).toBe(true);
+    backing.stage(2560, 1440, 1280, 720);
+    backing.commit();
+    expect(canvas).toMatchObject({ width: 2560, height: 1440 });
+    expect(backing.pending).toBe(false);
+  });
+
   it("keeps presented pixels intact until the render transaction commits", () => {
     const canvas = fakeCanvas(300, 150);
     const backing = new CanvasBackingStore(canvas);

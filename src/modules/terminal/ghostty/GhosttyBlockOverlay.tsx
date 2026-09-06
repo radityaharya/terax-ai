@@ -69,6 +69,7 @@ function BlockRuler({
       let failed = "";
       if (rows)
         for (let row = 0; row < rows.length; row++) {
+          if (rows[row] === 0) continue;
           const mark = `M0 ${row}h1v1H0z`;
           if (rows[row] === 1) ok += mark;
           else if (rows[row] === 2) failed += mark;

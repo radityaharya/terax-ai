@@ -1,3 +1,4 @@
+import { bindTerminalInteraction } from "@/modules/terminal/ghostty/input/terminalInteraction";
 import { syncTerminalScrollbar } from "@/modules/terminal/ghostty/gpu/terminalScrollbar";
 import { terminalWindowPresentation } from "@/modules/terminal/ghostty/windowPresentation";
 import type { TerminalSurface } from "@/modules/terminal/backend/contracts";
@@ -105,6 +106,7 @@ export class WebGpuTerminalSurface
   private readonly resizeObserver: ResizeObserver;
   private readonly unsubscribeDamage: () => void;
   private readonly unsubscribeResizeInteraction: () => void;
+  private readonly unsubscribeInteraction: () => void;
   private readonly selection: TerminalSelectionController;
   private readonly search: GhosttySearchController;
   private readonly pixelRatioMonitor: DevicePixelRatioMonitor;
@@ -194,6 +196,10 @@ export class WebGpuTerminalSurface
     this.scrollbar.append(this.scrollbarContent);
     this.root.append(this.canvas, this.input, this.scrollbar);
 
+    this.unsubscribeInteraction = bindTerminalInteraction(
+      this.root,
+      this.handleInteraction,
+    );
     this.selection = new TerminalSelectionController({
       model: options.model,
       target: this.root,
@@ -497,6 +503,7 @@ export class WebGpuTerminalSurface
       if (reclaim) {
         this.options.model.releasePresentationResources();
         this.releaseGpuResources();
+        this.backingStore.release();
         this.context?.unconfigure();
       }
       return;
@@ -560,6 +567,7 @@ export class WebGpuTerminalSurface
     this.unsubscribeResizeInteraction();
     this.search.dispose();
     this.selection.dispose();
+    this.unsubscribeInteraction();
     this.root.removeEventListener("pointerdown", this.handlePointerDown);
     this.root.removeEventListener("mousemove", this.handleLinkMouseMove);
     this.root.removeEventListener("mousedown", this.handleLinkMouseDown);
@@ -599,12 +607,20 @@ export class WebGpuTerminalSurface
     this.clearHoveredLink();
   };
 
+  private readonly handleInteraction = (): void => {
+    if (!this.host || !this.visible || this.documentSuspended) return;
+    this.runtime.interact(this);
+  };
+
   private readonly handleScroll = (): void => {
     if (!this.host || !this.visible || this.documentSuspended) return;
     if (this.scrollbar.scrollTop === this.synchronizedScrollTop) return;
     const { history, offset } = this.options.model.scrollPosition();
     const line = Math.round(this.scrollbar.scrollTop / this.metrics.cellHeight);
-    if (history - line !== offset) this.options.model.scrollTo(history - line);
+    if (history - line !== offset) {
+      this.handleInteraction();
+      this.options.model.scrollTo(history - line);
+    }
   };
 
   private updateHoveredLink(event: MouseEvent): void {
@@ -717,6 +733,7 @@ export class WebGpuTerminalSurface
       this.runtimeRegistered = false;
     }
     this.releaseGpuResources();
+    this.backingStore.release();
     this.context?.unconfigure();
   }
 

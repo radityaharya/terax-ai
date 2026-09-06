@@ -89,22 +89,49 @@ function copy(text: string, message: string) {
     .catch(() => {});
 }
 
-function signature(v: VisibleBlocks): string {
-  return JSON.stringify([v.sticky, v.blocks]);
+function sameBlock(
+  a: PositionedBlock | null,
+  b: PositionedBlock | null,
+): boolean {
+  if (a === b) return true;
+  return (
+    !!a &&
+    !!b &&
+    a.id === b.id &&
+    a.command === b.command &&
+    a.canRerun === b.canRerun &&
+    a.cwd === b.cwd &&
+    a.exitCode === b.exitCode &&
+    a.running === b.running &&
+    a.ok === b.ok &&
+    a.startedAt === b.startedAt &&
+    a.finishedAt === b.finishedAt &&
+    a.top === b.top &&
+    a.bottom === b.bottom &&
+    a.headerTop === b.headerTop
+  );
+}
+
+function sameVisibleBlocks(a: VisibleBlocks, b: VisibleBlocks): boolean {
+  if (!sameBlock(a.sticky, b.sticky) || a.blocks.length !== b.blocks.length)
+    return false;
+  for (let index = 0; index < a.blocks.length; index++) {
+    if (!sameBlock(a.blocks[index], b.blocks[index])) return false;
+  }
+  return true;
 }
 
 export function BlockOverlay(props: Props) {
   const { subscribe, getVisible } = props;
   const [vis, setVis] = useState<VisibleBlocks>(EMPTY);
   const [searchId, setSearchId] = useState<string | null>(null);
-  const lastSig = useRef("");
+  const lastVisible = useRef(EMPTY);
 
   useEffect(() => {
     const update = (synchronous = false) => {
       const v = getVisible();
-      const sig = signature(v);
-      if (sig === lastSig.current) return;
-      lastSig.current = sig;
+      if (sameVisibleBlocks(v, lastVisible.current)) return;
+      lastVisible.current = v;
       if (synchronous) flushSync(() => setVis(v));
       else setVis(v);
     };

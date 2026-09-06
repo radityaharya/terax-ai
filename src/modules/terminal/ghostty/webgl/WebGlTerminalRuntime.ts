@@ -195,6 +195,16 @@ export class WebGlTerminalRuntime {
     this.clearIdleSweepTimer();
   }
 
+  interact(surface: WebGlRuntimeSurface): void {
+    if (this.disposed || !this.leases.has(surface)) return;
+    this.pacer.interact(surface, this.dependencies.now());
+    if (this.frameTimer !== null) {
+      this.dependencies.clearTimer(this.frameTimer);
+      this.frameTimer = null;
+    }
+    this.requestFrame();
+  }
+
   schedule(surface: WebGlRuntimeSurface): void {
     if (this.disposed || !this.leases.has(surface)) return;
     this.dirtySurfaces.add(surface);
