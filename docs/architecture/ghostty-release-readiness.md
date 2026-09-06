@@ -1,9 +1,56 @@
 # Ghostty release readiness
 
-Status on 2026-09-06: Ghostty-only implementation, with packaged release validation
+Status on 2026-09-07: Ghostty-only implementation, with packaged release validation
 still open. xterm and its addons are removed. All terminals, including blocks,
 use Ghostty with WebGPU or Terax WebGL. This is a testable release candidate,
 not evidence of multi-platform, multi-day production certification.
+
+## September 7 block cleanup and font policy
+
+- Removed the 772,032-byte bundled private-use symbol font, its build script and
+  asset-specific budget. Installed Nerd Font detection remains; normal text uses
+  the configured font or bundled JetBrains Mono, and native color emoji still
+  use system fallback. Unavailable private-use symbols may display missing-glyph
+  boxes until the user selects an installed font that contains them.
+- Primary-screen `CSI 2J`, `CSI 3J`, and `RIS` now invalidate command pins during
+  parsing and emit a bounded event that clears JavaScript block metadata, block
+  selection and search UI. Later commands in the same PTY chunk keep their pins.
+  Alternate-screen erases and selective/partial erases do not clear block history.
+  Pin storage retains its bounded capacity across clears and is freed on disposal.
+- Removed block scrollbar status dots, their presentation subscriptions, timers,
+  SVG paths and history scans. Command exit codes and durations remain available
+  in the block toolbar.
+- Both rebuilt WASM artifacts pass real-core tests for fragmented clears,
+  batched clear/new-command ordering, reset, alternate-screen preservation,
+  repeated marker cleanup and zero clear events with block tracking disabled.
+  The local `/usr/bin/clear` with `TERM=xterm-256color` emits `CSI 3J`, home,
+  then `CSI 2J`, all covered by the implementation.
+- Type checking, 152 frontend files / 997 tests, production Vite build and all
+  four remaining size budgets pass. Lint passes with 94 existing warnings and
+  one informational diagnostic; changed TypeScript files have no lint findings.
+- Rust Clippy with warnings denied and all 333 Rust tests pass, including scalar
+  WASM validation with SIMD instructions and types disabled.
+- Size-limit: startup JS group 226.33 kB gzip, total client JS 1.42 MB gzip,
+  lazy terminal JS 55.94 kB / 56 kB, combined WASM 417.32 kB / 450 kB.
+  No JavaScript or WASM budget was raised. Exact artifact hashes are updated in
+  the core source and `packages/ghostty-core/adapted/UPSTREAM.md`.
+
+The rebuilt macOS arm64 application occupies 9,848 KiB (about 9.6 MiB) on disk,
+down from 10,600 KiB in the September 6 font build. Its local ad-hoc signature
+passes `codesign --verify --deep --strict`. This is an application-directory size,
+not a compressed installer size. The app was not launched or installed during
+this pass. The test candidate is at `src-tauri/target/release/bundle/macos/Terax.app`.
+
+The readiness review checked transport credit/retry behavior, GPU submission and
+atlas ownership, occlusion subscriptions, dependency removal, and CI coverage.
+It did not close the release gates below. Glyph capacity recovery still rebuilds
+or isolates atlases instead of evicting individual cold glyphs. Packaged fault
+injection, cross-platform shell/input/accessibility checks, sustained throughput,
+and attributed WebContent/GPU memory and energy remain required before claiming
+production readiness. The desktop-transition RAM spike is still unattributed.
+
+The following September 6 sections describe earlier checkpoints, including the
+symbol asset removed above.
 
 ## September 6 interaction and resource verification
 
@@ -237,9 +284,8 @@ measurements unless the cost of sampling is recorded separately.
   JavaScript records / 512 KiB estimated text metadata. Exact endpoint columns
   prevent copying subsequent commands. Native range reads preserve the viewport
   and selection; block search maps Unicode offsets to grid cells.
-- Scrollbar status marks retain at most 256 positions in two SVG paths, updated
-  at most four times per second while visible. Rerun uses complete submitted
-  commands, never truncated metadata. Shells without prompt integration retain
+- Rerun uses complete submitted commands, never truncated metadata. Block
+  scrollbar status marks were removed on September 7. Shells without prompt integration retain
   direct input; Bash before 4.4 explicitly declines the shared input bar.
 - Block code/UI and accessible output load only when used. Both suspend when
   hidden or occluded. A closed session cannot acquire late block resources.

@@ -59,12 +59,16 @@ Character drags retain a native selection pin from pointerdown, including before
 the first pointermove. Unmoved clicks and lost captures discard provisional pins.
 Key encoding supplies the base character required by Kitty keyboard mode; plain
 keys and key releases also use Ghostty encoding when the application requests it.
-The bundled private-use symbol font supplies Nerd Font icons without replacing
-the user's text font or native color emoji. Its fixed 772 kB asset is loaded once
-before terminal glyph rasterization and has a separate 800 kB release budget.
-Scrollbar status marks use two SVG paths with at most 256 positions, refreshed
-at most four times per second while visible. Rerun requires the complete command
+Terminal text uses the configured font, an installed Nerd Font when detected,
+or bundled JetBrains Mono. Private-use prompt symbols require an installed font
+that supplies them; Terax does not ship a separate symbol font. Native color
+emoji remain on the system fallback path. Rerun requires the complete command
 submitted through Terax; truncated shell labels are never executed.
+Primary-screen full erase, scrollback erase, and terminal reset invalidate block
+pins at parse time and clear block chrome, selection, and search. Commands after
+an erase in the same output chunk retain their new pins. Alternate-screen erases
+preserve primary block history. Block scrollbar status dots are removed along
+with their timers and history scans.
 
 The shared command bar activates after shell integration confirms prompt input.
 Bare shells keep direct terminal input. Bash before 4.4 reports
