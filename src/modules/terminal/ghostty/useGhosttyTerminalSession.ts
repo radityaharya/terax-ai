@@ -683,7 +683,9 @@ async function initializeSessionGeneration(
   mark("modelReadyMs");
   session.model = model;
   session.callbacks.onModel?.(model);
-  await ghosttyBlocks(session.leafId)?.attach(model);
+  await ghosttyBlocks(session.leafId)?.attach(model, () =>
+    session.surface?.requestFrame(),
+  );
   if (!alive()) {
     if (ghosttyBlocks(session.leafId)?.model === model)
       ghosttyBlocks(session.leafId)?.detach();
@@ -701,6 +703,8 @@ async function initializeSessionGeneration(
       session.ptyResize.schedule(cols, rows);
     },
     onFirstFrame: () => mark("firstFrameMs"),
+    onFrame: () => ghosttyBlocks(session.leafId)?.present(),
+    onRequestFocus: () => focusGhosttySession(session.leafId),
     onOpenLink: (uri: string) => {
       void openExternalUrl(uri, () => focusGhosttySession(session.leafId));
     },
@@ -1067,6 +1071,7 @@ async function updateSessionFont(
     return;
   }
   session.surface.setFontMetrics(metrics);
+  ghosttyBlocks(session.leafId)?.changed();
   if (session.surfaceOptions)
     session.surfaceOptions = { ...session.surfaceOptions, metrics };
 }

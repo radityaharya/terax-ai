@@ -62,6 +62,21 @@ describe("Ghostty command blocks", () => {
     }
   });
 
+  it("leaves a blank row before the divider without including padding in copied output", () => {
+    const { model, blocks, write, dispose } = create();
+    try {
+      write("\x1b]133;C;echo\x07output\r\n\x1b]133;D;0\x07\r\n\r\n");
+      expect(blocks.visibleBlocks(20).blocks[0].bottom).toBe(40);
+      expect(blocks.readById("1")?.output).toBe("output");
+      write("\r\n".repeat(8));
+      model.scrollTo(model.scrollPosition().history - 1);
+      expect(model.viewportOriginLine()).toBe(1);
+      expect(blocks.visibleBlocks(20).blocks[0].bottom).toBe(20);
+    } finally {
+      dispose();
+    }
+  });
+
   it("keeps direct input until shell integration confirms a shared prompt", () => {
     const { blocks, write, dispose } = create();
     try {

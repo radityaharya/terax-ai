@@ -1,3 +1,5 @@
+import "@/modules/terminal/block/block.css";
+
 import { buildTerminalTheme } from "@/styles/terminalTheme";
 import {
   acceptCompletion,

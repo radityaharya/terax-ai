@@ -20,6 +20,47 @@ afterEach(() => {
 });
 
 describe("WebGPU surface resource lifecycle", () => {
+  it("keeps pane pacing focused when the block command editor takes keyboard focus", async () => {
+    const h = await harness();
+    h.surface.setFocused(true);
+    h.surface.inputElement().dispatchEvent(new Event("blur"));
+    expect(h.surface.isFocused()).toBe(true);
+    h.surface.setFocused(false);
+    expect(h.surface.isFocused()).toBe(false);
+  });
+
+  it("does no DOM or presentation work for hidden output and retains fractional scrollbar positions", async () => {
+    const h = await harness();
+    h.position.history = 100;
+    h.position.offset = 50;
+    h.visibility(false, false);
+    h.visibility(true, false);
+    const scrollbar = h.elements.find(
+      (element) => element.getAttribute("role") === "scrollbar",
+    );
+    if (!scrollbar) throw new Error("Missing terminal scrollbar");
+    h.position.history += 1;
+    scrollbar.dispatchEvent(new Event("scroll"));
+    expect(h.model.scrollTo).not.toHaveBeenCalled();
+    h.position.history -= 1;
+    scrollbar.scrollTop = 800.25;
+    scrollbar.dispatchEvent(new Event("scroll"));
+    expect(h.model.scrollTo).not.toHaveBeenCalled();
+    // Resuming synchronizes geometry but must not fight a native fractional scroll.
+    h.visibility(false, false);
+    h.visibility(true, false);
+    expect(scrollbar.scrollTop).toBe(800.25);
+    scrollbar.scrollTop = 820;
+    scrollbar.dispatchEvent(new Event("scroll"));
+    expect(h.model.scrollTo).toHaveBeenLastCalledWith(49);
+    h.visibility(false, false);
+    h.domWork.mockClear();
+    h.schedule.mockClear();
+    for (let index = 0; index < 1000; index++) h.damage();
+    expect(h.domWork).not.toHaveBeenCalled();
+    expect(h.schedule).not.toHaveBeenCalled();
+  });
+
   it("reuses presentation through rapid desktop switches and retains selection after reclamation", async () => {
     const h = await harness();
     const allocated = h.createBuffer.mock.calls.length;
@@ -79,19 +120,45 @@ async function harness() {
   const destroy = vi.fn();
   const createBuffer = vi.fn(({ size }) => ({ size, destroy }));
   const context = { configure: vi.fn(), unconfigure: vi.fn() };
-  const element = () => ({
-    style: { setProperty: vi.fn() },
-    width: 300,
-    height: 150,
-    setAttribute: vi.fn(),
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-    append: vi.fn(),
-    appendChild: vi.fn(),
-    remove: vi.fn(),
-    getContext: () => context,
-    getBoundingClientRect: () => ({ width: 960, height: 640 }),
-  });
+  const domWork = vi.fn();
+  const elements: ReturnType<typeof createElement>[] = [];
+  function createElement() {
+    const attributes = new Map<string, string>();
+    const value = Object.assign(new EventTarget(), {
+      style: new Proxy(
+        { setProperty: domWork },
+        {
+          set(target, property, value) {
+            domWork();
+            return Reflect.set(target, property, value);
+          },
+        },
+      ),
+      scrollTop: 0,
+      width: 300,
+      height: 150,
+      clientHeight: 640,
+      setAttribute: (name: string, value: string) => {
+        domWork();
+        attributes.set(name, value);
+      },
+      getAttribute: (name: string) => attributes.get(name),
+      append: vi.fn(),
+      appendChild: vi.fn(),
+      remove: vi.fn(),
+      getContext: () => context,
+      getBoundingClientRect: () => {
+        domWork();
+        return { width: 960, height: 640 };
+      },
+    });
+    return value;
+  }
+  const element = () => {
+    const value = createElement();
+    elements.push(value);
+    return value;
+  };
   vi.stubGlobal("document", { createElement: element });
   vi.stubGlobal("window", { devicePixelRatio: 1, setTimeout, clearTimeout });
   vi.stubGlobal(
@@ -106,29 +173,39 @@ async function harness() {
     atlas: { generation: 1, coverageTextureView: {}, colorTextureView: {} },
     release: vi.fn(),
   }));
+  const schedule = vi.fn();
   bridge.runtime = {
     register: vi.fn(),
     unregister: vi.fn(),
-    schedule: vi.fn(),
+    schedule,
     acquireGlyphAtlas,
     resources: () => ({
       device: { createBuffer, createBindGroup: vi.fn() },
       generation: 1,
     }),
   };
+  const position = { history: 0, offset: 0 };
+  let damage = () => {};
   const model = {
     cols: 120,
     rows: 40,
     setCursorOptions: vi.fn(),
     revision: () => 0,
-    subscribeDamage: () => () => {},
+    subscribeDamage: (listener: () => void) => {
+      damage = listener;
+      return () => {};
+    },
     trackedSelection: () => ({
       anchor: { line: 0, column: 0 },
       focus: { line: 0, column: 10 },
       rectangular: false,
     }),
     selectionText: () => "selected output",
-    scrollPosition: () => ({ history: 0, offset: 0 }),
+    scrollPosition: () => position,
+    scrollTo: vi.fn((offset: number) => {
+      position.offset = offset;
+      damage();
+    }),
     modes: () => ({ alternateScreen: false }),
     setPixelSize: vi.fn(),
     releasePresentationResources: vi.fn(),
@@ -158,6 +235,11 @@ async function harness() {
   return {
     surface,
     model,
+    position,
+    domWork,
+    schedule,
+    elements,
+    damage: () => damage(),
     createBuffer,
     destroy,
     acquireGlyphAtlas,

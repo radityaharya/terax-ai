@@ -1,3 +1,5 @@
+import "@/modules/terminal/block/block.css";
+
 import { writeTerminalClipboard } from "@/modules/terminal/lib/terminalClipboard";
 import {
   DropdownMenu,
@@ -23,6 +25,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { homeDir } from "@tauri-apps/api/path";
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { toast } from "sonner";
 import type {
   BlockMatch,
@@ -97,15 +100,16 @@ export function BlockOverlay(props: Props) {
   const lastSig = useRef("");
 
   useEffect(() => {
-    const update = () => {
+    const update = (synchronous = false) => {
       const v = getVisible();
       const sig = signature(v);
       if (sig === lastSig.current) return;
       lastSig.current = sig;
-      setVis(v);
+      if (synchronous) flushSync(() => setVis(v));
+      else setVis(v);
     };
     update();
-    return subscribe(update);
+    return subscribe(() => update(true));
   }, [subscribe, getVisible]);
 
   const closeSearch = () => {

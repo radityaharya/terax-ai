@@ -1,3 +1,4 @@
+import { syncTerminalScrollbar } from "@/modules/terminal/ghostty/gpu/terminalScrollbar";
 import { terminalWindowPresentation } from "@/modules/terminal/ghostty/windowPresentation";
 import type { TerminalSurface } from "@/modules/terminal/backend/contracts";
 import {
@@ -65,6 +66,8 @@ export type WebGpuTerminalSurfaceOptions = {
   readonly onResize: (cols: number, rows: number) => void;
   readonly onError: (error: Error) => void;
   readonly onFirstFrame?: () => void;
+  readonly onFrame?: () => void;
+  readonly onRequestFocus?: () => void;
   readonly onOpenLink?: (uri: string) => void;
 };
 
@@ -127,6 +130,7 @@ export class WebGpuTerminalSurface
   private host: HTMLElement | null = null;
   private scale = 1;
   private visible = true;
+  private synchronizedScrollTop: number | null = null;
   private focused = false;
   private documentSuspended = !terminalWindowPresentation().visible;
   private runtimeRegistered = false;
@@ -213,15 +217,9 @@ export class WebGpuTerminalSurface
       this.queueFit(bounds);
     });
     this.unsubscribeDamage = options.model.subscribeDamage(() => {
-      const revision = options.model.revision();
-      if (revision !== this.contentRevision) {
-        this.contentRevision = revision;
-        this.selection.reconcile();
-      }
-      if (this.hoveredCell >= 0) this.clearHoveredLink();
+      if (!this.visible || this.documentSuspended || !this.host) return;
       this.cursorVisible = true;
       this.textBlinkVisible = true;
-      this.updateScrollbar();
       this.search.refresh();
       if (!this.applyingFit) this.runtime.schedule(this);
       this.armCursorBlink();
@@ -239,8 +237,6 @@ export class WebGpuTerminalSurface
     this.root.addEventListener("mousedown", this.handleLinkMouseDown);
     this.root.addEventListener("mouseup", this.handleLinkMouseUp);
     this.root.addEventListener("mouseleave", this.handleLinkMouseLeave);
-    this.input.addEventListener("focus", this.handleFocus);
-    this.input.addEventListener("blur", this.handleBlur);
     this.scrollbar.addEventListener("scroll", this.handleScroll);
   }
 
@@ -391,6 +387,10 @@ export class WebGpuTerminalSurface
     return this.root;
   }
 
+  requestFrame(): void {
+    this.runtime.schedule(this);
+  }
+
   isFocused(): boolean {
     return this.focused;
   }
@@ -416,8 +416,15 @@ export class WebGpuTerminalSurface
     }
     this.applyQueuedFit();
     if (this.options.model.deferPresentation()) return false;
+    const revision = this.options.model.revision();
+    if (revision !== this.contentRevision) {
+      this.contentRevision = revision;
+      if (this.hoveredCell >= 0) this.clearHoveredLink();
+      this.mouseDownLink = null;
+    }
     this.selection.reconcile();
     this.search.refreshOverlay();
+    this.updateScrollbar();
     if (this.backingStore.commit()) {
       this.backingStoreResizeCount += 1;
       this.forceFullRedraw = true;
@@ -464,6 +471,7 @@ export class WebGpuTerminalSurface
     this.syncTextBlink();
     this.frameCount += 1;
     if (this.frameCount === 1) this.options.onFirstFrame?.();
+    this.options.onFrame?.();
     return true;
   }
 
@@ -557,16 +565,13 @@ export class WebGpuTerminalSurface
     this.root.removeEventListener("mousedown", this.handleLinkMouseDown);
     this.root.removeEventListener("mouseup", this.handleLinkMouseUp);
     this.root.removeEventListener("mouseleave", this.handleLinkMouseLeave);
-    this.input.removeEventListener("focus", this.handleFocus);
-    this.input.removeEventListener("blur", this.handleBlur);
     this.scrollbar.removeEventListener("scroll", this.handleScroll);
   }
 
-  private readonly handlePointerDown = (): void => this.focus();
-
-  private readonly handleFocus = (): void => this.setFocused(true);
-
-  private readonly handleBlur = (): void => this.setFocused(false);
+  private readonly handlePointerDown = (): void => {
+    if (this.options.onRequestFocus) this.options.onRequestFocus();
+    else this.focus();
+  };
 
   private readonly handleLinkMouseMove = (event: MouseEvent): void => {
     this.updateHoveredLink(event);
@@ -595,11 +600,11 @@ export class WebGpuTerminalSurface
   };
 
   private readonly handleScroll = (): void => {
-    if (!this.host) return;
-    const { history } = this.options.model.scrollPosition();
+    if (!this.host || !this.visible || this.documentSuspended) return;
+    if (this.scrollbar.scrollTop === this.synchronizedScrollTop) return;
+    const { history, offset } = this.options.model.scrollPosition();
     const line = Math.round(this.scrollbar.scrollTop / this.metrics.cellHeight);
-    this.options.model.scrollTo(history - line);
-    this.search.refresh();
+    if (history - line !== offset) this.options.model.scrollTo(history - line);
   };
 
   private updateHoveredLink(event: MouseEvent): void {
@@ -819,22 +824,14 @@ export class WebGpuTerminalSurface
   }
 
   private updateScrollbar(): void {
-    if (!this.host) return;
-    const { history, offset } = this.options.model.scrollPosition();
-    const available =
-      history > 0 && !this.options.model.modes().alternateScreen;
-    this.scrollbar.style.visibility = available ? "visible" : "hidden";
-    this.scrollbar.setAttribute("aria-valuemin", "0");
-    this.scrollbar.setAttribute("aria-valuemax", String(history));
-    this.scrollbar.setAttribute("aria-valuenow", String(history - offset));
-    if (!available) return;
-
-    const cellHeight = this.metrics.cellHeight;
-    this.scrollbarContent.style.height = `${this.host.clientHeight + history * cellHeight}px`;
-    const target = (history - offset) * cellHeight;
-    if (Math.abs(this.scrollbar.scrollTop - target) >= 0.5) {
-      this.scrollbar.scrollTop = target;
-    }
+    if (!this.host || !this.visible || this.documentSuspended) return;
+    this.synchronizedScrollTop = syncTerminalScrollbar(
+      this.host,
+      this.scrollbar,
+      this.scrollbarContent,
+      this.options.model,
+      this.metrics.cellHeight,
+    );
   }
 
   private ensureCellCapacity(cellCount: number, device: GPUDevice): boolean {

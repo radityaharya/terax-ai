@@ -198,7 +198,7 @@ export class GhosttyBlocks {
     while (low < high) {
       const middle = (low + high) >>> 1;
       const range = this.range(this.entries[middle]);
-      if (!range || range.end < viewport) low = middle + 1;
+      if (!range || range.end + 1 < viewport) low = middle + 1;
       else high = middle;
     }
     for (let index = low; index < this.entries.length; index++) {
@@ -207,7 +207,7 @@ export class GhosttyBlocks {
       if (range && range.start > viewport + this.model.rows + 2) break;
       if (
         !range ||
-        range.end < viewport ||
+        range.end + 1 < viewport ||
         range.start > viewport + this.model.rows + 2
       )
         continue;
@@ -223,7 +223,7 @@ export class GhosttyBlocks {
         startedAt: entry.startedAt,
         finishedAt: entry.finishedAt,
         top,
-        bottom: (range.end - viewport + 1) * cellHeight,
+        bottom: (range.end - viewport + 2) * cellHeight,
         headerTop: top - 1.9 * cellHeight,
       };
       blocks.push(block);

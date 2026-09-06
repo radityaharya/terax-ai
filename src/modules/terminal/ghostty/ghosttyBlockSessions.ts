@@ -18,12 +18,16 @@ export class GhosttyBlockSession {
   private visible = false;
   private presented = false;
   private unsubscribePresentation: (() => void) | null = null;
-  private frame: number | null = null;
+  private dirty = true;
+  private requestFrame: (() => void) | null = null;
   private unsubscribeDamage: (() => void) | null = null;
   private readonly viewportListeners = new Set<() => void>();
   private readonly modeListeners = new Set<() => void>();
 
-  async attach(model: GhosttyTerminalModelApi): Promise<void> {
+  async attach(
+    model: GhosttyTerminalModelApi,
+    requestFrame: () => void = () => {},
+  ): Promise<void> {
     this.detach();
     const generation = this.generation;
     const { GhosttyBlocks } = await import(
@@ -31,12 +35,13 @@ export class GhosttyBlockSession {
     );
     if (generation !== this.generation || model.isDisposed?.()) return;
     this.model = model;
+    this.requestFrame = requestFrame;
     this.controller = new GhosttyBlocks(model);
     this.unsubscribeDamage = model.subscribeDamage(() => this.changed());
     this.unsubscribePresentation = subscribeWindowPresentation((state) => {
       this.presented = state.visible;
       if (state.visible) this.changed();
-      else this.cancelFrame();
+      else this.invalidateViewport();
     });
     this.changed();
   }
@@ -50,13 +55,14 @@ export class GhosttyBlockSession {
     this.controller?.dispose();
     this.controller = null;
     this.model = null;
-    this.cancelFrame();
+    this.requestFrame = null;
+    this.invalidateViewport();
   }
 
   setVisible(visible: boolean): void {
     this.visible = visible;
     if (visible) this.changed();
-    else this.cancelFrame();
+    else this.invalidateViewport();
   }
 
   changed(): void {
@@ -65,17 +71,14 @@ export class GhosttyBlockSession {
       this.mode = mode;
       for (const listener of this.modeListeners) listener();
     }
-    if (
-      !this.visible ||
-      !this.presented ||
-      this.frame !== null ||
-      !this.viewportListeners.size
-    )
-      return;
-    this.frame = requestAnimationFrame(() => {
-      this.frame = null;
-      for (const listener of this.viewportListeners) listener();
-    });
+    this.dirty = true;
+    if (this.visible && this.presented) this.requestFrame?.();
+  }
+
+  present(): void {
+    if (!this.dirty || !this.visible || !this.presented) return;
+    this.dirty = false;
+    for (const listener of this.viewportListeners) listener();
   }
 
   readonly getMode = (): BlockMode => this.mode;
@@ -113,9 +116,8 @@ export class GhosttyBlockSession {
     this.viewportListeners.clear();
   }
 
-  private cancelFrame(): void {
-    if (this.frame !== null) cancelAnimationFrame(this.frame);
-    this.frame = null;
+  private invalidateViewport(): void {
+    this.dirty = true;
   }
 }
 

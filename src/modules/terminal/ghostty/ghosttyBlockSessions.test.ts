@@ -45,33 +45,38 @@ function fakeModel() {
 
 describe("block presentation ownership", () => {
   it("coalesces damage, stops when hidden or occluded, and releases listeners", async () => {
-    const frames = new Map<number, FrameRequestCallback>();
-    let sequence = 0;
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      frames.set(++sequence, callback);
-      return sequence;
-    });
-    vi.stubGlobal("cancelAnimationFrame", (id: number) => {
-      frames.delete(id);
-    });
     const { model, markers, listeners } = fakeModel();
     const state = new GhosttyBlockSession();
-    state.subscribeViewport(vi.fn());
-    await state.attach(model);
-    expect(frames.size).toBe(0);
+    const update = vi.fn();
+    const requestFrame = vi.fn();
+    const raf = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", raf);
+    state.subscribeViewport(update);
+    await state.attach(model, requestFrame);
+    expect(requestFrame).not.toHaveBeenCalled();
     state.setVisible(true);
     for (let i = 0; i < 100; i++) for (const listener of listeners) listener();
-    expect(frames.size).toBe(1);
+    expect(update).not.toHaveBeenCalled();
+    state.present();
+    state.present();
+    expect(update).toHaveBeenCalledOnce();
+    expect(raf).not.toHaveBeenCalled();
     for (const listener of presentation.listeners)
       listener({ visible: false, reclaim: false });
-    expect(frames.size).toBe(0);
+    requestFrame.mockClear();
     state.changed();
-    expect(frames.size).toBe(0);
+    state.present();
+    expect(requestFrame).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledOnce();
     for (const listener of presentation.listeners)
       listener({ visible: true, reclaim: false });
-    expect(frames.size).toBe(1);
+    expect(requestFrame).toHaveBeenCalledOnce();
+    state.present();
+    expect(update).toHaveBeenCalledTimes(2);
     state.setVisible(false);
-    expect(frames.size).toBe(0);
+    state.changed();
+    state.present();
+    expect(update).toHaveBeenCalledTimes(2);
     state.dispose();
     expect(markers).toHaveBeenLastCalledWith(false);
     expect(listeners.size).toBe(0);
