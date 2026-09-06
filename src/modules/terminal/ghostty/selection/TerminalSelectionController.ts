@@ -42,7 +42,11 @@ export class TerminalSelectionController {
     options.target.addEventListener("pointerdown", this.handlePointerDown);
     options.target.addEventListener("pointermove", this.handlePointerMove);
     options.target.addEventListener("pointerup", this.handlePointerUp);
-    options.target.addEventListener("pointercancel", this.handlePointerUp);
+    options.target.addEventListener("pointercancel", this.handleLostCapture);
+    options.target.addEventListener(
+      "lostpointercapture",
+      this.handleLostCapture,
+    );
   }
 
   get value(): TerminalBufferSelection | null {
@@ -72,7 +76,11 @@ export class TerminalSelectionController {
       return false;
     }
     this.selection = tracked;
-    this.meaningful = tracked !== null;
+    this.meaningful =
+      tracked !== null && (this.meaningful || this.pointerId === null);
+    if (tracked && this.pointerId !== null) {
+      this.anchorRange = this.rangeForPoint(tracked.anchor, this.mode);
+    }
     if (!tracked) {
       this.anchorRange = null;
       this.stopAutoScroll();
@@ -100,17 +108,24 @@ export class TerminalSelectionController {
     target.removeEventListener("pointerdown", this.handlePointerDown);
     target.removeEventListener("pointermove", this.handlePointerMove);
     target.removeEventListener("pointerup", this.handlePointerUp);
-    target.removeEventListener("pointercancel", this.handlePointerUp);
+    target.removeEventListener("pointercancel", this.handleLostCapture);
+    target.removeEventListener("lostpointercapture", this.handleLostCapture);
   }
 
   suspend(): void {
     this.stopAutoScroll();
     const { target } = this.options;
-    if (this.pointerId !== null && target.hasPointerCapture(this.pointerId)) {
-      target.releasePointerCapture(this.pointerId);
-    }
+    const pointerId = this.pointerId;
     this.pointerId = null;
+    if (!this.meaningful) this.clear();
+    if (pointerId !== null && target.hasPointerCapture(pointerId)) {
+      target.releasePointerCapture(pointerId);
+    }
   }
+
+  private readonly handleLostCapture = (event: PointerEvent): void => {
+    if (event.pointerId === this.pointerId) this.suspend();
+  };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
     if (
@@ -162,9 +177,8 @@ export class TerminalSelectionController {
   private readonly handlePointerUp = (event: PointerEvent): void => {
     if (event.pointerId !== this.pointerId) return;
     event.preventDefault();
-    if (this.meaningful || this.mode !== "character") {
-      this.updateFocus(event);
-    } else {
+    this.updateFocus(event);
+    if (!this.meaningful) {
       this.selection = null;
       this.anchorRange = null;
       this.options.model.setSelection?.(null);
@@ -180,16 +194,19 @@ export class TerminalSelectionController {
   private updateFocus(
     event: Pick<PointerEvent, "clientX" | "clientY" | "altKey">,
   ): void {
+    this.reconcile();
     const point = this.pointFromClient(event.clientX, event.clientY, true);
     if (!point || !this.selection || !this.anchorRange) return;
     const focusRange = this.rangeForPoint(point, this.mode);
-    this.selection = selectionForRanges(
+    const selection = selectionForRanges(
       this.selection.anchor,
       point,
       this.anchorRange,
       focusRange,
       this.selection.rectangular || event.altKey,
     );
+    if (selectionsEqual(this.selection, selection)) return;
+    this.selection = selection;
     this.meaningful = true;
     this.commitSelection();
     this.options.onChange();
@@ -265,7 +282,7 @@ export class TerminalSelectionController {
       const lines =
         Math.sign(overflow) *
         Math.max(1, Math.min(8, Math.ceil(Math.abs(overflow) / cellHeight)));
-      this.options.model.scrollBy(lines);
+      if (!this.options.model.scrollBy(lines)) return;
       this.updateFocus({
         clientX: this.lastClientX,
         clientY: this.lastClientY,
@@ -283,7 +300,8 @@ export class TerminalSelectionController {
   }
 
   private commitSelection(): void {
-    this.options.model.setSelection?.(this.meaningful ? this.selection : null);
+    // Native pins preserve the pending drag anchor across output and reflow.
+    this.options.model.setSelection?.(this.selection);
   }
 }
 

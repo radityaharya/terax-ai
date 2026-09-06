@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import { TeraxGhostty } from "@terax/ghostty-core/adapted";
+import { AdaptedGhosttyTerminalModel } from "@/modules/terminal/ghostty/AdaptedGhosttyTerminalModel";
 import { describe, expect, it, vi } from "vitest";
 import type {
   GhosttyTerminalModelApi,
@@ -55,6 +58,115 @@ describe("selection across renderer replacement", () => {
 });
 
 describe("terminal selection pointer ownership", () => {
+  it("drags in both directions across real Ghostty render synchronization", async () => {
+    const bytes = await readFile(
+      new URL(
+        "../../../../../packages/ghostty-core/adapted/ghostty-vt.wasm",
+        import.meta.url,
+      ),
+    );
+    const core = await TeraxGhostty.loadBytes(Uint8Array.from(bytes).buffer);
+    const model = new AdaptedGhosttyTerminalModel(core, {
+      backend: "ghostty-webgpu",
+      cols: 80,
+      rows: 24,
+    });
+    const fixture = dragFixture(model);
+    try {
+      model.write(new TextEncoder().encode("hello terminal"));
+      fixture.pointer("pointerdown", 5);
+      fixture.controller.reconcile();
+      model.write(new TextEncoder().encode(" output"));
+      fixture.controller.reconcile();
+      fixture.pointer("pointermove", 45);
+      fixture.controller.reconcile();
+      fixture.pointer("pointerup", 45);
+      expect(fixture.controller.text()).toBe("hello");
+      fixture.pointer("pointerdown", 45);
+      fixture.controller.reconcile();
+      fixture.pointer("pointermove", 5);
+      fixture.controller.reconcile();
+      fixture.pointer("pointerup", 5);
+      expect(fixture.controller.text()).toBe("hello");
+      fixture.pointer("pointerdown", 5);
+      fixture.controller.reconcile();
+      fixture.pointer("pointerup", 45);
+      expect(fixture.controller.text()).toBe("hello");
+    } finally {
+      fixture.controller.dispose();
+      model.dispose();
+    }
+  });
+
+  it("retains a single-click drag anchor through render frames without selecting a click", () => {
+    const fixture = dragFixture();
+    fixture.pointer("pointerdown", 15);
+    fixture.controller.reconcile();
+    expect(fixture.controller.value).toBeNull();
+    expect(fixture.tracked()?.anchor.column).toBe(1);
+    fixture.pointer("pointermove", 16);
+    expect(fixture.controller.value).toBeNull();
+    fixture.pointer("pointermove", 45);
+    fixture.controller.reconcile();
+    fixture.pointer("pointerup", 45);
+    expect(fixture.controller.value).toEqual({
+      anchor: { line: 0, column: 1 },
+      focus: { line: 0, column: 4 },
+      rectangular: false,
+    });
+    const changes = fixture.onChange.mock.calls.length;
+    fixture.pointer("pointermove", 75);
+    expect(fixture.onChange).toHaveBeenCalledTimes(changes);
+    fixture.pointer("pointerdown", 25);
+    fixture.controller.reconcile();
+    fixture.pointer("pointerup", 25);
+    expect(fixture.tracked()).toBeNull();
+    fixture.controller.dispose();
+  });
+
+  it("keeps the pending anchor pinned across reflow and discards it on lost capture", () => {
+    const fixture = dragFixture();
+    fixture.pointer("pointerdown", 15);
+    fixture.model.setSelection?.({
+      anchor: { line: 1, column: 2 },
+      focus: { line: 1, column: 2 },
+      rectangular: false,
+    });
+    fixture.controller.reconcile();
+    expect(fixture.controller.value).toBeNull();
+    fixture.pointer("pointermove", 45);
+    expect(fixture.controller.value?.anchor).toEqual({ line: 1, column: 2 });
+    fixture.pointer("pointerup", 45);
+    fixture.pointer("pointerdown", 15);
+    fixture.pointer("lostpointercapture", 15);
+    expect(fixture.tracked()).toBeNull();
+    fixture.pointer("pointermove", 45);
+    expect(fixture.controller.value).toBeNull();
+    fixture.controller.dispose();
+  });
+
+  it("stops autoscrolling when the history boundary is reached", () => {
+    let frame: FrameRequestCallback | undefined;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frame = callback;
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const fixture = dragFixture();
+    try {
+      fixture.pointer("pointerdown", 15);
+      fixture.pointer("pointermove", 45, -20);
+      const tick = frame;
+      frame = undefined;
+      tick?.(16);
+      expect(fixture.model.scrollBy).toHaveBeenCalledOnce();
+      expect(frame).toBeUndefined();
+    } finally {
+      fixture.controller.dispose();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("does not capture a pointer already claimed by a resize separator", () => {
     expect(
       shouldStartTerminalSelection(
@@ -85,6 +197,60 @@ describe("terminal selection pointer ownership", () => {
     ).toBe(true);
   });
 });
+
+function dragFixture(realModel?: GhosttyTerminalModelApi) {
+  let tracked: TerminalBufferSelection | null = null;
+  let capture: number | null = null;
+  const target = Object.assign(new EventTarget(), {
+    setPointerCapture: (id: number) => {
+      capture = id;
+    },
+    hasPointerCapture: (id: number) => capture === id,
+    releasePointerCapture: () => {
+      capture = null;
+    },
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: 800, bottom: 480 }),
+  });
+  const model =
+    realModel ??
+    ({
+      cols: 80,
+      rows: 24,
+      modes: () => ({ mouseTracking: false }),
+      trackedSelection: () => tracked,
+      setSelection: (value: TerminalBufferSelection | null) => {
+        tracked = value;
+      },
+      bufferLineAtViewportRow: (row: number) => row,
+      scrollBy: vi.fn(() => false),
+    } as unknown as GhosttyTerminalModelApi);
+  const onChange = vi.fn();
+  const controller = new TerminalSelectionController({
+    model,
+    target: target as unknown as HTMLElement,
+    cellSize: () => ({ width: 10, height: 20 }),
+    shouldIgnoreTarget: () => false,
+    onChange,
+  });
+  return {
+    controller,
+    model,
+    onChange,
+    tracked: () => tracked,
+    pointer: (type: string, clientX: number, clientY = 10) =>
+      target.dispatchEvent(
+        Object.assign(new Event(type, { cancelable: true }), {
+          pointerId: 1,
+          button: 0,
+          detail: 1,
+          shiftKey: false,
+          altKey: false,
+          clientX,
+          clientY,
+        }),
+      ),
+  };
+}
 
 describe("terminal selection geometry", () => {
   it("normalizes backward selections", () => {
