@@ -24,6 +24,97 @@ describe("terminalMouseModifiers", () => {
 });
 
 describe("GhosttyInputController", () => {
+  it("routes prompt paste to the command editor without also sending PTY bytes", () => {
+    const model = inputModel();
+    const onData = vi.fn();
+    const onPaste = vi.fn(() => true);
+    const controller = new GhosttyInputController({
+      model,
+      input: new FakeTextArea() as unknown as HTMLTextAreaElement,
+      pointerTarget: new FakeElement() as unknown as HTMLElement,
+      cellSize: () => ({ width: 10, height: 20 }),
+      isMac: true,
+      onCopy: () => false,
+      onData,
+      onPaste,
+    });
+    controller.paste("echo text");
+    expect(onPaste).toHaveBeenCalledWith("echo text");
+    expect(onData).not.toHaveBeenCalled();
+    onPaste.mockReturnValue(false);
+    controller.paste("process input");
+    expect(new TextDecoder().decode(onData.mock.calls[0][0])).toBe(
+      "process input",
+    );
+    controller.dispose();
+  });
+
+  it("routes keys and composed text back to the prompt after a native menu", () => {
+    const input = new FakeTextArea();
+    const onKeyDown = vi.fn(() => true);
+    const onText = vi.fn(() => true);
+    const onData = vi.fn();
+    const controller = new GhosttyInputController({
+      model: inputModel(),
+      input: input as unknown as HTMLTextAreaElement,
+      pointerTarget: new FakeElement() as unknown as HTMLElement,
+      cellSize: () => ({ width: 10, height: 20 }),
+      isMac: true,
+      onCopy: () => false,
+      onKeyDown,
+      onText,
+      onData,
+    });
+    const interrupt = keyboardEvent({ key: "c", code: "KeyC", ctrlKey: true });
+    input.dispatchEvent(interrupt);
+    expect(onKeyDown).toHaveBeenCalledWith(interrupt);
+    expect(interrupt.defaultPrevented).toBe(true);
+    onKeyDown.mockReturnValue(false);
+    input.dispatchEvent(keyboardEvent({ key: "x", code: "KeyX" }));
+    expect(onText).toHaveBeenCalledWith("x");
+    input.dispatchEvent(
+      Object.assign(new Event("compositionend"), { data: "あ" }),
+    );
+    input.dispatchEvent(
+      Object.assign(new Event("beforeinput", { cancelable: true }), {
+        inputType: "insertText",
+        data: "あ",
+        isComposing: false,
+      }),
+    );
+    expect(onText.mock.calls).toEqual([["x"], ["あ"]]);
+    expect(onData).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("delivers Ctrl+C to the terminal and leaves unencoded shortcuts unconsumed", () => {
+    const input = new FakeTextArea();
+    const onData = vi.fn();
+    const encodeKey = vi.fn(() => new Uint8Array([3]));
+    const controller = new GhosttyInputController({
+      model: { ...inputModel(), encodeKey },
+      input: input as unknown as HTMLTextAreaElement,
+      pointerTarget: new FakeElement() as unknown as HTMLElement,
+      cellSize: () => ({ width: 10, height: 20 }),
+      isMac: true,
+      onCopy: () => true,
+      onData,
+    });
+    const interrupt = keyboardEvent({ key: "c", code: "KeyC", ctrlKey: true });
+    input.dispatchEvent(interrupt);
+    expect(interrupt.defaultPrevented).toBe(true);
+    expect(onData).toHaveBeenCalledWith(new Uint8Array([3]));
+    encodeKey.mockReturnValue(new Uint8Array(0));
+    const shortcut = keyboardEvent({ key: "p", code: "KeyP", metaKey: true });
+    input.dispatchEvent(shortcut);
+    expect(shortcut.defaultPrevented).toBe(false);
+    const handled = keyboardEvent({ key: "c", code: "KeyC", ctrlKey: true });
+    handled.preventDefault();
+    input.dispatchEvent(handled);
+    expect(onData).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+
   it("commits IME text once and leaves dead-key composition to the webview", () => {
     const input = new FakeTextArea();
     const onData = vi.fn();

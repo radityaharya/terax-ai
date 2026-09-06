@@ -835,6 +835,12 @@ function createGhosttyInput(
   model: GhosttyTerminalModelApi,
   surface: GhosttySurface,
 ): GhosttyInputController {
+  const insertPromptText = (text: string): boolean => {
+    const blocks = ghosttyBlocks(session.leafId);
+    if (blocks?.getMode() !== "prompt" || !blocks.paste) return false;
+    blocks.paste(text);
+    return true;
+  };
   return new GhosttyInputController({
     model,
     input: surface.inputElement(),
@@ -844,13 +850,26 @@ function createGhosttyInput(
       height: surface.cellSize().height,
     }),
     onData: (bytes) => {
-      if (ghosttyBlocks(session.leafId)?.getMode() === "prompt") return;
+      if (
+        ghosttyBlocks(session.leafId)?.getMode() === "prompt" &&
+        !(bytes.length === 1 && bytes[0] === 3)
+      )
+        return;
       session.writer.enqueue(bytes);
     },
+    onKeyDown: (event) => {
+      const blocks = ghosttyBlocks(session.leafId);
+      return (
+        blocks?.getMode() === "prompt" && (blocks.keyDown?.(event) ?? false)
+      );
+    },
+    onText: insertPromptText,
+    onPaste: insertPromptText,
+    getSelection: () => surface.getSelection(),
     onCopy: () => {
       const text = surface.getSelection();
       if (!text) return false;
-      void writeTerminalClipboard(text);
+      void writeTerminalClipboard(text).catch(() => {});
       return true;
     },
   });
@@ -877,12 +896,13 @@ function applyBlockInputMode(
   const input = surface?.inputElement();
   const blocks = ghosttyBlocks(session.leafId);
   if (!input || !blocks) return;
-  const disabled = blocks.getMode() === "prompt";
-  const changed = input.disabled !== disabled;
-  input.disabled = disabled;
-  surface?.setCursorEnabled(!disabled);
-  if (changed && session.visible && session.focused)
-    focusSessionSurface(session, surface);
+  const prompt = blocks.getMode() === "prompt";
+  const changed =
+    input.getAttribute("data-terax-block-prompt") !== String(prompt);
+  if (!changed) return;
+  input.setAttribute("data-terax-block-prompt", String(prompt));
+  surface?.setCursorEnabled(!prompt);
+  if (session.visible && session.focused) focusSessionSurface(session, surface);
 }
 
 export function ghosttyBlockGeometry(

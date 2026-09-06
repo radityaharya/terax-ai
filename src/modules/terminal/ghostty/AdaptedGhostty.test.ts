@@ -290,6 +290,25 @@ describe.each([
       }
     });
 
+    it("encodes Ctrl+C as an interrupt in normal and alternate screens", () => {
+      const terminal = ghostty.createTerminal(8, 3);
+      try {
+        for (const sequence of ["", "\x1b[?1049h", "\x1b[?1049l"]) {
+          terminal.write(new TextEncoder().encode(sequence));
+          expect(
+            terminal.encodeKey({
+              action: KeyAction.PRESS,
+              key: Key.C,
+              mods: Mods.CTRL,
+              utf8: "c",
+            }),
+          ).toEqual(new Uint8Array([3]));
+        }
+      } finally {
+        terminal.dispose();
+      }
+    });
+
     it("uses current Ghostty state for key encoding and terminal modes", () => {
       const terminal = ghostty.createTerminal(8, 3);
       try {

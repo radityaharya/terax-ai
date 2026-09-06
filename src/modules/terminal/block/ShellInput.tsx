@@ -3,6 +3,7 @@ import { fmtShortcut, MOD_KEY } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/modules/theme";
 import { useEffect, useRef } from "react";
+import { runScopeHandlers } from "@codemirror/view";
 import {
   clearLeafBlockSelection,
   getLeafDraft,
@@ -10,6 +11,7 @@ import {
   setLeafDraft,
   setLeafInputActivity,
   setLeafInputFocus,
+  setLeafInputKeyDown,
   setLeafInputPaste,
 } from "../lib/terminalSessionApi";
 import { useTerminalFont } from "../lib/useTerminalFont";
@@ -113,6 +115,12 @@ export default function ShellInput({
   // tabs land with the cursor already in the input.
   useEffect(() => {
     setLeafInputFocus(leafId, () => handleRef.current?.focus());
+    setLeafInputKeyDown(leafId, (event) => {
+      const view = handleRef.current?.view;
+      if (!view) return false;
+      view.focus();
+      return runScopeHandlers(view, event, "editor");
+    });
     setLeafInputPaste(leafId, (text) => {
       const view = handleRef.current?.view;
       if (!view) return;
@@ -130,6 +138,7 @@ export default function ShellInput({
       setLeafDraft(leafId, value);
       setLeafInputActivity(leafId, value.length > 0);
       setLeafInputFocus(leafId, null);
+      setLeafInputKeyDown(leafId, null);
       setLeafInputPaste(leafId, null);
     };
   }, [leafId]);

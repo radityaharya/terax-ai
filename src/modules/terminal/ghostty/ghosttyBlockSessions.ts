@@ -10,6 +10,7 @@ export class GhosttyBlockSession {
   model: GhosttyTerminalModelApi | null = null;
   focus: (() => void) | null = null;
   paste: ((text: string) => void) | null = null;
+  keyDown: ((event: KeyboardEvent) => boolean) | null = null;
   draft = "";
   inputActive = false;
   everSubmitted = false;
@@ -111,6 +112,7 @@ export class GhosttyBlockSession {
     this.detach();
     this.focus = null;
     this.paste = null;
+    this.keyDown = null;
     this.draft = "";
     this.modeListeners.clear();
     this.viewportListeners.clear();

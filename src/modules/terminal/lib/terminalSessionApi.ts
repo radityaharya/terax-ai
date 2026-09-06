@@ -103,6 +103,14 @@ export function setLeafInputPaste(
   if (state) state.paste = paste;
 }
 
+export function setLeafInputKeyDown(
+  leafId: number,
+  handler: ((event: KeyboardEvent) => boolean) | null,
+): void {
+  const state = handler ? ensureGhosttyBlocks(leafId) : ghosttyBlocks(leafId);
+  if (state) state.keyDown = handler;
+}
+
 export function focusLeafInput(leafId: number): void {
   const state = ghosttyBlocks(leafId);
   if (state?.getMode() === "prompt" && state.focus) state.focus();

@@ -4,6 +4,8 @@ import { Key, KeyAction, Mods } from "@terax/ghostty-core/protocol";
 import type { GhosttyTerminalModelApi } from "../GhosttyTerminalModel";
 import { encodeTerminalPaste } from "./terminalInputEncoding";
 
+import { TerminalNativeSelection } from "@/modules/terminal/ghostty/input/TerminalNativeSelection";
+
 const DUPLICATE_INPUT_WINDOW_MS = 75;
 
 const KEY_MAP: Readonly<Record<string, Key>> = {
@@ -122,6 +124,10 @@ export type GhosttyInputControllerOptions = {
   readonly cellSize: () => { width: number; height: number };
   readonly onData: (bytes: Uint8Array) => void;
   readonly onCopy: () => boolean;
+  readonly getSelection?: () => string | null;
+  readonly onPaste?: (text: string) => boolean;
+  readonly onText?: (text: string) => boolean;
+  readonly onKeyDown?: (event: KeyboardEvent) => boolean;
   readonly macOptionIsMeta?: boolean;
   readonly isMac?: boolean;
 };
@@ -129,6 +135,7 @@ export type GhosttyInputControllerOptions = {
 export class GhosttyInputController {
   private readonly encoder = new TextEncoder();
   private readonly isMac: boolean;
+  private readonly nativeSelection: TerminalNativeSelection | null;
   private composing = false;
   private mouseButtons = 0;
   private lastData = "";
@@ -140,6 +147,15 @@ export class GhosttyInputController {
 
   constructor(private readonly options: GhosttyInputControllerOptions) {
     this.isMac = options.isMac ?? /Mac|iPhone|iPad/.test(navigator.userAgent);
+    this.nativeSelection = options.getSelection
+      ? new TerminalNativeSelection({
+          input: options.input,
+          target: options.pointerTarget,
+          getSelection: options.getSelection,
+          mouseTracking: () => options.model.modes().mouseTracking,
+          isMac: this.isMac,
+        })
+      : null;
     options.input.addEventListener("keydown", this.handleKeyDown);
     options.input.addEventListener("beforeinput", this.handleBeforeInput);
     options.input.addEventListener(
@@ -160,6 +176,8 @@ export class GhosttyInputController {
 
   paste(text: string): void {
     if (this.disposed || !text) return;
+    this.nativeSelection?.reset();
+    if (this.options.onPaste?.(text)) return;
     this.emitText(
       encodeTerminalPaste(text, this.options.model.modes().bracketedPaste),
       "paste",
@@ -170,6 +188,7 @@ export class GhosttyInputController {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.nativeSelection?.dispose();
     const { input, pointerTarget } = this.options;
     input.removeEventListener("keydown", this.handleKeyDown);
     input.removeEventListener("beforeinput", this.handleBeforeInput);
@@ -185,7 +204,9 @@ export class GhosttyInputController {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    this.nativeSelection?.reset();
     if (
+      event.defaultPrevented ||
       this.composing ||
       event.isComposing ||
       event.keyCode === 229 ||
@@ -193,6 +214,21 @@ export class GhosttyInputController {
       event.key === "Process"
     )
       return;
+
+    if (isPasteShortcut(event, this.isMac)) {
+      consume(event);
+      void readTerminalClipboard().then((text) => this.paste(text));
+      return;
+    }
+    if (isCopyShortcut(event, this.isMac) && this.options.onCopy()) {
+      consume(event);
+      return;
+    }
+
+    if (this.options.onKeyDown?.(event)) {
+      consume(event);
+      return;
+    }
 
     const readline = terminalReadlineSequence(event, {
       isMac: this.isMac,
@@ -215,16 +251,6 @@ export class GhosttyInputController {
       return;
     }
 
-    if (isPasteShortcut(event, this.isMac)) {
-      consume(event);
-      void readTerminalClipboard().then((text) => this.paste(text));
-      return;
-    }
-    if (isCopyShortcut(event, this.isMac) && this.options.onCopy()) {
-      consume(event);
-      return;
-    }
-
     const printable =
       event.key.length === 1 &&
       !event.metaKey &&
@@ -236,7 +262,7 @@ export class GhosttyInputController {
           this.options.macOptionIsMeta !== true));
     if (printable) {
       consume(event);
-      this.emitText(event.key, "keydown");
+      this.emitText(event.key, "keydown", true, true, true);
       return;
     }
 
@@ -252,8 +278,8 @@ export class GhosttyInputController {
       mods: modifiers(event),
       utf8,
     });
-    consume(event);
     if (encoded.byteLength > 0) {
+      consume(event);
       this.options.model.scrollToBottom();
       this.options.onData(encoded);
     }
@@ -286,7 +312,14 @@ export class GhosttyInputController {
     }
     if (!data) return;
     consume(event);
-    this.emitText(data, "beforeinput");
+    this.emitText(
+      data,
+      "beforeinput",
+      true,
+      true,
+      event.inputType === "insertText" ||
+        event.inputType === "insertReplacementText",
+    );
     this.options.input.value = "";
   };
 
@@ -296,7 +329,7 @@ export class GhosttyInputController {
 
   private readonly handleCompositionEnd = (event: CompositionEvent): void => {
     this.composing = false;
-    if (event.data) this.emitText(event.data, "composition");
+    if (event.data) this.emitText(event.data, "composition", true, true, true);
     this.options.input.value = "";
   };
 
@@ -462,6 +495,7 @@ export class GhosttyInputController {
     source: InputSource,
     deduplicate = true,
     scrollToBottom = true,
+    editableText = false,
   ): void {
     if (this.disposed) return;
     const now = performance.now();
@@ -478,6 +512,7 @@ export class GhosttyInputController {
     this.lastData = data;
     this.lastSource = source;
     this.lastDataAt = now;
+    if (editableText && this.options.onText?.(data)) return;
     if (scrollToBottom) this.options.model.scrollToBottom();
     this.options.onData(this.encoder.encode(data));
   }

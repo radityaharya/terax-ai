@@ -24,7 +24,7 @@
       "dist/assets/useGhosttyTerminalSession-*.js",
       "dist/assets/ghostty-vt-*.js"
     ],
-    "limit": "55 KB",
+    "limit": "56 KB",
     "gzip": true
   },
   {
