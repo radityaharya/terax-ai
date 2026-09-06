@@ -1,6 +1,11 @@
 import { terminalReadlineSequence } from "@/modules/terminal/lib/keymap";
 import { readTerminalClipboard } from "@/modules/terminal/lib/terminalClipboard";
-import { Key, KeyAction, Mods } from "@terax/ghostty-core/protocol";
+import {
+  Key,
+  KeyAction,
+  Mods,
+  type KeyEvent,
+} from "@terax/ghostty-core/protocol";
 import type { GhosttyTerminalModelApi } from "../GhosttyTerminalModel";
 import { encodeTerminalPaste } from "./terminalInputEncoding";
 
@@ -113,6 +118,14 @@ const KEY_MAP: Readonly<Record<string, Key>> = {
   NumpadEqual: Key.KP_EQUAL,
   NumpadMultiply: Key.KP_MULTIPLY,
   NumpadSubtract: Key.KP_MINUS,
+  AltLeft: Key.ALT_LEFT,
+  AltRight: Key.ALT_RIGHT,
+  ControlLeft: Key.CONTROL_LEFT,
+  ControlRight: Key.CONTROL_RIGHT,
+  MetaLeft: Key.META_LEFT,
+  MetaRight: Key.META_RIGHT,
+  ShiftLeft: Key.SHIFT_LEFT,
+  ShiftRight: Key.SHIFT_RIGHT,
 };
 
 type InputSource = "keydown" | "beforeinput" | "composition" | "paste";
@@ -136,6 +149,7 @@ export class GhosttyInputController {
   private readonly encoder = new TextEncoder();
   private readonly isMac: boolean;
   private readonly nativeSelection: TerminalNativeSelection | null;
+  private readonly pressedKeys = new Map<string, KeyEvent>();
   private composing = false;
   private mouseButtons = 0;
   private lastData = "";
@@ -157,6 +171,7 @@ export class GhosttyInputController {
         })
       : null;
     options.input.addEventListener("keydown", this.handleKeyDown);
+    options.input.addEventListener("keyup", this.handleKeyUp);
     options.input.addEventListener("beforeinput", this.handleBeforeInput);
     options.input.addEventListener(
       "compositionstart",
@@ -189,8 +204,10 @@ export class GhosttyInputController {
     if (this.disposed) return;
     this.disposed = true;
     this.nativeSelection?.dispose();
+    this.pressedKeys.clear();
     const { input, pointerTarget } = this.options;
     input.removeEventListener("keydown", this.handleKeyDown);
+    input.removeEventListener("keyup", this.handleKeyUp);
     input.removeEventListener("beforeinput", this.handleBeforeInput);
     input.removeEventListener("compositionstart", this.handleCompositionStart);
     input.removeEventListener("compositionend", this.handleCompositionEnd);
@@ -262,25 +279,53 @@ export class GhosttyInputController {
           this.options.macOptionIsMeta !== true));
     if (printable) {
       consume(event);
-      this.emitText(event.key, "keydown", true, true, true);
+      this.emitText(
+        event.key,
+        "keydown",
+        true,
+        true,
+        true,
+        !event.altKey && KEY_MAP[event.code] !== undefined ? event : undefined,
+      );
       return;
     }
 
     const key = KEY_MAP[event.code];
     if (key === undefined) return;
-    const utf8 =
-      event.key.length === 1 && event.key.charCodeAt(0) < 128
-        ? event.key.toLowerCase()
-        : undefined;
-    const encoded = this.options.model.encodeKey({
-      action: event.repeat ? KeyAction.REPEAT : KeyAction.PRESS,
-      key,
-      mods: modifiers(event),
-      utf8,
-    });
+    const encoded = this.encodeKeyDown(event, key);
     if (encoded.byteLength > 0) {
       consume(event);
       this.options.model.scrollToBottom();
+      this.options.onData(encoded);
+    }
+  };
+
+  private encodeKeyDown(event: KeyboardEvent, key: Key): Uint8Array {
+    const data = {
+      action: event.repeat ? KeyAction.REPEAT : KeyAction.PRESS,
+      key,
+      mods: modifiers(event),
+      utf8: event.key.length === 1 ? event.key : undefined,
+      unshiftedCodepoint: unshiftedCodepoint(event),
+    };
+    const encoded = this.options.model.encodeKey(data);
+    if (encoded.byteLength > 0) this.pressedKeys.set(event.code, data);
+    return encoded;
+  }
+
+  private readonly handleKeyUp = (event: KeyboardEvent): void => {
+    const pressed = this.pressedKeys.get(event.code);
+    if (!pressed) return;
+    this.pressedKeys.delete(event.code);
+    if (event.defaultPrevented || this.composing || event.isComposing) return;
+    const encoded = this.options.model.encodeKey({
+      ...pressed,
+      action: KeyAction.RELEASE,
+      mods: modifiers(event),
+      utf8: undefined,
+    });
+    if (encoded.byteLength > 0) {
+      consume(event);
       this.options.onData(encoded);
     }
   };
@@ -347,6 +392,8 @@ export class GhosttyInputController {
   };
 
   private readonly handleBlur = (): void => {
+    this.pressedKeys.clear();
+    this.composing = false;
     if (this.options.model.modes().focusReporting) {
       this.emitText("\x1b[O", "keydown", false, false);
     }
@@ -496,6 +543,7 @@ export class GhosttyInputController {
     deduplicate = true,
     scrollToBottom = true,
     editableText = false,
+    keyEvent?: KeyboardEvent,
   ): void {
     if (this.disposed) return;
     const now = performance.now();
@@ -514,8 +562,44 @@ export class GhosttyInputController {
     this.lastDataAt = now;
     if (editableText && this.options.onText?.(data)) return;
     if (scrollToBottom) this.options.model.scrollToBottom();
-    this.options.onData(this.encoder.encode(data));
+    const bytes = keyEvent
+      ? this.encodeKeyDown(keyEvent, KEY_MAP[keyEvent.code])
+      : this.encoder.encode(data);
+    if (bytes.byteLength > 0) this.options.onData(bytes);
   }
+}
+
+const UNSHIFTED_SYMBOLS: Readonly<Record<string, string>> = {
+  Backquote: "`~",
+  Backslash: "\\|",
+  BracketLeft: "[{",
+  BracketRight: "]}",
+  Comma: ",<",
+  Equal: "=+",
+  IntlBackslash: "\\|",
+  Minus: "-_",
+  Period: ".>",
+  Quote: "'\"",
+  Semicolon: ";:",
+  Slash: "/?",
+};
+
+function unshiftedCodepoint(event: KeyboardEvent): number {
+  const character = event.key.toLowerCase().codePointAt(0) ?? 0;
+  if (event.key.length === 1 && character >= 32 && character !== 127) {
+    if (event.shiftKey) {
+      const pair = UNSHIFTED_SYMBOLS[event.code];
+      if (pair?.[1] === event.key) return pair.charCodeAt(0);
+      if (event.code.startsWith("Digit") && event.code.length === 6) {
+        const digit = event.code.charCodeAt(5) - 48;
+        if (")!@#$%^&*("[digit] === event.key) return digit + 48;
+      }
+    }
+    return character;
+  }
+  return event.code.startsWith("Key") && event.code.length === 4
+    ? event.code.toLowerCase().charCodeAt(3)
+    : 0;
 }
 
 export function terminalMouseModifiers(

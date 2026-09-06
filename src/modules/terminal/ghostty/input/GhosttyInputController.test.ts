@@ -1,4 +1,6 @@
 import type { GhosttyTerminalModelApi } from "@/modules/terminal/ghostty/GhosttyTerminalModel";
+import { readFile } from "node:fs/promises";
+import { TeraxGhostty } from "@terax/ghostty-core/adapted";
 import { describe, expect, it, vi } from "vitest";
 import {
   GhosttyInputController,
@@ -24,6 +26,70 @@ describe("terminalMouseModifiers", () => {
 });
 
 describe("GhosttyInputController", () => {
+  it.each(["ghostty-vt.wasm", "ghostty-vt-scalar.wasm"])(
+    "preserves Control through Fish's Kitty keyboard mode (%s)",
+    async (artifact) => {
+      const bytes = await readFile(
+        new URL(
+          `../../../../../packages/ghostty-core/adapted/${artifact}`,
+          import.meta.url,
+        ),
+      );
+      const core = await TeraxGhostty.loadBytes(Uint8Array.from(bytes).buffer);
+      const terminal = core.createTerminal(80, 24);
+      const input = new FakeTextArea();
+      const onData = vi.fn();
+      const controller = new GhosttyInputController({
+        model: {
+          ...inputModel(),
+          encodeKey: (event) => terminal.encodeKey(event),
+        },
+        input: input as unknown as HTMLTextAreaElement,
+        pointerTarget: new FakeElement() as unknown as HTMLElement,
+        cellSize: () => ({ width: 10, height: 20 }),
+        isMac: true,
+        onCopy: () => false,
+        onData,
+      });
+      try {
+        terminal.write(new TextEncoder().encode("\x1b[>1u"));
+        input.dispatchEvent(
+          keyboardEvent({ key: "c", code: "KeyC", ctrlKey: true }),
+        );
+        expect(new TextDecoder().decode(onData.mock.calls[0][0])).toBe(
+          "\x1b[99;5u",
+        );
+        terminal.write(new TextEncoder().encode("\x1b[<u"));
+        input.dispatchEvent(
+          keyboardEvent({ key: "c", code: "KeyC", ctrlKey: true }),
+        );
+        expect(onData.mock.calls[1][0]).toEqual(new Uint8Array([3]));
+        terminal.write(new TextEncoder().encode("\x1b[>11u"));
+        input.dispatchEvent(keyboardEvent({ key: "x", code: "KeyX" }));
+        input.dispatchEvent(
+          Object.assign(new Event("keyup", { cancelable: true }), {
+            key: "x",
+            code: "KeyX",
+            ctrlKey: false,
+            altKey: false,
+            metaKey: false,
+            shiftKey: false,
+            getModifierState: () => false,
+          }),
+        );
+        expect(new TextDecoder().decode(onData.mock.calls[2][0])).toBe(
+          "\x1b[120u",
+        );
+        expect(new TextDecoder().decode(onData.mock.calls[3][0])).toBe(
+          "\x1b[120;1:3u",
+        );
+      } finally {
+        controller.dispose();
+        terminal.dispose();
+      }
+    },
+  );
+
   it("routes prompt paste to the command editor without also sending PTY bytes", () => {
     const model = inputModel();
     const onData = vi.fn();
