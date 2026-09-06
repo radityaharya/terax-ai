@@ -34,5 +34,14 @@
     ],
     "limit": "450 KB",
     "gzip": true
+  },
+  {
+    "name": "Terminal symbols font",
+    "path": [
+      "dist/assets/terax-terminal-symbols-*.woff2"
+    ],
+    "limit": "800 KB",
+    "gzip": false,
+    "brotli": false
   }
 ]

@@ -21,6 +21,15 @@
 
 /* JetBrains Mono — woff2 only (every target webview supports it). */
 @font-face {
+  font-family: 'Terax Terminal Symbols';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('../assets/fonts/terax-terminal-symbols.woff2') format('woff2');
+  unicode-range: U+E000-F8FF, U+F0000-FFFFD;
+}
+
+@font-face {
   font-family: 'JetBrains Mono';
   font-style: normal;
   font-display: swap;

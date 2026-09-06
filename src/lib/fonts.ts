@@ -16,7 +16,8 @@ const NERD_FONT_CANDIDATES = [
   "Hasklug Nerd Font",
 ];
 
-const FALLBACK_CHAIN = '"JetBrains Mono", SFMono-Regular, Menlo, monospace';
+const FALLBACK_CHAIN =
+  '"JetBrains Mono", "Terax Terminal Symbols", SFMono-Regular, Menlo, monospace';
 
 let detected: string | null = null;
 let monoReady: Promise<void> | null = null;
@@ -30,6 +31,10 @@ export function ensureMonoFontsLoaded(): Promise<void> {
   monoReady = Promise.allSettled([
     document.fonts.load('400 14px "JetBrains Mono"'),
     document.fonts.load('700 14px "JetBrains Mono"'),
+    document.fonts.load(
+      '400 14px "Terax Terminal Symbols"',
+      "\ue0a0\ue718\u{f0001}",
+    ),
   ]).then(() => undefined);
   return monoReady;
 }
@@ -39,26 +44,34 @@ export function resolveFontFamily(userInput: string): string {
   if (!name) return detectMonoFontFamily();
   // A comma means the user gave a full stack; otherwise quote the single family.
   // Strip any quotes first so a stray quote can't produce a malformed token.
-  const head = name.includes(",")
-    ? name
-    : `"${name.replace(/['"]/g, "")}"`;
+  const head = name.includes(",") ? name : `"${name.replace(/['"]/g, "")}"`;
   return `${head}, ${FALLBACK_CHAIN}`;
 }
 
 export function detectMonoFontFamily(): string {
   if (detected) return detected;
-  if (typeof document === "undefined" || !document.fonts) {
+  if (typeof document === "undefined") {
     detected = FALLBACK_CHAIN;
     return detected;
   }
-  for (const f of NERD_FONT_CANDIDATES) {
-    try {
-      if (document.fonts.check(`12px "${f}"`)) {
-        detected = `"${f}", ${FALLBACK_CHAIN}`;
+  const context = document.createElement("canvas").getContext("2d");
+  if (context) {
+    const sample = "Wim0123\ue0a0\ue718";
+    const fallbacks = ["monospace", "serif"];
+    const widths = fallbacks.map((fallback) => {
+      context.font = `16px ${fallback}`;
+      return context.measureText(sample).width;
+    });
+    for (const font of NERD_FONT_CANDIDATES) {
+      if (
+        fallbacks.some((fallback, index) => {
+          context.font = `16px "${font}", ${fallback}`;
+          return context.measureText(sample).width !== widths[index];
+        })
+      ) {
+        detected = `"${font}", ${FALLBACK_CHAIN}`;
         return detected;
       }
-    } catch {
-      // Some browsers throw on invalid font shorthand; ignore.
     }
   }
   detected = FALLBACK_CHAIN;
