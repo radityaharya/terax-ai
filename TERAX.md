@@ -44,6 +44,17 @@ The native marker ring is capped at 2,048 pins; JavaScript history is capped at
 and UI load only for block sessions, and hidden/occluded block presentation stops.
 Block copy, search, sticky headers, navigation, Ask AI, rerun, shared shell input,
 and selection all use the same persistent Ghostty model.
+Block chrome commits with its matching renderer frame; command-editor focus does
+not lower active-pane cadence. Divider padding is presentation-only and does not
+change copied command boundaries. Scrollbars preserve native fractional positions
+and ignore delayed programmatic scroll events. Hidden output does no surface DOM
+or search-mask work until presentation resumes.
+
+Terminal clipboard shortcuts use the native text clipboard plugin on all desktop
+platforms. Context clicks expose the selected text through the input element to
+restore the webview's native text menu; no persistent DOM scrollback is maintained.
+The block prompt retains an enabled terminal input proxy for native menus and
+routes editing keys, composed text and paste back to its command editor.
 Scrollbar status marks use two SVG paths with at most 256 positions, refreshed
 at most four times per second while visible. Rerun requires the complete command
 submitted through Terax; truncated shell labels are never executed.

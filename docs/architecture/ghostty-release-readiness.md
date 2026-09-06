@@ -249,3 +249,54 @@ The candidate is at `src-tauri/target/release/bundle/macos/Terax.app`. It was no
 launched or installed, and no measurements were taken from another running Terax.
 This verification leaves the platform, packaged GUI, accessibility, and sustained
 resource release gates above open.
+
+## September 6 interaction polish
+
+The local candidate restores the block stylesheet at its lazy UI entry points
+and a blank row before completed-block dividers. That padding does not alter
+native command ranges used by copy, selection or search.
+
+Block chrome now updates within the corresponding renderer frame. The pane's
+active state controls pacing even when its separate command editor has keyboard
+focus. Scrollbar synchronization preserves fractional native scroll positions
+and ignores delayed programmatic scroll events while output advances history.
+This removes identified sources of scroll jitter; the terminal viewport remains
+row-based, with no continuous idle animation.
+
+Native clipboard read/write is enabled on macOS, Windows and Linux, restricted
+to the main window and text commands. Application paste no longer calls WebKit's
+permission-gated async clipboard API. Native context clicks temporarily expose
+the model selection in the input textarea. Block editing keys, IME text and paste
+route back to the shared command editor after that input receives focus. Core
+regressions verify Ctrl+C byte encoding on both WASM variants and screen modes.
+The exact WKWebView context menu and interactive IME behavior still require the
+packaged manual platform checks above.
+
+Hidden and occluded output now skips surface DOM updates, selection presentation
+reconciliation and search-mask rebuilding. Model parsing and tracked selections
+continue. No new timer or polling loop was added. These changes eliminate
+identified application work; they do not establish the cause of the user's entire
+desktop-transition RAM spike or measure WindowServer/WebContent/GPU process RSS.
+
+The lazy terminal JavaScript budget increases from 55 to 56 kB gzip for native
+selection-menu and prompt input routing. The total JavaScript and WASM budgets
+remain unchanged. Shared scrollbar code removes duplicated renderer logic.
+
+
+Local verification on macOS arm64 for this polish pass:
+
+- 152 frontend test files / 960 tests passed; final TypeScript build passed.
+- Frontend lint passed with the same 94 existing warnings and one informational
+  diagnostic; focused terminal lint passed without diagnostics.
+- All 333 Rust unit/integration tests passed, and Clippy passed with warnings
+  denied after enabling the native clipboard plugin on desktop platforms.
+- Production Vite and Tauri `.app` builds passed. Size-limit reports 55.07 kB
+  terminal JavaScript / 56 kB budget, 1.42 MB total JavaScript / 1.6 MB budget,
+  and 417.01 kB WASM / 450 kB budget. The startup file group is 226.34 kB gzip.
+- The final local `.app` occupies 9,848 KiB (about 9.6 MiB) on disk after ad-hoc
+  signing; `codesign --verify --deep --strict` passed. No installation or launch
+  was performed, and no metrics were taken from the user's running application.
+
+The interaction fixes are in `ff20d93` (native clipboard), `17e2d3d` (block
+presentation and scrolling), and `efa255c` (native selection and prompt input).
+The packaged manual and long-duration resource gates remain open.
