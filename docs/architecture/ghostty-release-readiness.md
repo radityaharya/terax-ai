@@ -5,6 +5,18 @@ still open. xterm and its addons are removed. All terminals, including blocks,
 use Ghostty with WebGPU or Terax WebGL. This is a testable release candidate,
 not evidence of multi-platform, multi-day production certification.
 
+## September 7 PR review
+
+The [review dispositions](ghostty-review-2026-09-07.md) record all 27 CodeRabbit
+findings, fixes, and rejected suggestions. Allocation failure, renderer pool
+recovery, post-exit transport draining, block search responsiveness, scrollbar
+DOM work, WebGL rectangle uploads, draft retention, and accessible output were
+covered in this pass. The unused migration model and input handler are removed.
+Validation after merging main and applying the review fixes: 163 frontend files /
+1,128 tests, 353 Rust tests, types, production build, all five asset budgets, and
+Clippy pass. Lint retains 89 existing warnings and one info. Packaged platform
+and long-duration resource gates below remain open.
+
 ## September 7 resource pass
 
 - Native presentation arrays and their auxiliary storage are lazy and reclaimed

@@ -33,7 +33,7 @@ internals. The fork keeps the proven parts of the xterm.js renderer design:
 - frame-driven rendering with no idle animation loop.
 
 Terax replaces xterm.js buffer and service dependencies with direct reads from
-`GhosttyTerminalModel`. Upstream provenance, commit, package version, and the
+`GhosttyTerminalModelApi`, implemented by `AdaptedGhosttyTerminalModel`. Upstream provenance, commit, package version, and the
 MIT license are retained beside the adapted source in
 `src/modules/terminal/ghostty/webgl`.
 

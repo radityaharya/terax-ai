@@ -38,7 +38,10 @@ Native cell, grapheme and hyperlink presentation buffers allocate on first use
 and return to the WASM allocator when presentation is reclaimed. Hidden parsing
 does not rebuild them. Short visibility pauses retain uploaded cell data.
 Unchanged frames do not acquire presentation textures or draw; cursor-only
-updates retain cell buffers. Blink timers stop in unfocused windows, and native
+updates retain cell buffers. WebGL background and decoration geometry uses
+row range uploads while rectangle counts are stable; structural changes rebuild
+the compact stream. Scrollbar synchronization reads no DOM on unchanged frames.
+Blink timers stop in unfocused windows, and native
 cursor hiding stops cursor timers. Selection damages only its old and new rows;
 streaming search invalidations coalesce instead of rebuilding per output chunk.
 WebGL surface and renderer code load only when selected, needed for fallback,
@@ -52,7 +55,8 @@ so command ranges survive reflow and exclude following prompts and commands.
 The native marker ring is capped at 2,048 pins; JavaScript history is capped at
 1,000 blocks and 512 KiB of estimated UTF-16 command/cwd text. Block implementation
 and UI load only for block sessions, and hidden/occluded block presentation stops.
-Block copy, search, sticky headers, navigation, Ask AI, rerun, shared shell input,
+Block search yields after 128 rows or four milliseconds, retains at most 500
+matches, and cancels obsolete queries. Block copy, search, sticky headers, navigation, Ask AI, rerun, shared shell input,
 and selection all use the same persistent Ghostty model.
 Block chrome commits with its matching renderer frame; command-editor focus does
 not lower active-pane cadence. Divider padding is presentation-only and does not
@@ -100,7 +104,10 @@ PTY output retains a 2 MiB pending plus in-flight byte limit and two-message
 window. Acknowledgments are cumulative parsed-byte offsets validated against
 native chunk boundaries, so duplicates and retries cannot grant extra credit.
 Parser failures stop delivery visibly without acknowledging unconsumed bytes.
-Exit waits for reader EOF and final parsing acknowledgments. Close wakes blocked
+Exit waits for reader EOF and final parsing acknowledgments. After shell exit,
+30 seconds without acknowledgment progress closes a stalled queue with a logged
+delivery failure and exit status -1. The deadline is armed before ConPTY close
+and thread joins; it does not run during live-shell backpressure. Close wakes blocked
 queue workers, and Windows keeps draining the pipe while ConPTY closes.
 
 Enable release diagnostics with `localStorage.setItem("terax:terminal-diagnostics", "1")`
