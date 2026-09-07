@@ -58,3 +58,51 @@ assistive-technology behavior, or multi-day process memory and energy stability.
 The desktop-transition memory spike remains unattributed. The existing
 [release gates](ghostty-release-readiness.md) still apply before declaring
 cross-platform production readiness.
+
+## Follow-up review of 121b3d1
+
+All five findings in CodeRabbit's 09:20 UTC review were checked against the
+implementation, including the three comments outside the diff. No review replies
+were posted or threads resolved automatically.
+
+| Finding | Disposition |
+| --- | --- |
+| A descendant holding a Unix PTY slave prevents shutdown | Fixed with an interruptible reader. Live reads sleep indefinitely on PTY readiness and an explicit wake descriptor; there is no periodic polling. Child exit wakes the reader and drains ready bytes without waiting for an inherited slave to close. Continuing descendant output is capped at 2 MiB / 30 seconds and reports failure rather than silently claiming a complete drain. Explicit close, session drop, and channel failure also wake the reader. The existing output credit bound and Windows ConPTY ordering remain intact. |
+| A WebGL surface retains a renderer disposed during failed acquisition | Fixed by clearing surface ownership before acquisition and before reporting exhausted recovery. Theme, font, DPR, and resume failures use the same bounded recovery path. Tests cover successful replacement with selection preserved and failure of both the original configuration and recovery. Subsequent resize work cannot reach the retired renderer. |
+| Block cwd fails home abbreviation with Windows separators | Fixed with a shared normalized home-path formatter for block headers and the workspace input bar. Tests cover both separators, exact home paths, outside paths, and near-prefix directory names. |
+| Deferred atlas cleanup requires another call on GPU completion | No runtime change. `GlyphAtlas.completeSubmission()` synchronously moves encoded uploads into submitted ownership. The end of that same `flushFrame()` then rearms deferred cleanup, before the completion callback, even with no dirty surfaces. A regression test exercises actual atlas encoding, lease release, submission, completion, and timed destruction without scheduling another frame. Reaping on every GPU completion would add unnecessary work. |
+| Preserve raw ESC by splitting bracketed paste frames | Rejected. Terminal paste framing has no portable literal-ESC quoting contract across receiving applications; inserting raw ESC outside a frame can expose it to command/key interpretation. The pinned upstream Ghostty encoder also sanitizes ESC, including in bracketed paste. Terax retains its visible U+241B substitution and the existing tests for embedded closing delimiters and single-line submissions. |
+
+The paste disposition was checked against the pinned
+[Ghostty paste encoder](https://github.com/ghostty-org/ghostty/blob/f426f6f181ba95f45d33f683fb754b6359d9e04f/src/input/paste.zig).
+That encoder replaces ESC and other unsafe control bytes with spaces. This is
+evidence for sanitizing terminal text insertion, not a claim that our complete
+paste policy is identical to Ghostty's.
+
+### Follow-up validation and performance tradeoff
+
+- 165 frontend files / 1,140 tests and 356 Rust tests pass. One new native
+  throughput experiment is ignored in the normal suite and was run explicitly.
+- Types, production build, Clippy with warnings denied, and all five asset
+  budgets pass. The seven changed frontend files have no lint findings; overall
+  lint retains 89 existing warnings and one info. Both WASM artifacts are unchanged.
+- Real macOS PTYs verify retained-slave shutdown with final output preserved,
+  explicit cancellation of an idle reader, and a lossless 4 MiB live-output drain.
+- The interruptible reader adds a readiness syscall to live reads. An isolated
+  macOS arm64 comparison of six alternating 32 MiB drains per reader measured
+  median elapsed times of 244.46 ms (blocking) and 277.25 ms (interruptible), about
+  13.4% longer for the latter. The initial run overlapped other checks and varied
+  more; it is not used for this comparison. Neither run includes IPC, filtering,
+  the terminal model, or GPU rendering. This fixes a shutdown deadlock at a
+  measurable raw-read cost; packaged throughput and energy validation remain open.
+
+Reproduce the native comparison from `src-tauri`:
+
+```sh
+cargo test --locked compare_pollable_and_blocking_reader_throughput -- --ignored --nocapture
+```
+
+The prior pushed head `121b3d1` passed frontend, coverage, Rust/Linux, Rust/macOS,
+Rust/Windows, and terminal/macOS and terminal/Windows CI. New commits must pass
+the same CI gates. Those jobs do not establish packaged webview behavior or
+multi-day resource stability; the existing release gates remain open.

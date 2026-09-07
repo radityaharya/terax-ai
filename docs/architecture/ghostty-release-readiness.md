@@ -7,7 +7,7 @@ not evidence of multi-platform, multi-day production certification.
 
 ## September 7 PR review
 
-The [review dispositions](ghostty-review-2026-09-07.md) record all 27 CodeRabbit
+The [review dispositions](ghostty-review-2026-09-07.md) record the initial 27 CodeRabbit
 findings, fixes, and rejected suggestions. Allocation failure, renderer pool
 recovery, post-exit transport draining, block search responsiveness, scrollbar
 DOM work, WebGL rectangle uploads, draft retention, and accessible output were
@@ -16,6 +16,20 @@ Validation after merging main and applying the review fixes: 163 frontend files 
 1,128 tests, 353 Rust tests, types, production build, all five asset budgets, and
 Clippy pass. Lint retains 89 existing warnings and one info. Packaged platform
 and long-duration resource gates below remain open.
+
+The follow-up review of `121b3d1` adds three fixes: interruptible Unix PTY shutdown
+when a descendant retains the slave, WebGL surface ownership after failed
+reconfiguration/recovery, and consistent Windows home-path abbreviation. An
+actual atlas encoding/submission test confirms idle cleanup already rearms without
+another dirty frame. The unsafe raw-ESC paste suggestion was rejected after
+checking the pinned upstream implementation.
+
+Follow-up validation passes 165 frontend files / 1,140 tests, 356 Rust tests,
+types, Clippy, lint, production build, and all asset budgets. The Unix reader has
+no idle polling, but its readiness check added about 13.4% to an isolated raw
+32 MiB PTY drain benchmark on macOS. This is a correctness tradeoff, not evidence
+of improved application throughput; see the review report for the procedure and
+limits. Packaged throughput and all-day resource measurements still gate release.
 
 ## September 7 resource pass
 
