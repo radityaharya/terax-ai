@@ -120,9 +120,13 @@ export class WebGlTerminalSurface
   constructor(private readonly options: WebGlTerminalSurfaceOptions) {
     this.runtime = getWebGlTerminalRuntime();
     this.metrics = options.metrics;
-    this.pixelRatioMonitor = new DevicePixelRatioMonitor(() =>
-      this.resizeToHost(),
-    );
+    this.pixelRatioMonitor = new DevicePixelRatioMonitor(() => {
+      try {
+        this.resizeToHost();
+      } catch (error) {
+        this.handleRendererError(toError(error));
+      }
+    });
     this.theme = options.theme;
     this.cursorBlinking = options.cursorBlink;
     options.model.setCursorOptions(options.cursorStyle, options.cursorBlink);
@@ -208,7 +212,7 @@ export class WebGlTerminalSurface
     this.pixelRatioMonitor.start();
     this.resizeObserver.observe(container);
     if (this.visible && !this.documentSuspended) {
-      this.renderer = this.runtime.acquire(this, this.root, this.profile());
+      this.acquireRenderer();
       this.resizeToHost();
     }
     this.updateScrollbar();
@@ -262,8 +266,13 @@ export class WebGlTerminalSurface
       if (!this.documentSuspended) this.search.resume();
       if (this.host && !this.renderer && !this.documentSuspended) {
         this.scale = Math.max(1, window.devicePixelRatio || 1);
-        this.renderer = this.runtime.acquire(this, this.root, this.profile());
-        this.resizeToHost();
+        try {
+          this.acquireRenderer();
+          this.resizeToHost();
+        } catch (error) {
+          this.handleRendererError(toError(error));
+          return;
+        }
       }
       this.renderer?.resetModel();
       this.runtime.schedule(this);
@@ -292,19 +301,26 @@ export class WebGlTerminalSurface
     this.theme = theme;
     this.updateRootBackground();
     if (!this.renderer || !this.host || this.documentSuspended) return;
-    this.renderer = this.runtime.acquire(this, this.root, this.profile());
-    this.renderer.resetModel();
-    this.runtime.schedule(this);
+    try {
+      this.acquireRenderer().resetModel();
+      this.runtime.schedule(this);
+    } catch (error) {
+      this.handleRendererError(toError(error));
+    }
   }
 
   setFontMetrics(metrics: TerminalFontMetrics): void {
     if (fontMetricsKey(this.metrics) === fontMetricsKey(metrics)) return;
     this.metrics = metrics;
     if (this.renderer && this.host && !this.documentSuspended) {
-      this.renderer = this.runtime.acquire(this, this.root, this.profile());
-      this.resizeToHost();
-      this.renderer.resetModel();
-      this.runtime.schedule(this);
+      try {
+        this.acquireRenderer();
+        this.resizeToHost();
+        this.renderer?.resetModel();
+        this.runtime.schedule(this);
+      } catch (error) {
+        this.handleRendererError(toError(error));
+      }
     }
     this.updateScrollbar();
   }
@@ -401,13 +417,12 @@ export class WebGlTerminalSurface
   }
 
   handleRendererError(error: Error): void {
-    if (!this.disposed && this.documentSuspended) {
-      this.runtime.discard(this);
-      this.renderer = null;
-      return;
-    }
+    if (this.disposed) return;
+    this.discardRenderer();
+    this.clearCursorTimer();
+    this.clearTextBlinkTimer();
+    if (this.documentSuspended) return;
     if (
-      this.disposed ||
       this.recoveringRenderer ||
       this.consecutiveRendererErrors > 0 ||
       !this.visible ||
@@ -419,17 +434,14 @@ export class WebGlTerminalSurface
 
     this.consecutiveRendererErrors += 1;
     this.recoveringRenderer = true;
-    this.runtime.discard(this);
-    this.renderer = null;
     try {
-      this.renderer = this.runtime.acquire(this, this.root, this.profile());
+      this.acquireRenderer();
       this.resizeToHost();
-      this.renderer.resetModel();
+      this.renderer?.resetModel();
       this.rendererRecoveryCount += 1;
       this.runtime.schedule(this);
     } catch (recoveryError) {
-      this.runtime.discard(this);
-      this.renderer = null;
+      this.discardRenderer();
       this.options.onError(
         new Error(
           `WebGL renderer recovery failed after ${error.message}: ${toError(recoveryError).message}`,
@@ -517,8 +529,7 @@ export class WebGlTerminalSurface
       this.selection.suspend();
       if (reclaim) {
         this.options.model.releasePresentationResources();
-        this.runtime.discard(this);
-        this.renderer = null;
+        this.discardRenderer();
         this.runtime.trimForHiddenDocument();
       }
       return;
@@ -527,13 +538,13 @@ export class WebGlTerminalSurface
     this.search.resume();
     try {
       this.scale = Math.max(1, window.devicePixelRatio || 1);
-      this.renderer = this.runtime.acquire(this, this.root, this.profile());
+      this.acquireRenderer();
       this.resizeToHost();
-      this.renderer.requestPresentation();
+      this.renderer?.requestPresentation();
       this.runtime.schedule(this);
       this.armCursorBlink();
     } catch (error) {
-      this.options.onError(toError(error));
+      this.handleRendererError(toError(error));
     }
   };
 
@@ -553,6 +564,19 @@ export class WebGlTerminalSurface
       this.options.model.scrollTo(history - line);
     }
   };
+
+  private discardRenderer(): void {
+    this.runtime.discard(this);
+    this.renderer = null;
+  }
+
+  private acquireRenderer(): WebGlCellRenderer {
+    // Reconfiguration may dispose the previous lease before throwing.
+    this.renderer = null;
+    const renderer = this.runtime.acquire(this, this.root, this.profile());
+    this.renderer = renderer;
+    return renderer;
+  }
 
   private profile() {
     return {
@@ -629,7 +653,7 @@ export class WebGlTerminalSurface
     if (nextScale !== this.scale) {
       this.scale = nextScale;
       this.runtime.release(this);
-      this.renderer = this.runtime.acquire(this, this.root, this.profile());
+      this.acquireRenderer();
     }
 
     const bounds = measuredBounds ?? this.host.getBoundingClientRect();

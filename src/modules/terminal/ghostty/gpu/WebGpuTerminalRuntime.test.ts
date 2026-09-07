@@ -290,6 +290,41 @@ describe("WebGpuTerminalRuntime", () => {
     runtime.dispose();
   });
 
+  it("rearms deferred atlas cleanup after submission without another dirty surface", async () => {
+    vi.useFakeTimers();
+    const h = createHarness();
+    let complete = () => {};
+    h.onSubmittedWorkDone.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          complete = () => resolve(undefined);
+        }),
+    );
+    const runtime = await createRuntime();
+    const lease = runtime.acquireGlyphAtlas(METRICS, 1);
+    const surface = createSurface();
+    surface.renderFrame.mockImplementation((encoder) => {
+      lease.atlas.glyph(65, null, 0);
+      lease.atlas.encodePendingUploads(encoder);
+      expect(lease.atlas.hasEncodedUploads).toBe(true);
+      lease.release();
+      expect(vi.getTimerCount()).toBe(0);
+      return true;
+    });
+    runtime.register(surface);
+    runtime.schedule(surface);
+    h.flushFrame();
+    expect(h.submit).toHaveBeenCalledOnce();
+    expect(lease.atlas.hasEncodedUploads).toBe(false);
+    expect(vi.getTimerCount()).toBe(1);
+    expect(runtime.diagnostics().pendingSurfaces).toBe(0);
+    complete();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(runtime.diagnostics().atlasCount).toBe(0);
+    expect(h.frames.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("isolates a contended surface without duplicating normal atlas leases", async () => {
     createHarness();
     const runtime = await createRuntime();
@@ -398,7 +433,16 @@ function createHarness() {
       createView: vi.fn(() => ({})),
       destroy: vi.fn(),
     })),
-    createCommandEncoder: vi.fn(() => ({ finish: vi.fn(() => ({})) })),
+    createBuffer: vi.fn(({ size }: GPUBufferDescriptor) => ({
+      size,
+      getMappedRange: () => new ArrayBuffer(size),
+      unmap: vi.fn(),
+      destroy: vi.fn(),
+    })),
+    createCommandEncoder: vi.fn(() => ({
+      finish: vi.fn(() => ({})),
+      copyBufferToTexture: vi.fn(),
+    })),
     destroy: destroyDevice,
     lost: new Promise<GPUDeviceLostInfo>((resolve) => {
       loseDevice = resolve;
@@ -408,6 +452,7 @@ function createHarness() {
 
   vi.stubGlobal("GPUShaderStage", { VERTEX: 1, FRAGMENT: 2 });
   vi.stubGlobal("GPUTextureUsage", { COPY_DST: 1, TEXTURE_BINDING: 2 });
+  vi.stubGlobal("GPUBufferUsage", { COPY_SRC: 1 });
   const requestDevice = vi.fn(async () => device);
   vi.stubGlobal("navigator", {
     gpu: {
@@ -428,7 +473,19 @@ function createHarness() {
     createElement: vi.fn(() => ({
       width: 0,
       height: 0,
-      getContext: vi.fn(() => ({})),
+      getContext: vi.fn(() => ({
+        clearRect: vi.fn(),
+        measureText: () => ({}),
+        fillText: vi.fn(),
+        getImageData: (
+          _x: number,
+          _y: number,
+          width: number,
+          height: number,
+        ) => ({
+          data: new Uint8ClampedArray(width * height * 4),
+        }),
+      })),
     })),
   });
   vi.stubGlobal(
