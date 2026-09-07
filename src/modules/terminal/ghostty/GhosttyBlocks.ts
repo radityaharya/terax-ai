@@ -292,16 +292,58 @@ export class GhosttyBlocks {
     return false;
   }
 
-  searchBlock(id: string, query: string): BlockMatch[] {
+  async searchBlock(
+    id: string,
+    query: string,
+    signal?: AbortSignal,
+  ): Promise<BlockMatch[]> {
     const entry = this.entries.find((entry) => entry.id === id);
     const range = entry && this.range(entry);
-    if (!range || range.empty || !query || this.mode === "alt") return [];
+    if (
+      !entry ||
+      !range ||
+      range.empty ||
+      !query ||
+      this.mode === "alt" ||
+      signal?.aborted
+    )
+      return [];
+    const generation = this.clearGeneration;
+    const cols = this.model.cols;
     const matches: BlockMatch[] = [];
+    let sliceStart = performance.now();
     for (
       let line = range.start;
       line <= range.end && matches.length < 500;
       line++
     ) {
+      if (
+        line > range.start &&
+        ((line - range.start) % 128 === 0 ||
+          performance.now() - sliceStart >= 4)
+      ) {
+        await new Promise<void>((resolve) => {
+          const finish = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", finish);
+            resolve();
+          };
+          const timer = setTimeout(finish, 0);
+          signal?.addEventListener("abort", finish, { once: true });
+        });
+        sliceStart = performance.now();
+        if (
+          signal?.aborted ||
+          generation !== this.clearGeneration ||
+          this.model.isDisposed?.()
+        )
+          return [];
+        if (
+          cols !== this.model.cols ||
+          this.model.semanticMarkerLine(entry.start) !== range.start
+        )
+          return [];
+      }
       for (const match of matchCellText(this.model.readCellLine(line), query)) {
         if (line === range.start && match.col < range.startCol) continue;
         if (line === range.end && match.col + match.len > range.endCol + 1)

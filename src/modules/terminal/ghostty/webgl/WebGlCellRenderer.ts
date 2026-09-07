@@ -62,6 +62,7 @@ export type WebGlCellRendererStats = {
   readonly frames: number;
   readonly uploads: number;
   readonly uploadedGlyphBytes: number;
+  readonly uploadedRectangleBytes: number;
   readonly contextRecoveries: number;
 };
 
@@ -115,6 +116,14 @@ export class WebGlCellRenderer {
     attributes: new Float32Array(INITIAL_RECTANGLE_CAPACITY * RECTANGLE_FLOATS),
     count: 0,
   };
+  private rectangleRows = new Uint32Array(0);
+  private rectangleDirtyRows = new Uint8Array(0);
+  private readonly rectangleScratch: RectangleVertices = {
+    attributes: new Float32Array(0),
+    count: 0,
+  };
+  private uploadedRectangleBytes = 0;
+  private backgroundGpuBytes = 0;
   private readonly cursorVertices: RectangleVertices = {
     attributes: new Float32Array(RECTANGLE_FLOATS * 4),
     count: 0,
@@ -317,15 +326,20 @@ export class WebGlCellRenderer {
         this.flags.byteLength +
         this.decorations.byteLength +
         this.backgroundVertices.attributes.byteLength +
+        this.rectangleRows.byteLength +
+        this.rectangleDirtyRows.byteLength +
+        this.rectangleScratch.attributes.byteLength +
         this.cursorVertices.attributes.byteLength +
         this.uploadedCursor.byteLength,
-      gpuBufferBytes: this.glyphGpuCapacity * GLYPH_FLOATS * 4,
+      gpuBufferBytes:
+        this.glyphGpuCapacity * GLYPH_FLOATS * 4 + this.backgroundGpuBytes,
       canvasColorBytes: this.disposed
         ? 0
         : this.canvas.width * this.canvas.height * 4,
       frames: this.frameCount,
       uploads: this.uploadCount,
       uploadedGlyphBytes: this.uploadedGlyphBytes,
+      uploadedRectangleBytes: this.uploadedRectangleBytes,
       contextRecoveries: this.contextRecoveryCount,
     };
   }
@@ -358,6 +372,10 @@ export class WebGlCellRenderer {
     this.decorations = new Uint8Array(0);
     this.blinkingRows = new Uint8Array(0);
     this.backgroundVertices.attributes = new Float32Array(0);
+    this.rectangleRows = new Uint32Array(0);
+    this.rectangleDirtyRows = new Uint8Array(0);
+    this.rectangleScratch.attributes = new Float32Array(0);
+    this.backgroundGpuBytes = 0;
     this.cursorVertices.attributes = new Float32Array(0);
     this.glyphGpuCapacity = 0;
     this.cellCapacity = 0;
@@ -383,6 +401,7 @@ export class WebGlCellRenderer {
     this.contextLost = false;
     this.atlas = null;
     this.glyphGpuCapacity = 0;
+    this.backgroundGpuBytes = 0;
     this.resources = this.createResources();
     this.uploadedCursorCount = -1;
     if (this.profile) {
@@ -411,6 +430,10 @@ export class WebGlCellRenderer {
       damage.kind === "rows"
         ? damage.ranges
         : [{ start: 0, end: this.rows - 1 }];
+    if (this.rectangleDirtyRows.length !== this.rows) {
+      this.rectangleDirtyRows = new Uint8Array(this.rows);
+      this.rectangleRows = new Uint32Array(this.rows + 1);
+    }
     let stable = false;
     let rectanglesChanged = damage.kind === "full";
     for (let attempt = 0; attempt < 3 && !stable; attempt += 1) {
@@ -424,7 +447,7 @@ export class WebGlCellRenderer {
       if (!stable) ranges = [{ start: 0, end: this.rows - 1 }];
     }
     if (!stable) throw new Error("Visible glyphs exceed the atlas budget");
-    if (rectanglesChanged) this.buildBackgrounds();
+    if (rectanglesChanged) this.buildBackgrounds(damage.kind === "full");
     this.uploadGlyphs(ranges);
   }
 
@@ -444,6 +467,7 @@ export class WebGlCellRenderer {
 
     for (let row = first; row <= last; row += 1) {
       let rowHasBlinkingCell = false;
+      let rowRectanglesChanged = false;
       let previousBackground = this.packRgb(this.profile.theme.background);
       for (let column = 0; column < this.cols; column += 1) {
         const cellIndex = row * this.cols + column;
@@ -451,7 +475,7 @@ export class WebGlCellRenderer {
         const width = cells.width(cellIndex);
         this.clearGlyph(glyphIndex);
         if (width === 0) {
-          rectanglesChanged ||=
+          rowRectanglesChanged ||=
             this.backgrounds[cellIndex] !== previousBackground ||
             this.decorations[cellIndex] !== 0 ||
             (this.flags[cellIndex] & CellFlags.STRIKETHROUGH) !== 0;
@@ -492,7 +516,7 @@ export class WebGlCellRenderer {
         const underlineColor = cells.underlineColorPacked(cellIndex);
         const decoration =
           cells.underlineStyle(cellIndex) | (cells.overline(cellIndex) ? 8 : 0);
-        rectanglesChanged ||=
+        rowRectanglesChanged ||=
           this.backgrounds[cellIndex] !== background ||
           this.decorations[cellIndex] !== decoration ||
           ((this.flags[cellIndex] ^ flags) & CellFlags.STRIKETHROUGH) !== 0 ||
@@ -530,6 +554,8 @@ export class WebGlCellRenderer {
         }
         previousBackground = background;
       }
+      if (rowRectanglesChanged) this.rectangleDirtyRows[row] = 1;
+      rectanglesChanged ||= rowRectanglesChanged;
       const hadBlinkingCell = this.blinkingRows[row] !== 0;
       if (hadBlinkingCell !== rowHasBlinkingCell) {
         this.blinkingRowCount += rowHasBlinkingCell ? 1 : -1;
@@ -589,91 +615,152 @@ export class WebGlCellRenderer {
     this.glyphAttributes.fill(0, index, index + GLYPH_POSITION_OFFSET);
   }
 
-  private buildBackgrounds(): void {
-    if (!this.profile) return;
+  private buildBackgrounds(full: boolean): void {
     const vertices = this.backgroundVertices;
-    const defaultBackground = this.packRgb(this.profile.theme.background);
-    let count = 0;
-
-    for (let row = 0; row < this.rows; row += 1) {
-      let runStart = -1;
-      let runColor = defaultBackground;
-      for (let column = 0; column <= this.cols; column += 1) {
-        const index = row * this.cols + column;
-        const color =
-          column < this.cols ? this.backgrounds[index] : defaultBackground;
-        if (color === runColor) continue;
-        if (runStart >= 0 && runColor !== defaultBackground) {
-          this.writeRectangle(
-            vertices,
-            count++,
-            runStart,
-            row,
-            column - runStart,
-            1,
-            runColor,
-            1,
-          );
-        }
-        runStart = column;
-        runColor = color;
+    let first = vertices.count;
+    let last = 0;
+    if (full) {
+      let count = 0;
+      for (let row = 0; row < this.rows; row++) {
+        this.rectangleRows[row] = count;
+        count = this.buildBackgroundRow(row, vertices, count);
       }
-
-      for (let column = 0; column < this.cols; column += 1) {
-        const index = row * this.cols + column;
-        const flags = this.flags[index];
-        const decoration = this.decorations[index];
-        const underlineStyle = decoration & 7;
-        if (underlineStyle !== 0) {
-          const pixelLine =
-            1 / (this.profile.metrics.cellHeight * this.profile.scale);
-          const patterned = underlineStyle >= 2;
-          this.writeRectangle(
-            vertices,
-            count++,
-            column,
-            row + (patterned ? 0.78 : 0.88),
-            1,
-            Math.max(pixelLine, patterned ? 0.2 : 0.05),
-            this.underlineColors[index],
-            1,
-            underlineStyle,
-          );
+      this.rectangleRows[this.rows] = count;
+      vertices.count = count;
+      first = 0;
+      last = count;
+    } else {
+      for (let row = 0; row < this.rows; row++) {
+        if (!this.rectangleDirtyRows[row]) continue;
+        const start = this.rectangleRows[row];
+        const end = this.rectangleRows[row + 1];
+        const count = this.buildBackgroundRow(row, this.rectangleScratch, 0);
+        if (count !== end - start) {
+          // Structural changes rebuild the compact stream; stable rows use range uploads.
+          this.buildBackgrounds(true);
+          return;
         }
-        if ((flags & CellFlags.STRIKETHROUGH) !== 0) {
-          this.writeRectangle(
-            vertices,
-            count++,
-            column,
-            row + 0.5,
-            1,
-            Math.max(
-              1 / (this.profile.metrics.cellHeight * this.profile.scale),
-              0.05,
-            ),
-            this.foregrounds[index],
-            1,
-          );
-        }
-        if ((decoration & 8) !== 0) {
-          this.writeRectangle(
-            vertices,
-            count++,
-            column,
-            row + 0.08,
-            1,
-            Math.max(
-              1 / (this.profile.metrics.cellHeight * this.profile.scale),
-              0.05,
-            ),
-            this.foregrounds[index],
-            1,
-          );
-        }
+        vertices.attributes.set(
+          this.rectangleScratch.attributes.subarray(
+            0,
+            count * RECTANGLE_FLOATS,
+          ),
+          start * RECTANGLE_FLOATS,
+        );
+        first = Math.min(first, start);
+        last = Math.max(last, end);
       }
     }
-    vertices.count = count;
-    this.uploadRectangles(vertices, this.resources?.backgroundBuffer ?? null);
+    this.rectangleDirtyRows.fill(0);
+    const required = vertices.count * RECTANGLE_FLOATS * 4;
+    const buffer = this.resources?.backgroundBuffer;
+    if (!buffer || !required) return;
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    if (
+      required > this.backgroundGpuBytes ||
+      this.backgroundGpuBytes > Math.max(required * 4, 4096)
+    ) {
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        vertices.attributes.subarray(0, vertices.count * RECTANGLE_FLOATS),
+        gl.DYNAMIC_DRAW,
+      );
+      this.backgroundGpuBytes = required;
+      this.uploadedRectangleBytes += required;
+    } else if (last > first) {
+      const data = vertices.attributes.subarray(
+        first * RECTANGLE_FLOATS,
+        last * RECTANGLE_FLOATS,
+      );
+      gl.bufferSubData(gl.ARRAY_BUFFER, first * RECTANGLE_FLOATS * 4, data);
+      this.uploadedRectangleBytes += data.byteLength;
+    }
+  }
+
+  private buildBackgroundRow(
+    row: number,
+    vertices: RectangleVertices,
+    count: number,
+  ): number {
+    if (!this.profile) return count;
+    const defaultBackground = this.packRgb(this.profile.theme.background);
+    let runStart = -1;
+    let runColor = defaultBackground;
+    for (let column = 0; column <= this.cols; column += 1) {
+      const index = row * this.cols + column;
+      const color =
+        column < this.cols ? this.backgrounds[index] : defaultBackground;
+      if (color === runColor) continue;
+      if (runStart >= 0 && runColor !== defaultBackground) {
+        this.writeRectangle(
+          vertices,
+          count++,
+          runStart,
+          row,
+          column - runStart,
+          1,
+          runColor,
+          1,
+        );
+      }
+      runStart = column;
+      runColor = color;
+    }
+
+    for (let column = 0; column < this.cols; column += 1) {
+      const index = row * this.cols + column;
+      const flags = this.flags[index];
+      const decoration = this.decorations[index];
+      const underlineStyle = decoration & 7;
+      if (underlineStyle !== 0) {
+        const pixelLine =
+          1 / (this.profile.metrics.cellHeight * this.profile.scale);
+        const patterned = underlineStyle >= 2;
+        this.writeRectangle(
+          vertices,
+          count++,
+          column,
+          row + (patterned ? 0.78 : 0.88),
+          1,
+          Math.max(pixelLine, patterned ? 0.2 : 0.05),
+          this.underlineColors[index],
+          1,
+          underlineStyle,
+        );
+      }
+      if ((flags & CellFlags.STRIKETHROUGH) !== 0) {
+        this.writeRectangle(
+          vertices,
+          count++,
+          column,
+          row + 0.5,
+          1,
+          Math.max(
+            1 / (this.profile.metrics.cellHeight * this.profile.scale),
+            0.05,
+          ),
+          this.foregrounds[index],
+          1,
+        );
+      }
+      if ((decoration & 8) !== 0) {
+        this.writeRectangle(
+          vertices,
+          count++,
+          column,
+          row + 0.08,
+          1,
+          Math.max(
+            1 / (this.profile.metrics.cellHeight * this.profile.scale),
+            0.05,
+          ),
+          this.foregrounds[index],
+          1,
+        );
+      }
+    }
+    return count;
   }
 
   private updateCursor(frame: WebGlRendererFrame): boolean {

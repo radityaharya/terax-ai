@@ -1,6 +1,6 @@
 import { terminalWindowFocused } from "@/modules/terminal/ghostty/renderScheduling";
 import { bindTerminalInteraction } from "@/modules/terminal/ghostty/input/terminalInteraction";
-import { syncTerminalScrollbar } from "@/modules/terminal/ghostty/gpu/terminalScrollbar";
+import { TerminalScrollbarSync } from "@/modules/terminal/ghostty/gpu/terminalScrollbar";
 import {
   subscribeWindowPresentation,
   terminalWindowPresentation,
@@ -90,6 +90,8 @@ export class WebGlTerminalSurface
   private scale = 1;
   private visible = true;
   private synchronizedScrollTop: number | null = null;
+  private readonly scrollbarSync = new TerminalScrollbarSync();
+  private scrollbarViewportHeight = 0;
   private focused = false;
   private documentSuspended = !terminalWindowPresentation().visible;
   private resizeInteractionActive = terminalResizeInteractionActive();
@@ -254,6 +256,7 @@ export class WebGlTerminalSurface
   setVisible(visible: boolean): void {
     if (this.visible === visible) return;
     this.visible = visible;
+    this.scrollbarSync.invalidate();
     this.root.style.visibility = visible ? "visible" : "hidden";
     if (visible) {
       if (!this.documentSuspended) this.search.resume();
@@ -542,6 +545,7 @@ export class WebGlTerminalSurface
   private readonly handleScroll = (): void => {
     if (!this.host || !this.visible || this.documentSuspended) return;
     if (this.scrollbar.scrollTop === this.synchronizedScrollTop) return;
+    this.scrollbarSync.invalidate();
     const { history, offset } = this.options.model.scrollPosition();
     const line = Math.round(this.scrollbar.scrollTop / this.metrics.cellHeight);
     if (history - line !== offset) {
@@ -629,6 +633,8 @@ export class WebGlTerminalSurface
     }
 
     const bounds = measuredBounds ?? this.host.getBoundingClientRect();
+    this.scrollbarSync.invalidate();
+    this.scrollbarViewportHeight = Math.round(bounds.height);
     const fit = fitTerminalViewport(
       bounds.width,
       bounds.height,
@@ -674,8 +680,8 @@ export class WebGlTerminalSurface
 
   private updateScrollbar(): void {
     if (!this.host || !this.visible || this.documentSuspended) return;
-    this.synchronizedScrollTop = syncTerminalScrollbar(
-      this.host,
+    this.synchronizedScrollTop = this.scrollbarSync.sync(
+      this.scrollbarViewportHeight,
       this.scrollbar,
       this.scrollbarContent,
       this.options.model,

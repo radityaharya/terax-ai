@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { TeraxGhostty } from "@terax/ghostty-core/adapted";
 import { AdaptedGhosttyTerminalModel } from "@/modules/terminal/ghostty/AdaptedGhosttyTerminalModel";
 import {
@@ -40,6 +40,30 @@ describe.each(["ghostty-vt", "ghostty-vt-scalar"])(
         },
       };
     }
+
+    it("yields during large block searches and cancels without scanning the remaining history", async () => {
+      const { model, blocks, write, dispose } = create();
+      vi.useFakeTimers();
+      try {
+        write(
+          `\x1b]133;C;long\x07${"line\r\n".repeat(1000)}target\x1b]133;D;0\x07`,
+        );
+        const read = vi.spyOn(model, "readCellLine");
+        const cancel = new AbortController();
+        const stopped = blocks.searchBlock("1", "target", cancel.signal);
+        expect(read.mock.calls.length).toBeLessThanOrEqual(128);
+        cancel.abort();
+        expect(await stopped).toEqual([]);
+        expect(read.mock.calls.length).toBeLessThanOrEqual(128);
+        expect(vi.getTimerCount()).toBe(0);
+        const complete = blocks.searchBlock("1", "target");
+        await vi.runAllTimersAsync();
+        expect(await complete).toEqual([{ line: 1000, col: 0, len: 6 }]);
+      } finally {
+        vi.useRealTimers();
+        dispose();
+      }
+    });
 
     it("retains commands, status and output for multiple commands in one parse", () => {
       const { model, blocks, write, dispose } = create();
@@ -96,7 +120,7 @@ describe.each(["ghostty-vt", "ghostty-vt-scalar"])(
       }
     });
 
-    it("keeps selections and viewport intact while reading and searching blocks", () => {
+    it("keeps selections and viewport intact while reading and searching blocks", async () => {
       const { model, blocks, write, dispose } = create();
       try {
         write(
@@ -110,7 +134,7 @@ describe.each(["ghostty-vt", "ghostty-vt-scalar"])(
         const selection = model.trackedSelection();
         const origin = model.viewportOriginLine();
         expect(blocks.readById("1")?.output).toContain("日本語");
-        const matches = blocks.searchBlock("1", "日本語");
+        const matches = await blocks.searchBlock("1", "日本語");
         expect(matches[0]).toEqual({ line: 0, col: 5, len: 6 });
         expect(model.trackedSelection()).toEqual(selection);
         expect(model.viewportOriginLine()).toBe(origin);
@@ -143,7 +167,7 @@ describe.each(["ghostty-vt", "ghostty-vt-scalar"])(
       }
     });
 
-    it("selects and searches exact inline command boundaries", () => {
+    it("selects and searches exact inline command boundaries", async () => {
       const { model, blocks, write, dispose } = create();
       try {
         write("prompt \x1b]133;C;echo\x07output\x1b]133;D;0\x07 next");
@@ -156,7 +180,7 @@ describe.each(["ghostty-vt", "ghostty-vt-scalar"])(
         });
         if (!selection) throw new Error("Missing command selection");
         expect(model.selectionText(selection)).toBe("output");
-        expect(blocks.searchBlock("1", "next")).toEqual([]);
+        expect(await blocks.searchBlock("1", "next")).toEqual([]);
         blocks.revealMatch({ line: 0, col: 7, len: 6 });
         model.resize(10, 6);
         expect(model.blockSearchActive()).toBe(false);

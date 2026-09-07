@@ -9,17 +9,23 @@ export function detectTerminalLinks(text: string): TerminalTextLink[] {
     match = pattern.exec(text)
   ) {
     let uri = match[0].replace(/[.,;:!?]+$/, "");
-    for (const [open, close] of [
-      ["(", ")"],
-      ["[", "]"],
-      ["{", "}"],
-    ]) {
-      while (
-        uri.endsWith(close) &&
-        uri.split(close).length > uri.split(open).length
-      )
-        uri = uri.slice(0, -1);
+    const balance = [0, 0, 0];
+    const opens = "([{",
+      closes = ")]}";
+    for (let index = 0; index < uri.length; index++) {
+      const open = opens.indexOf(uri[index]);
+      const close = closes.indexOf(uri[index]);
+      if (open >= 0) balance[open]++;
+      if (close >= 0) balance[close]--;
     }
+    let end = uri.length;
+    while (end > 0) {
+      const close = closes.indexOf(uri[end - 1]);
+      if (close < 0 || balance[close] >= 0) break;
+      balance[close]++;
+      end--;
+    }
+    uri = uri.slice(0, end);
     try {
       const parsed = new URL(uri);
       if (parsed.protocol !== "mailto:" && !parsed.hostname) continue;

@@ -25,8 +25,9 @@ export default function GhosttyBlockOverlay({ leafId }: { leafId: number }) {
         subscribe={state.subscribeViewport}
         getVisible={getVisible}
         readOutput={(id) => state.controller?.readById(id)?.output ?? null}
-        searchBlock={(id, query) =>
-          state.controller?.searchBlock(id, query) ?? []
+        searchBlock={(id, query, signal) =>
+          state.controller?.searchBlock(id, query, signal) ??
+          Promise.resolve([])
         }
         revealMatch={(match) => state.controller?.revealMatch(match)}
         clearSearch={() => state.controller?.clearSearch()}

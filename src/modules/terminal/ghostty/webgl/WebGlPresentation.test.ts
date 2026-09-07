@@ -129,6 +129,21 @@ it("keeps unchanged WebGL frames idle, retains cursor buffers, and presents cach
     expect(renderer.render(rowDamage)).toBe(true);
     expect(upload).toHaveBeenCalledOnce();
     expect(upload?.mock.calls[0][1].length).toBe(9);
+    renderer.render({ ...frame, damage: { kind: "full" } });
+    const rectangleBytes = renderer.diagnostics().uploadedRectangleBytes;
+    upload?.mockClear();
+    glyphUpload?.mockClear();
+    background = 0x223344;
+    renderer.render(rowDamage);
+    expect(upload).not.toHaveBeenCalled();
+    expect(renderer.diagnostics().uploadedRectangleBytes - rectangleBytes).toBe(
+      36,
+    );
+    expect(
+      glyphUpload?.mock.calls.some(
+        (call) => call[1] === 3 * 36 && call[2].byteLength === 36,
+      ),
+    ).toBe(true);
     background = 0;
     upload?.mockClear();
     expect(renderer.render(rowDamage)).toBe(true);
