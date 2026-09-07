@@ -284,9 +284,28 @@ or long-duration stability. Do not use them as application performance claims.
 | Memory and energy | Attributed host, WebContent, and GPU processes; 1/5/10/20 tabs, hidden streaming, sustained agents, and multi-hour or multi-day timelines |
 | xterm removal | Implemented: no dependencies, addons, CSS, legacy pool, snapshots, dormant ring, or compatibility adapter remain. Renderer provenance/license files are retained. |
 
-The checked-in Tauri configuration currently declares macOS 13.0 as its minimum
-(the migration handoff and earlier TERAX.md text said 10.15). The configuration
-was not changed by this hardening pass.
+### Platform configuration and validation
+
+The checked-in Tauri configuration declares macOS 13.0 as its minimum, as does
+the merged `origin/main` configuration. The migration handoff's 10.15 minimum was
+stale; this review did not raise the deployment target. A packaged run on macOS
+13 with its WKWebView remains required before signing off that minimum.
+
+Windows uses a per-user NSIS installer with `downloadBootstrapper`; it does not
+bundle a WebView2 runtime. If the runtime is missing, installing it requires
+internet access. Offline installation therefore requires a compatible runtime
+to be provisioned separately beforehand. This retains the current installer
+footprint; it does not provide an offline WebView2 installer. See
+[Tauri's WebView2 installation modes](https://v2.tauri.app/distribute/windows-installer/#webview2-installation-options).
+Validate packaged installation with an existing runtime while offline, a missing
+runtime while online, and the failure behavior with a missing runtime while
+offline. No `minimumWebview2Version` is configured; compatibility with older
+installed runtimes still needs packaged testing before choosing a tested minimum.
+
+Linux packages declare WebKitGTK 4.1 and GTK 3 dependencies. Packaged WebKitGTK
+behavior and the oldest supported distribution/runtime combination still need
+validation. The passing Linux, macOS, and Windows CI jobs on `4c59c89` exercise
+compilation and automated tests; they do not run packaged GUI or installer tests.
 
 The scalar artifact addresses the instruction-set dependency; it does not by
 itself certify all supported WebKit versions or change the OS support policy.

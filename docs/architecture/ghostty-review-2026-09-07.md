@@ -106,3 +106,26 @@ The prior pushed head `121b3d1` passed frontend, coverage, Rust/Linux, Rust/macO
 Rust/Windows, and terminal/macOS and terminal/Windows CI. New commits must pass
 the same CI gates. Those jobs do not establish packaged webview behavior or
 multi-day resource stability; the existing release gates remain open.
+
+## Follow-up review of 4c59c89
+
+Checked all four findings in CodeRabbit's 11:39 UTC review, including its outside
+diff comment and platform-validation nitpick.
+
+| Finding | Disposition |
+| --- | --- |
+| Unix reader tests fail to compile on Windows | False positive. The enclosing `tests` module already has `#[cfg(all(test, unix))]`; both cited `Session` initializers are inside it. The separate portable `flow_control_tests` module remains enabled on Windows. Windows Rust CI passed on the reviewed head. No Rust change is needed. |
+| Windows home-path comparison should ignore casing | Fixed for drive and UNC paths while retaining POSIX case sensitivity and directory boundaries. Only the compared home prefix is folded; the displayed relative suffix retains its original case. Added regressions for mismatched casing, exact home, UNC paths, different drives/shares, near-prefix directories, and POSIX case differences. |
+| Documentation should describe a retained xterm-session fallback | False positive. The dependency manifest and lockfile contain no xterm packages. Backend selection and surface replacement only use Ghostty WebGPU/WebGL, followed by a visible retryable display error. Existing import/dependency tests guard removal. Remaining xterm names describe protocol compatibility, discarded old preferences, or renderer attribution and licensing. The Ghostty-only architecture summary remains correct. |
+| Close platform and offline-install validation gates | The evidence gap is valid, but cannot be closed by changing prose. Clarified the existing macOS 13 deployment target, Windows WebView2 network/offline prerequisites, and Linux dependencies. These settings also exist on merged main. Packaged GUI, old-webview, and installer scenarios remain explicitly unverified; no support minimum or installer mode was changed. |
+
+The reviewed head passed all test/build/coverage CI jobs, including Rust on
+Linux, macOS, and Windows and terminal tests on macOS and Windows:
+[CI run 34116210880](https://github.com/crynta/terax-ai/actions/runs/34116210880).
+No PR replies were posted or review threads resolved automatically.
+
+Validation of this follow-up: 165 frontend files / 1,148 tests, TypeScript via
+the production build, lint, and all five asset budgets pass. The changed path
+files also pass Biome formatting/import checks. The existing 89 lint warnings
+and one info remain. Rust, WASM, renderer, and installer code are unchanged;
+their current CI evidence is the reviewed head above.
