@@ -5,6 +5,113 @@ ownership around desktop transitions, occlusion, and sleep. It does not yet
 attribute the reported Activity Monitor spike to a specific process or prove
 multi-day application memory and energy stability.
 
+## September 7 allocation and redundant-work pass
+
+The baseline is `0e3fae9`. The current core is built from Ghostty
+`f426f6f181ba95f45d33f683fb754b6359d9e04f`, with identical Terax semantics and
+both SIMD and scalar variants. The inspected upstream release list has a
+[nightly WASM artifact](https://github.com/ghostty-org/ghostty/releases/tag/tip),
+but no tagged stable standalone libghostty WASM release. The
+[source comparison](https://github.com/ghostty-org/ghostty/compare/349f026087d948f8f898dca3231ff91438f83ab8...f426f6f181ba95f45d33f683fb754b6359d9e04f)
+includes page allocation and fixed terminal memory reductions. Upstream alone
+saved only one 64 KiB WASM page in the 20-model allocation test, so its native
+allocation claims are not used as Terax memory or CPU claims.
+
+The larger changes are in Terax's resource ownership and presentation:
+
+- Native renderer cell arrays are created on first presentation. Reclamation
+  frees those arrays and the grapheme, hyperlink and placement snapshots while
+  retaining parser, scrollback, selection and command pins. Later hidden writes
+  and resizes do not recreate presentation. Failed handle allocation also cleans
+  up the previously allocated native terminal.
+- WebGPU skips unchanged uniform uploads and presentation texture acquisition.
+  WebGL skips unchanged draws and cursor uploads. Context recovery invalidates
+  the cursor cache so a restored buffer is populated before drawing.
+- Text-only partial WebGL updates no longer rebuild all background rectangles
+  when background and decoration state is unchanged. Empty rectangle sets do
+  not allocate zero-length GPU stores.
+- Cursor and text timers stop when the window is unfocused. Native hidden
+  cursors stop their blink timers. Focus restoration uses one damage request
+  when a hidden blink phase needs to become visible.
+- Short visibility pauses redraw retained GPU data without repacking cells.
+  Sustained WebGPU reclamation unconfigures the canvas before shrinking it,
+  avoiding a configured resize immediately before teardown. This addresses
+  owned allocation churn, not proven compositor or Activity Monitor behavior.
+- Selection updates merge the affected old and new row ranges without syncing
+  native render state or invalidating text caches. Unchanged scrollbar state
+  causes no DOM writes. Active search coalesces output invalidations into one
+  scheduled step and stops that work while hidden.
+- The WebGL surface, renderer and shaders are outside the primary terminal's
+  static import graph. Import completion and failure are checked against the
+  session generation, model and surface before installing a fallback. Closing
+  or replacing the session while loading cannot revive old resources.
+
+Allocation measurements for blank 120x40 terminal models, before first render:
+
+| Models | Baseline WASM | Candidate WASM |
+| ---: | ---: | ---: |
+| 1 | 2.250 MiB | 1.938 MiB |
+| 5 | 5.000 MiB | 3.688 MiB |
+| 10 | 8.500 MiB | 5.938 MiB |
+| 20 | 15.438 MiB | 10.375 MiB |
+
+Twenty models save 5.0625 MiB, or 32.8% of this measured WASM allocation.
+WASM linear memory cannot shrink while its instance is alive; released storage
+is reusable by other models and later presentations. These numbers are not
+total application RSS or the cost of 20 simultaneously rendered panes.
+
+The [profile report](ghostty-resource-profile-2026-09-07.json) records exact
+artifact hashes and raw timings. Each artifact and revision runs in a fresh
+Node process to avoid the order sensitivity seen when several WASM instances
+shared JavaScript call sites. Median times for 10,000 updates:
+
+| Variant | Workload | Baseline | Candidate |
+| --- | --- | ---: | ---: |
+| SIMD | One-row editing | 10.72 ms | 10.89 ms |
+| SIMD | Scrolling output | 217.24 ms | 220.58 ms |
+| SIMD | OSC prompt events | 6.69 ms | 6.78 ms |
+| Scalar | One-row editing | 10.86 ms | 10.84 ms |
+| Scalar | Scrolling output | 218.96 ms | 215.47 ms |
+| Scalar | OSC prompt events | 6.68 ms | 6.83 ms |
+
+These short core timings are effectively near-neutral; they do not measure the
+avoided GPU, DOM or search work. The [paired stress report](ghostty-resource-soak-2026-09-07.json)
+records 655,360 writes and 62,684,160 bytes per variant with command tracking,
+scrollback, Unicode, hyperlinks, resize and presentation release. Both baseline
+and candidate finish at 68.125 MiB with zero growth in the final 16 samples.
+Single-run timings vary and do not establish a sustained application CPU gain.
+The first longer SIMD run took 14.42 seconds versus 13.61 seconds at baseline.
+A fresh-process repeat with candidate first took 13.799 seconds versus 13.798
+seconds at baseline; both repeats retained the same memory plateau. The report
+preserves both observations instead of claiming a CPU gain from one run.
+
+Regression tests assert zero uploads and draws for 100 unchanged scheduled
+frames; one-row uploads of 7,680 bytes in WebGPU and 4,800 glyph bytes in WebGL;
+no cell repack after a short pause; no blink wakeups for hidden cursors or an
+unfocused window; one search step for 1,000 coalesced invalidations; and selection
+row damage without native render updates. Graphics tests use instrumented API
+doubles, so packaged GPU timing and device behavior remain separate gates.
+
+Reproduce the per-artifact comparison:
+
+```sh
+mkdir -p /tmp/terax-core-baseline
+git show 0e3fae9:packages/ghostty-core/adapted/ghostty-vt.wasm > /tmp/terax-core-baseline/ghostty-vt.wasm
+git show 0e3fae9:packages/ghostty-core/adapted/ghostty-vt-scalar.wasm > /tmp/terax-core-baseline/ghostty-vt-scalar.wasm
+TERAX_PROFILE_BASELINE=/tmp/terax-core-baseline TERAX_PROFILE_REPORT=/tmp/terax-core-profile.json pnpm profile:ghostty
+```
+
+`TERAX_PROFILE_REVERSE=1` reverses revision order. Run without concurrent builds
+or other heavy workloads. `TERAX_SOAK_CORE_DIR` and `TERAX_SOAK_ARTIFACT` optionally
+select a preserved artifact for the longer stress test; the default still tests
+both current variants. This tooling is outside the shipped application.
+
+The final primary terminal entry and shared presentation group is 45.78 kB gzip,
+versus the previous 55.94 kB combined entry. The on-demand WebGL group is 13.62
+kB and has its own 15 kB budget. Total client JavaScript remains 1.42 MB gzip;
+splitting changes loading cost, not whether fallback code is shipped. Exact
+build and signature checks are recorded in [release readiness](ghostty-release-readiness.md).
+
 ## Window lifecycle
 
 One shared frontend subscription combines DOM visibility with native macOS
@@ -35,7 +142,7 @@ native covered-window reporting is not implemented there.
 Interaction deadlines are per pane and expire without a timer. Wheel, scrollbar,
 drag, and keyboard events can preempt a pending background pacing delay; they do
 not schedule a frame without damage or wake hidden surfaces. Reclamation now
-also shrinks the WebGPU canvas to 1x1 before unconfiguring it. CSS dimensions and
+also unconfigures the WebGPU canvas before shrinking it to 1x1. CSS dimensions and
 the pending target size survive, and exact storage returns in the next rendered
 transaction. Short desktop transitions still preserve presentation unchanged.
 
@@ -126,10 +233,9 @@ overlays compare their fields without serializing command/cwd metadata on every
 frame. Repeated command-editor activity states do not request terminal rendering;
 empty scrollbar-ruler positions do not allocate SVG command strings.
 
-The symbol fallback adds a fixed 772,032-byte WOFF2 asset (1,816,952-byte expanded
-SFNT, not an RSS estimate). One face is loaded per window; no font installation,
-network font request, or additional renderer is needed. Its source, license,
-rebuild procedure and hash are in `src/assets/fonts/README.md`.
+The September 6 symbol fallback added a 772,032-byte WOFF2 asset. It was removed
+on September 7; current builds rely on installed fonts for private-use symbols
+and retain system fallback for native color emoji.
 
 A read-only `footprint --noCategories` sample of the existing packaged Terax host
 on September 6 reported 59,934,016 bytes of physical footprint and a 63,472,960-byte
@@ -163,7 +269,7 @@ counters and host RSS; host RSS alone is not total application memory. Owned
 allocation estimates must not be added to process RSS, which would double-count
 memory. GPU canvas estimates exclude compositor and driver allocations.
 
-## Build verification
+## Earlier build verification
 
 The final macOS arm64 candidate passed 150 frontend test files / 972 tests,
 TypeScript checking, lint, 333 Rust tests, Clippy with warnings denied, and the

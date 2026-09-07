@@ -34,6 +34,16 @@ A change to a core subsystem (terminal/shell spawn, workspace auth, git, fs, IPC
 libghostty-vt is the only terminal model. WebGPU is the default renderer and
 Terax WebGL is the compatibility fallback. Each leaf owns one persistent model;
 presentation resources are shared, bounded, and released for hidden leaves.
+Native cell, grapheme and hyperlink presentation buffers allocate on first use
+and return to the WASM allocator when presentation is reclaimed. Hidden parsing
+does not rebuild them. Short visibility pauses retain uploaded cell data.
+Unchanged frames do not acquire presentation textures or draw; cursor-only
+updates retain cell buffers. Blink timers stop in unfocused windows, and native
+cursor hiding stops cursor timers. Selection damages only its old and new rows;
+streaming search invalidations coalesce instead of rebuilding per output chunk.
+WebGL surface and renderer code load only when selected, needed for fallback,
+or explicitly requested by diagnostics. Delayed imports cannot install into a
+closed, restarted, or replaced session.
 xterm, its addons, CSS, snapshots, session pool, and dormant byte ring are removed.
 Unsupported graphics produce a visible error with retry instead of changing models.
 
@@ -111,7 +121,9 @@ frame loop. Reclaimed WebGPU canvases shrink to 1x1 while retaining their target
 geometry for the next presentation transaction.
 `window.__teraxTermTrace()` explicitly starts a bounded ten-minute resource trace;
 it is never started automatically. `pnpm soak:ghostty` exercises real WASM models
-without launching the application. Resource evidence and limitations live in
+without launching the application. `pnpm profile:ghostty` compares allocation
+and parsing workloads in a fresh process per artifact and optional baseline.
+Resource evidence and limitations live in
 `docs/architecture/ghostty-resource-efficiency.md`.
 
 The release gates and current verification evidence are in

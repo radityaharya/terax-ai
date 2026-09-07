@@ -19,6 +19,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "bench:ghostty": "vitest bench src/modules/terminal/ghostty/AdaptedGhostty.bench.ts --run",
+    "profile:ghostty": "node scripts/ghostty-profile.mjs",
     "soak:ghostty": "vitest run --config scripts/ghostty-soak.config.ts",
     "check-types": "tsc --noEmit",
     "lint": "biome lint ./src",

@@ -5,6 +5,52 @@ still open. xterm and its addons are removed. All terminals, including blocks,
 use Ghostty with WebGPU or Terax WebGL. This is a testable release candidate,
 not evidence of multi-platform, multi-day production certification.
 
+## September 7 resource pass
+
+- Native presentation arrays and their auxiliary storage are lazy and reclaimed
+  with presentation. Twenty blank 120x40 models use 10.375 MiB of WASM memory,
+  down from 15.4375 MiB at `0e3fae9`. Parser and scrollback ownership remain.
+- GPU and WebGL skip unchanged uploads and draws. Short window pauses reuse
+  uploaded cells; cursor/text blink timers stop in unfocused windows, and
+  application-hidden cursors stop their timer. WebGL text-only row updates skip
+  rebuilding unchanged background rectangles. Selection row damage and search
+  invalidation coalescing avoid redundant viewport work.
+- WebGL is loaded on selection or fallback, with generation/model/surface
+  checks around asynchronous import. Import-graph and late-import tests guard
+  this boundary. Canvas teardown unconfigures before resizing, but the reported
+  desktop-transition process memory spike remains unattributed.
+- Ghostty is pinned to `f426f6f181ba95f45d33f683fb754b6359d9e04f`; both WASM
+  variants were rebuilt and checksummed. No stable standalone libghostty WASM
+  release was found in the inspected upstream list. The source update does not
+  establish an application CPU or battery improvement.
+- Type checking, 154 frontend files / 1,013 tests, production Vite build, all
+  five asset budgets, Rust Clippy with warnings denied, and 333 Rust tests pass.
+  Lint has the same 94 existing warnings and one informational diagnostic;
+  all 17 changed TypeScript files are free of lint findings.
+- Startup JS is 226.39 kB gzip; total client JS is 1.42 MB. The primary terminal
+  entry plus shared presentation code is 45.78 kB / 56 kB, versus 55.94 kB in
+  the previous combined entry. WebGL has a separate 13.62 kB / 15 kB budget.
+  The combined WASM variants are 413.4 kB / 450 kB. No existing budget was raised;
+  the fallback has an explicit budget instead of disappearing from accounting
+  when moved to separate chunks. Total shipped JS still has its original cap.
+- Both stress variants process 655,360 updates with native command pins and
+  finish at 68.125 MiB of WASM with zero tail growth. A repeated isolated SIMD
+  run took 13.799 seconds versus 13.798 seconds for baseline. The
+  [resource report](ghostty-resource-efficiency.md) records raw samples, earlier
+  timing variation, ownership tests, and measurement limits.
+
+The final macOS arm64 candidate was built separately as
+`src-tauri/target/release/bundle/macos/Terax Resource Candidate.app` to avoid
+replacing the running `Terax.app`. It occupies 9,848 KiB on disk, and its local
+ad-hoc signature passes `codesign --verify --deep --strict`. It was not launched
+or installed. Its application identifier is unchanged, so quit the existing
+Terax before switching to the candidate for manual testing.
+
+These checks establish reproducible core/resource invariants. They do not close
+packaged throughput, real GPU fault injection, macOS desktop-switch attribution,
+all-day RAM/energy measurements, or Windows/Linux platform validation. A release
+claim still needs those measurements; unit/API-double tests cannot replace them.
+
 ## September 7 block cleanup and font policy
 
 - Removed the 772,032-byte bundled private-use symbol font, its build script and

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { TeraxGhostty } from "@terax/ghostty-core/adapted";
 import { afterAll, expect, it } from "vitest";
 
@@ -11,9 +12,12 @@ const fixtures = Array.from({ length: 256 }, (_, index) => new TextEncoder().enc
   `${blockTracking && index % 32 === 0 ? "\x1b]133;C;agent batch\x07" : ""}\x1b[38;5;${index}magent ${index} λ 日本語 🙂 \x1b]8;;https://example.test/source/${index}\x1b\\source\x1b]8;;\x1b\\\x1b[0m\r\n${blockTracking && index % 32 === 31 ? "\x1b]133;D;0\x07" : ""}`,
 ));
 
-for (const artifact of ["ghostty-vt.wasm", "ghostty-vt-scalar.wasm"]) {
+const artifacts = process.env.TERAX_SOAK_ARTIFACT
+  ? [process.env.TERAX_SOAK_ARTIFACT]
+  : ["ghostty-vt.wasm", "ghostty-vt-scalar.wasm"];
+for (const artifact of artifacts) {
   it(`${artifact}: five models plateau under streaming, reflow, and presentation recycling`, async () => {
-    const bytes = await readFile(new URL(`../packages/ghostty-core/adapted/${artifact}`, import.meta.url));
+    const bytes = await readFile(resolve(process.env.TERAX_SOAK_CORE_DIR ?? "packages/ghostty-core/adapted", artifact));
     const core = await TeraxGhostty.loadBytes(Uint8Array.from(bytes).buffer);
     const models = Array.from({ length: 5 }, () => core.createTerminal(120, 40, {
       maxScrollbackBytes: 8 * 1024 * 1024,
