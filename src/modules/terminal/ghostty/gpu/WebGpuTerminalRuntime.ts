@@ -31,6 +31,7 @@ export type WebGpuSharedResources = {
 };
 
 export interface WebGpuRuntimeSurface {
+  handleWindowFocus?(focused: boolean): void;
   renderFrame(
     encoder: GPUCommandEncoder,
     resources: WebGpuSharedResources,
@@ -139,6 +140,7 @@ export class WebGpuTerminalRuntime {
     this.assertLive();
     this.assertHealthy();
     this.surfaces.add(surface);
+    surface.handleWindowFocus?.(this.windowFocused);
     const state = terminalWindowPresentation();
     surface.handleVisibilityChange(
       state.visible && !this.pendingRecoveryReason && !this.recovering,
@@ -361,6 +363,7 @@ export class WebGpuTerminalRuntime {
   private readonly handleWindowFocus = (focused: boolean): void => {
     if (this.windowFocused === focused) return;
     this.windowFocused = focused;
+    for (const surface of this.surfaces) surface.handleWindowFocus?.(focused);
     this.cancelScheduledFrame();
     this.requestFrame();
   };

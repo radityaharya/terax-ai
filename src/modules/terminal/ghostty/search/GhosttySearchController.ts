@@ -89,6 +89,10 @@ export class GhosttySearchController implements TerminalSearchController {
     this.step();
   }
 
+  invalidate(): void {
+    if (!this.disposed && !this.suspended && this.query) this.scheduleStep();
+  }
+
   matchAt(row: number, column: number): 0 | 1 | 2 {
     if (
       row < 0 ||
@@ -138,6 +142,7 @@ export class GhosttySearchController implements TerminalSearchController {
     this.rebuildViewportMask();
     this.onChange();
     if (!this.status.complete) this.scheduleStep();
+    else this.cancelStep();
   }
 
   private rebuildViewportMask(): void {

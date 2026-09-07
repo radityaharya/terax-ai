@@ -19,6 +19,7 @@ export const MIN_WARM_WEBGL_RENDERER_SLOTS = 1;
 export const WEBGL_RENDERER_IDLE_TTL_MS = 30_000;
 
 export interface WebGlRuntimeSurface {
+  handleWindowFocus?(focused: boolean): void;
   renderFrame(renderer: WebGlCellRenderer): boolean;
   handleRendererError(error: Error): void;
   isFocused(): boolean;
@@ -95,6 +96,7 @@ export class WebGlTerminalRuntime {
     profile: WebGlRendererProfile,
   ): WebGlCellRenderer {
     this.assertLive();
+    surface.handleWindowFocus?.(this.windowFocused);
     const existing = this.leases.get(surface);
     if (existing) {
       const key = rendererProfileKey(profile);
@@ -260,6 +262,8 @@ export class WebGlTerminalRuntime {
   private readonly handleWindowFocus = (focused: boolean): void => {
     if (this.windowFocused === focused) return;
     this.windowFocused = focused;
+    for (const surface of this.leases.keys())
+      surface.handleWindowFocus?.(focused);
     this.cancelScheduledFrame();
     this.requestFrame();
   };

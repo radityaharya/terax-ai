@@ -131,6 +131,51 @@ describe("GhosttySearchController", () => {
     expect(onChange).toHaveBeenCalledTimes(2);
   });
 
+  it("coalesces streaming invalidations and cancels work when hidden or disposed", () => {
+    let callback: (() => void) | null = null;
+    const scheduler = {
+      request: vi.fn((next: () => void) => {
+        callback = next;
+        return 1;
+      }),
+      cancel: vi.fn(() => {
+        callback = null;
+      }),
+    };
+    const model = {
+      cols: 2,
+      rows: 1,
+      setSearchQuery: vi.fn(() => completeStatus),
+      stepSearch: vi.fn(() => completeStatus),
+      selectSearchMatch: vi.fn(() => completeStatus),
+      searchViewportMatches: vi.fn(() => []),
+    } as unknown as GhosttyTerminalModelApi;
+    const controller = new GhosttySearchController(model, vi.fn(), scheduler);
+    controller.invalidate();
+    expect(scheduler.request).not.toHaveBeenCalled();
+    controller.findNext("agent");
+    vi.mocked(model.stepSearch).mockClear();
+    vi.mocked(model.searchViewportMatches).mockClear();
+    for (let index = 0; index < 1_000; index++) controller.invalidate();
+    expect(scheduler.request).toHaveBeenCalledOnce();
+    expect(model.stepSearch).not.toHaveBeenCalled();
+    expect(model.searchViewportMatches).not.toHaveBeenCalled();
+    const run = callback as (() => void) | null;
+    run?.();
+    expect(model.stepSearch).toHaveBeenCalledOnce();
+    expect(model.searchViewportMatches).toHaveBeenCalledOnce();
+    controller.invalidate();
+    controller.suspend();
+    expect(callback).toBeNull();
+    scheduler.request.mockClear();
+    controller.invalidate();
+    expect(scheduler.request).not.toHaveBeenCalled();
+    controller.resume();
+    controller.invalidate();
+    controller.dispose();
+    expect(callback).toBeNull();
+  });
+
   it("cancels pending work and clears Ghostty search state", () => {
     const cancel = vi.fn();
     const model = {

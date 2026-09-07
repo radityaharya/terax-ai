@@ -119,6 +119,10 @@ export class WebGlCellRenderer {
     attributes: new Float32Array(RECTANGLE_FLOATS * 4),
     count: 0,
   };
+  private readonly uploadedCursor = new Float32Array(RECTANGLE_FLOATS);
+  private uploadedCursorCount = -1;
+  private forcePresent = true;
+  private lastTextBlinkVisible = true;
   private glyphInstanceCount = 0;
   private glyphGpuCapacity = 0;
   private cellCapacity = 0;
@@ -256,14 +260,31 @@ export class WebGlCellRenderer {
       ? { kind: "full" as const }
       : frame.damage;
     if (damage.kind !== "none") this.updateModel(frame, damage);
-    this.updateCursor(frame);
+    const cursorChanged = this.updateCursor(frame);
+    const blinkChanged =
+      this.hasBlinkingCells &&
+      this.lastTextBlinkVisible !== frame.textBlinkVisible;
+    if (
+      damage.kind === "none" &&
+      !cursorChanged &&
+      !blinkChanged &&
+      !this.forcePresent
+    )
+      return false;
     this.draw(frame.textBlinkVisible);
+    this.forcePresent = false;
+    this.lastTextBlinkVisible = frame.textBlinkVisible;
     this.forceFullRedraw = false;
     this.frameCount += 1;
     return true;
   }
 
+  requestPresentation(): void {
+    this.forcePresent = true;
+  }
+
   resetModel(): void {
+    this.uploadedCursorCount = -1;
     this.forceFullRedraw = true;
     resetGlyphGrid(this.glyphAttributes, this.cols, this.rows);
     const cells = this.cols * this.rows;
@@ -296,7 +317,8 @@ export class WebGlCellRenderer {
         this.flags.byteLength +
         this.decorations.byteLength +
         this.backgroundVertices.attributes.byteLength +
-        this.cursorVertices.attributes.byteLength,
+        this.cursorVertices.attributes.byteLength +
+        this.uploadedCursor.byteLength,
       gpuBufferBytes: this.glyphGpuCapacity * GLYPH_FLOATS * 4,
       canvasColorBytes: this.disposed
         ? 0
@@ -362,6 +384,7 @@ export class WebGlCellRenderer {
     this.atlas = null;
     this.glyphGpuCapacity = 0;
     this.resources = this.createResources();
+    this.uploadedCursorCount = -1;
     if (this.profile) {
       this.atlas = new WebGlGlyphAtlas(
         this.gl,
@@ -389,16 +412,19 @@ export class WebGlCellRenderer {
         ? damage.ranges
         : [{ start: 0, end: this.rows - 1 }];
     let stable = false;
+    let rectanglesChanged = damage.kind === "full";
     for (let attempt = 0; attempt < 3 && !stable; attempt += 1) {
       const generation = this.atlas?.generation ?? 0;
       for (const range of ranges) {
-        this.buildRows(frame, cells, range.start, range.end);
+        rectanglesChanged =
+          this.buildRows(frame, cells, range.start, range.end) ||
+          rectanglesChanged;
       }
       stable = generation === this.atlas?.generation;
       if (!stable) ranges = [{ start: 0, end: this.rows - 1 }];
     }
     if (!stable) throw new Error("Visible glyphs exceed the atlas budget");
-    this.buildBackgrounds();
+    if (rectanglesChanged) this.buildBackgrounds();
     this.uploadGlyphs(ranges);
   }
 
@@ -407,8 +433,9 @@ export class WebGlCellRenderer {
     cells: TerminalCellReader,
     firstRow: number,
     lastRow: number,
-  ): void {
-    if (!this.profile || !this.atlas) return;
+  ): boolean {
+    if (!this.profile || !this.atlas) return false;
+    let rectanglesChanged = false;
     const first = Math.max(0, firstRow);
     const last = Math.min(this.rows - 1, lastRow);
     const canvasWidth = this.canvas.width;
@@ -424,6 +451,10 @@ export class WebGlCellRenderer {
         const width = cells.width(cellIndex);
         this.clearGlyph(glyphIndex);
         if (width === 0) {
+          rectanglesChanged ||=
+            this.backgrounds[cellIndex] !== previousBackground ||
+            this.decorations[cellIndex] !== 0 ||
+            (this.flags[cellIndex] & CellFlags.STRIKETHROUGH) !== 0;
           this.backgrounds[cellIndex] = previousBackground;
           this.foregrounds[cellIndex] = 0;
           this.underlineColors[cellIndex] = 0;
@@ -458,12 +489,22 @@ export class WebGlCellRenderer {
             this.profile.theme.selection.alpha,
           );
         }
+        const underlineColor = cells.underlineColorPacked(cellIndex);
+        const decoration =
+          cells.underlineStyle(cellIndex) | (cells.overline(cellIndex) ? 8 : 0);
+        rectanglesChanged ||=
+          this.backgrounds[cellIndex] !== background ||
+          this.decorations[cellIndex] !== decoration ||
+          ((this.flags[cellIndex] ^ flags) & CellFlags.STRIKETHROUGH) !== 0 ||
+          ((decoration !== 0 || (flags & CellFlags.STRIKETHROUGH) !== 0) &&
+            this.foregrounds[cellIndex] !== foreground) ||
+          ((decoration & 7) !== 0 &&
+            this.underlineColors[cellIndex] !== underlineColor);
         this.backgrounds[cellIndex] = background;
         this.foregrounds[cellIndex] = foreground;
-        this.underlineColors[cellIndex] = cells.underlineColorPacked(cellIndex);
+        this.underlineColors[cellIndex] = underlineColor;
         this.flags[cellIndex] = flags;
-        this.decorations[cellIndex] =
-          cells.underlineStyle(cellIndex) | (cells.overline(cellIndex) ? 8 : 0);
+        this.decorations[cellIndex] = decoration;
 
         const codepoint = cells.codepoint(cellIndex);
         if (
@@ -495,6 +536,7 @@ export class WebGlCellRenderer {
         this.blinkingRows[row] = rowHasBlinkingCell ? 1 : 0;
       }
     }
+    return rectanglesChanged;
   }
 
   private writeGlyph(
@@ -634,12 +676,11 @@ export class WebGlCellRenderer {
     this.uploadRectangles(vertices, this.resources?.backgroundBuffer ?? null);
   }
 
-  private updateCursor(frame: WebGlRendererFrame): void {
+  private updateCursor(frame: WebGlRendererFrame): boolean {
     const vertices = this.cursorVertices;
     vertices.count = 0;
     if (!this.profile || !frame.cursorVisible) {
-      this.uploadRectangles(vertices, this.resources?.cursorBuffer ?? null);
-      return;
+      return this.uploadCursor();
     }
     const cursor = frame.model.cursor();
     if (
@@ -649,8 +690,7 @@ export class WebGlCellRenderer {
       cursor.y < 0 ||
       cursor.y >= this.rows
     ) {
-      this.uploadRectangles(vertices, this.resources?.cursorBuffer ?? null);
-      return;
+      return this.uploadCursor();
     }
 
     const color = this.packRgb(this.profile.theme.cursor);
@@ -671,7 +711,22 @@ export class WebGlCellRenderer {
       this.writeRectangle(vertices, 0, cursor.x, cursor.y, 1, 1, color, 1);
     }
     vertices.count = 1;
-    this.uploadRectangles(vertices, this.resources?.cursorBuffer ?? null);
+    return this.uploadCursor();
+  }
+
+  private uploadCursor(): boolean {
+    const vertices = this.cursorVertices;
+    const length = vertices.count * RECTANGLE_FLOATS;
+    let changed = this.uploadedCursorCount !== vertices.count;
+    for (let index = 0; index < length && !changed; index++)
+      changed = this.uploadedCursor[index] !== vertices.attributes[index];
+    if (!changed) return false;
+    this.uploadedCursorCount = vertices.count;
+    if (length) {
+      this.uploadedCursor.set(vertices.attributes.subarray(0, length));
+      this.uploadRectangles(vertices, this.resources?.cursorBuffer ?? null);
+    }
+    return true;
   }
 
   private uploadGlyphs(
@@ -711,7 +766,7 @@ export class WebGlCellRenderer {
     vertices: RectangleVertices,
     buffer: WebGLBuffer | null,
   ): void {
-    if (!buffer) return;
+    if (!buffer || vertices.count === 0) return;
     this.gl.bindBuffer(this.gl.ARRAY_BUFFER, buffer);
     this.gl.bufferData(
       this.gl.ARRAY_BUFFER,

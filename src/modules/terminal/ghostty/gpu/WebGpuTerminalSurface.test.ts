@@ -1,3 +1,5 @@
+import { CellFlags } from "@terax/ghostty-core/protocol";
+import type { TerminalDamage } from "@/modules/terminal/backend/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GhosttyTerminalModelApi } from "@/modules/terminal/ghostty/GhosttyTerminalModel";
 import { WebGpuTerminalSurface } from "@/modules/terminal/ghostty/gpu/WebGpuTerminalSurface";
@@ -17,9 +19,92 @@ const surfaces: WebGpuTerminalSurface[] = [];
 afterEach(() => {
   for (const surface of surfaces.splice(0)) surface.dispose();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("WebGPU surface resource lifecycle", () => {
+  it("does not upload or present unchanged output and only uploads uniforms for cursor movement", async () => {
+    const h = await harness();
+    expect(h.render()).toBe(true);
+    h.writeBuffer.mockClear();
+    h.draw.mockClear();
+    h.domWork.mockClear();
+    for (let index = 0; index < 100; index++) {
+      h.damage();
+      expect(h.render()).toBe(false);
+    }
+    expect(h.writeBuffer).not.toHaveBeenCalled();
+    expect(h.draw).not.toHaveBeenCalled();
+    expect(h.domWork).not.toHaveBeenCalled();
+    h.cursor.x++;
+    expect(h.render()).toBe(true);
+    expect(h.writeBuffer).toHaveBeenCalledOnce();
+    expect(h.writeBuffer.mock.calls[0][2].byteLength).toBe(64);
+  });
+
+  it("uploads only the changed row and pauses text blinking in an unfocused window", async () => {
+    vi.useFakeTimers();
+    const h = await harness();
+    h.cursor.visible = false;
+    h.render();
+    const cells = h.model.renderCells();
+    cells.flags = () => CellFlags.BLINK;
+    h.model.renderCells.mockReturnValue(cells);
+    h.model.consumeDamage.mockReturnValueOnce({
+      kind: "rows",
+      ranges: [{ start: 2, end: 2 }],
+    });
+    h.writeBuffer.mockClear();
+    expect(h.render()).toBe(true);
+    expect(h.writeBuffer).toHaveBeenCalledOnce();
+    expect(h.writeBuffer.mock.calls[0][4]).toBe(120 * 64);
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(600);
+    h.render();
+    h.surface.handleWindowFocus(false);
+    h.render();
+    expect(vi.getTimerCount()).toBe(0);
+    h.schedule.mockClear();
+    vi.advanceTimersByTime(6_000);
+    expect(h.schedule).not.toHaveBeenCalled();
+    h.surface.handleWindowFocus(true);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it("redraws retained presentation after a short pause without repacking cells", async () => {
+    const h = await harness();
+    h.render();
+    h.model.renderCells.mockClear();
+    h.writeBuffer.mockClear();
+    h.visibility(false, false);
+    h.visibility(true, false);
+    expect(h.render()).toBe(true);
+    expect(h.model.renderCells).not.toHaveBeenCalled();
+    expect(h.writeBuffer).not.toHaveBeenCalled();
+  });
+
+  it("stops cursor timers for an application-hidden cursor and unfocused window", async () => {
+    vi.useFakeTimers();
+    const h = await harness();
+    h.cursor.blinking = true;
+    h.surface.setFocused(true);
+    h.render();
+    expect(vi.getTimerCount()).toBe(1);
+    h.cursor.visible = false;
+    h.render();
+    h.schedule.mockClear();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(6_000);
+    expect(h.schedule).not.toHaveBeenCalled();
+    h.cursor.visible = true;
+    h.render();
+    expect(vi.getTimerCount()).toBe(1);
+    h.surface.handleWindowFocus(false);
+    expect(vi.getTimerCount()).toBe(0);
+    h.surface.handleWindowFocus(true);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
   it("prioritizes wheel interaction without scheduling idle or hidden work", async () => {
     const h = await harness();
     h.schedule.mockClear();
@@ -182,27 +267,53 @@ async function harness() {
   );
   vi.stubGlobal("GPUBufferUsage", { UNIFORM: 1, COPY_DST: 2, VERTEX: 4 });
   const acquireGlyphAtlas = vi.fn(() => ({
-    atlas: { generation: 1, coverageTextureView: {}, colorTextureView: {} },
+    atlas: {
+      generation: 1,
+      coverageTextureView: {},
+      colorTextureView: {},
+      encodePendingUploads: vi.fn(),
+    },
     release: vi.fn(),
   }));
   const schedule = vi.fn();
   const interact = vi.fn();
+  const writeBuffer = vi.fn();
+  const resources = {
+    device: {
+      createBuffer,
+      createBindGroup: vi.fn(() => ({})),
+      queue: { writeBuffer },
+    },
+    generation: 1,
+  };
   bridge.runtime = {
     register: vi.fn(),
     unregister: vi.fn(),
     schedule,
     interact,
     acquireGlyphAtlas,
-    resources: () => ({
-      device: { createBuffer, createBindGroup: vi.fn() },
-      generation: 1,
-    }),
+    resources: () => resources,
   };
   const position = { history: 0, offset: 0 };
+  const cursor = { x: 0, y: 0, visible: true, blinking: false, style: "block" };
   let damage = () => {};
   const model = {
     cols: 120,
     rows: 40,
+    cursor: () => cursor,
+    deferPresentation: () => false,
+    consumeDamage: vi.fn((): TerminalDamage => ({ kind: "none" })),
+    viewportOriginLine: () => 0,
+    renderCells: vi.fn(() => ({
+      length: model.cols * model.rows,
+      width: () => 1,
+      flags: (): number => 0,
+      codepoint: () => 0,
+      backgroundPacked: () => 0,
+      foregroundPacked: () => 0xffffff,
+      underlineColorPacked: () => 0,
+      overline: () => false,
+    })),
     setCursorOptions: vi.fn(),
     revision: () => 0,
     subscribeDamage: (listener: () => void) => {
@@ -228,6 +339,17 @@ async function harness() {
       model.rows = rows;
     },
   };
+  const pass = {
+    setPipeline: vi.fn(),
+    setBindGroup: vi.fn(),
+    setVertexBuffer: vi.fn(),
+    draw: vi.fn(),
+    end: vi.fn(),
+  };
+  const encoder = { beginRenderPass: vi.fn(() => pass) };
+  Object.assign(context, {
+    getCurrentTexture: vi.fn(() => ({ createView: () => ({}) })),
+  });
   const onError = vi.fn();
   const surface = await WebGpuTerminalSurface.create({
     model: model as unknown as GhosttyTerminalModelApi,
@@ -248,6 +370,14 @@ async function harness() {
   surface.attach(element() as unknown as HTMLElement);
   return {
     surface,
+    cursor,
+    writeBuffer,
+    draw: pass.draw,
+    render: () =>
+      surface.renderFrame(
+        encoder as unknown as GPUCommandEncoder,
+        resources as never,
+      ),
     model,
     position,
     domWork,

@@ -1,3 +1,4 @@
+import { terminalWindowFocused } from "@/modules/terminal/ghostty/renderScheduling";
 import { bindTerminalInteraction } from "@/modules/terminal/ghostty/input/terminalInteraction";
 import { syncTerminalScrollbar } from "@/modules/terminal/ghostty/gpu/terminalScrollbar";
 import { terminalWindowPresentation } from "@/modules/terminal/ghostty/windowPresentation";
@@ -122,6 +123,11 @@ export class WebGpuTerminalSurface
   private instanceBytes = new Uint8Array(0);
   private instanceView = new DataView(new ArrayBuffer(0));
   private readonly screenData = new Float32Array(SCREEN_UNIFORM_BYTES / 4);
+  private readonly uploadedScreenData = new Float32Array(
+    SCREEN_UNIFORM_BYTES / 4,
+  );
+  private uniformUploaded = false;
+  private forcePresent = true;
   private blinkingRows = new Uint8Array(0);
   private theme: TerminalGpuTheme;
   private metrics: TerminalFontMetrics;
@@ -138,6 +144,8 @@ export class WebGpuTerminalSurface
   private runtimeRegistered = false;
   private resizeInteractionActive = terminalResizeInteractionActive();
   private compactAfterResize = false;
+  private nativeCursorVisible = false;
+  private windowFocused = terminalWindowFocused();
   private cursorVisible = true;
   private cursorEnabled = true;
   private cursorBlinking: boolean;
@@ -208,7 +216,6 @@ export class WebGpuTerminalSurface
         target instanceof Node && this.scrollbar.contains(target),
       onChange: () => {
         if (this.applyingFit) return;
-        this.forceFullRedraw = true;
         this.runtime.schedule(this);
       },
     });
@@ -226,7 +233,7 @@ export class WebGpuTerminalSurface
       if (!this.visible || this.documentSuspended || !this.host) return;
       this.cursorVisible = true;
       this.textBlinkVisible = true;
-      this.search.refresh();
+      this.search.invalidate();
       if (!this.applyingFit) this.runtime.schedule(this);
       this.armCursorBlink();
     });
@@ -289,6 +296,17 @@ export class WebGpuTerminalSurface
   focus(): void {
     if (!this.host || !this.visible) return;
     this.input.focus({ preventScroll: true });
+  }
+
+  handleWindowFocus(focused: boolean): void {
+    this.windowFocused = focused;
+    const wasVisible = this.cursorVisible;
+    const textWasVisible = this.textBlinkVisible;
+    this.cursorVisible = true;
+    this.armCursorBlink();
+    this.syncTextBlink();
+    if ((!wasVisible && this.nativeCursorVisible) || !textWasVisible)
+      this.runtime.schedule(this);
   }
 
   setFocused(focused: boolean): void {
@@ -447,8 +465,13 @@ export class WebGpuTerminalSurface
         resources,
       );
     }
+    this.syncTextBlink();
+    const uniformChanged = this.updateScreenUniform(resources);
+    if (!needsCells && !uniformChanged && !this.forcePresent) {
+      this.options.onFrame?.();
+      return false;
+    }
     this.atlasLease.atlas.encodePendingUploads(encoder);
-    this.updateScreenUniform(resources);
 
     const target = this.context.getCurrentTexture().createView();
     const pass = encoder.beginRenderPass({
@@ -474,7 +497,7 @@ export class WebGpuTerminalSurface
     pass.end();
 
     this.forceFullRedraw = false;
-    this.syncTextBlink();
+    this.forcePresent = false;
     this.frameCount += 1;
     if (this.frameCount === 1) this.options.onFirstFrame?.();
     this.options.onFrame?.();
@@ -503,8 +526,8 @@ export class WebGpuTerminalSurface
       if (reclaim) {
         this.options.model.releasePresentationResources();
         this.releaseGpuResources();
-        this.backingStore.release();
         this.context?.unconfigure();
+        this.backingStore.release();
       }
       return;
     }
@@ -522,7 +545,7 @@ export class WebGpuTerminalSurface
         return;
       }
     }
-    this.forceFullRedraw = true;
+    this.forcePresent = true;
     if (this.visible) this.search.resume();
     this.armCursorBlink();
     this.syncTextBlink();
@@ -544,6 +567,7 @@ export class WebGpuTerminalSurface
       cpuBufferBytes:
         this.instanceData.byteLength +
         this.screenData.byteLength +
+        this.uploadedScreenData.byteLength +
         this.blinkingRows.byteLength,
       gpuBufferBytes: retainedBufferBytes,
       canvasColorBytes,
@@ -675,6 +699,8 @@ export class WebGpuTerminalSurface
         this.scale,
         this,
       );
+      this.forceFullRedraw = true;
+      this.uniformUploaded = false;
       this.uniformBuffer = resources.device.createBuffer({
         label: "Terax terminal surface uniform",
         size: SCREEN_UNIFORM_BYTES,
@@ -733,8 +759,8 @@ export class WebGpuTerminalSurface
       this.runtimeRegistered = false;
     }
     this.releaseGpuResources();
-    this.backingStore.release();
     this.context?.unconfigure();
+    this.backingStore.release();
   }
 
   private releaseGpuResources(): void {
@@ -1126,17 +1152,23 @@ export class WebGpuTerminalSurface
     }
   }
 
-  private updateScreenUniform(resources: WebGpuSharedResources): void {
-    if (!this.uniformBuffer) return;
+  private updateScreenUniform(resources: WebGpuSharedResources): boolean {
+    if (!this.uniformBuffer) return false;
     this.screenData.fill(0);
     this.screenData[0] = this.canvas.width;
     this.screenData[1] = this.canvas.height;
     const cursor = this.options.model.cursor();
+    this.nativeCursorVisible =
+      cursor.visible &&
+      cursor.x >= 0 &&
+      cursor.x < this.options.model.cols &&
+      cursor.y >= 0 &&
+      cursor.y < this.options.model.rows;
     if (cursor.blinking !== this.cursorBlinking) {
       this.cursorBlinking = cursor.blinking;
       this.cursorVisible = true;
-      this.armCursorBlink();
     }
+    this.armCursorBlink();
     if (
       this.cursorEnabled &&
       this.cursorVisible &&
@@ -1170,14 +1202,25 @@ export class WebGpuTerminalSurface
     this.screenData[14] = Math.floor(
       this.metrics.cellHeight * this.scale * 0.52,
     );
+    let changed = !this.uniformUploaded;
+    for (let index = 0; !changed && index < this.screenData.length; index++) {
+      changed = this.screenData[index] !== this.uploadedScreenData[index];
+    }
+    if (!changed) return false;
     resources.device.queue.writeBuffer(this.uniformBuffer, 0, this.screenData);
+    this.uploadedScreenData.set(this.screenData);
+    this.uniformUploaded = true;
     this.uploadCount += 1;
     this.uploadedBytes += SCREEN_UNIFORM_BYTES;
+    return true;
   }
 
   private armCursorBlink(): void {
     if (
       !this.cursorEnabled ||
+      !this.nativeCursorVisible ||
+      !this.windowFocused ||
+      this.documentSuspended ||
       !this.cursorBlinking ||
       !this.focused ||
       !this.visible ||
@@ -1204,6 +1247,8 @@ export class WebGpuTerminalSurface
   private syncTextBlink(): void {
     if (
       this.blinkingRowCount === 0 ||
+      !this.windowFocused ||
+      this.documentSuspended ||
       !this.visible ||
       !this.host ||
       !terminalWindowPresentation().visible

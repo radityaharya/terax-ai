@@ -607,10 +607,16 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
 
   setSelection(selection: TerminalBufferSelection | null): void {
     this.assertLive();
+    const previous = this.terminal.selection();
     this.terminal.setSelection(selection);
-    this.contentRevision += 1;
-    this.invalidateRenderState();
-    this.pendingDamage = FULL_DAMAGE;
+    const origin = this.viewportOriginLine();
+    this.pendingDamage = mergeDamage(
+      this.pendingDamage,
+      mergeDamage(
+        selectionDamage(previous, origin, this.rowsValue),
+        selectionDamage(selection, origin, this.rowsValue),
+      ),
+    );
     this.notifyDamage();
   }
 
@@ -1040,7 +1046,37 @@ function mergeDamage(
   if (previous.kind === "full" || next.kind === "full") return FULL_DAMAGE;
   if (previous.kind === "none") return next;
   if (next.kind === "none") return previous;
-  return { kind: "rows", ranges: [...previous.ranges, ...next.ranges] };
+  const sorted = [...previous.ranges, ...next.ranges].sort(
+    (a, b) => a.start - b.start,
+  );
+  const ranges: TerminalRowRange[] = [];
+  for (const range of sorted) {
+    const last = ranges[ranges.length - 1];
+    if (last && range.start <= last.end + 1)
+      ranges[ranges.length - 1] = {
+        start: last.start,
+        end: Math.max(last.end, range.end),
+      };
+    else ranges.push(range);
+  }
+  return { kind: "rows", ranges };
+}
+
+function selectionDamage(
+  selection: TerminalBufferSelection | null,
+  origin: number,
+  rows: number,
+): TerminalDamage {
+  if (!selection) return NO_DAMAGE;
+  const start = Math.max(
+    0,
+    Math.min(selection.anchor.line, selection.focus.line) - origin,
+  );
+  const end = Math.min(
+    rows - 1,
+    Math.max(selection.anchor.line, selection.focus.line) - origin,
+  );
+  return start > end ? NO_DAMAGE : { kind: "rows", ranges: [{ start, end }] };
 }
 
 function modesFromBits(bits: number): TerminalModes {

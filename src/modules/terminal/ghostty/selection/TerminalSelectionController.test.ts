@@ -58,6 +58,52 @@ describe("selection across renderer replacement", () => {
 });
 
 describe("terminal selection pointer ownership", () => {
+  it("updates only selected rows without rebuilding native text or accumulating duplicate uploads", async () => {
+    const bytes = await readFile(
+      new URL(
+        "../../../../../packages/ghostty-core/adapted/ghostty-vt.wasm",
+        import.meta.url,
+      ),
+    );
+    const core = await TeraxGhostty.loadBytes(Uint8Array.from(bytes).buffer);
+    const model = new AdaptedGhosttyTerminalModel(core, {
+      backend: "ghostty-webgpu",
+      cols: 120,
+      rows: 40,
+    });
+    try {
+      model.write(new TextEncoder().encode("hello terminal"));
+      model.consumeDamage();
+      const revision = model.revision();
+      const updates = model.diagnostics().renderStateUpdates;
+      for (let column = 1; column < 12; column++)
+        model.setSelection({
+          anchor: { line: 0, column: 0 },
+          focus: { line: 0, column },
+          rectangular: false,
+        });
+      expect(model.consumeDamage()).toEqual({
+        kind: "rows",
+        ranges: [{ start: 0, end: 0 }],
+      });
+      expect(model.diagnostics().renderStateUpdates).toBe(updates);
+      expect(model.revision()).toBe(revision);
+      const selection = model.trackedSelection();
+      if (!selection) throw new Error("Expected the tracked selection");
+      expect(model.selectionText(selection)).toBe("hello termin");
+      model.setSelection(null);
+      expect(model.consumeDamage()).toEqual({
+        kind: "rows",
+        ranges: [{ start: 0, end: 0 }],
+      });
+      model.write(new TextEncoder().encode(" next"));
+      expect(model.consumeDamage().kind).not.toBe("none");
+      expect(model.renderCells().codepoint(0)).toBe(104);
+    } finally {
+      model.dispose();
+    }
+  });
+
   it("drags in both directions across real Ghostty render synchronization", async () => {
     const bytes = await readFile(
       new URL(

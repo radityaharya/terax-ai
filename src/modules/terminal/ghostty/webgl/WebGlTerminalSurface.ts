@@ -1,3 +1,4 @@
+import { terminalWindowFocused } from "@/modules/terminal/ghostty/renderScheduling";
 import { bindTerminalInteraction } from "@/modules/terminal/ghostty/input/terminalInteraction";
 import { syncTerminalScrollbar } from "@/modules/terminal/ghostty/gpu/terminalScrollbar";
 import {
@@ -93,11 +94,14 @@ export class WebGlTerminalSurface
   private documentSuspended = !terminalWindowPresentation().visible;
   private resizeInteractionActive = terminalResizeInteractionActive();
   private compactAfterResize = false;
+  private nativeCursorVisible = false;
+  private windowFocused = terminalWindowFocused();
   private cursorVisible = true;
   private cursorEnabled = true;
   private cursorBlinking: boolean;
   private cursorTimer: number | null = null;
   private textBlinkVisible = true;
+  private hasBlinkingCells = false;
   private textBlinkTimer: number | null = null;
   private frameCount = 0;
   private rendererRecoveryCount = 0;
@@ -152,7 +156,6 @@ export class WebGlTerminalSurface
         target instanceof Node && this.scrollbar.contains(target),
       onChange: () => {
         if (this.applyingFit) return;
-        this.renderer?.resetModel();
         this.runtime.schedule(this);
       },
     });
@@ -170,7 +173,7 @@ export class WebGlTerminalSurface
       if (!this.visible || this.documentSuspended || !this.host) return;
       this.cursorVisible = true;
       this.textBlinkVisible = true;
-      this.search.refresh();
+      this.search.invalidate();
       if (!this.applyingFit) this.runtime.schedule(this);
       this.armCursorBlink();
     });
@@ -226,6 +229,17 @@ export class WebGlTerminalSurface
   focus(): void {
     if (!this.host || !this.visible) return;
     this.input.focus({ preventScroll: true });
+  }
+
+  handleWindowFocus(focused: boolean): void {
+    this.windowFocused = focused;
+    const wasVisible = this.cursorVisible;
+    const textWasVisible = this.textBlinkVisible;
+    this.cursorVisible = true;
+    this.armCursorBlink();
+    this.syncTextBlink();
+    if ((!wasVisible && this.nativeCursorVisible) || !textWasVisible)
+      this.runtime.schedule(this);
   }
 
   setFocused(focused: boolean): void {
@@ -353,6 +367,15 @@ export class WebGlTerminalSurface
     this.selection.reconcile();
     this.search.refreshOverlay();
     this.updateScrollbar();
+    const cursor = this.options.model.cursor();
+    this.nativeCursorVisible =
+      cursor.visible &&
+      cursor.x >= 0 &&
+      cursor.x < this.options.model.cols &&
+      cursor.y >= 0 &&
+      cursor.y < this.options.model.rows;
+    this.cursorBlinking = cursor.blinking;
+    this.armCursorBlink();
     const rendered = renderer.render({
       model: this.options.model,
       damage: this.options.model.consumeDamage(),
@@ -361,8 +384,12 @@ export class WebGlTerminalSurface
       selection: this.selection.normalizedBounds(),
       searchMatchAt: (row, column) => this.search.matchAt(row, column),
     });
-    if (!rendered) return false;
-    this.syncTextBlink(renderer.hasBlinkingCells);
+    this.hasBlinkingCells = renderer.hasBlinkingCells;
+    this.syncTextBlink();
+    if (!rendered) {
+      this.options.onFrame?.();
+      return false;
+    }
     this.consecutiveRendererErrors = 0;
     this.frameCount += 1;
     if (this.frameCount === 1) this.options.onFirstFrame?.();
@@ -499,7 +526,7 @@ export class WebGlTerminalSurface
       this.scale = Math.max(1, window.devicePixelRatio || 1);
       this.renderer = this.runtime.acquire(this, this.root, this.profile());
       this.resizeToHost();
-      this.renderer.resetModel();
+      this.renderer.requestPresentation();
       this.runtime.schedule(this);
       this.armCursorBlink();
     } catch (error) {
@@ -659,6 +686,9 @@ export class WebGlTerminalSurface
   private armCursorBlink(): void {
     if (
       !this.cursorEnabled ||
+      !this.nativeCursorVisible ||
+      !this.windowFocused ||
+      this.documentSuspended ||
       !this.cursorBlinking ||
       !this.focused ||
       !this.visible ||
@@ -682,8 +712,12 @@ export class WebGlTerminalSurface
     this.cursorTimer = null;
   }
 
-  private syncTextBlink(hasBlinkingCells: boolean): void {
-    if (!hasBlinkingCells) {
+  private syncTextBlink(): void {
+    if (
+      !this.hasBlinkingCells ||
+      !this.windowFocused ||
+      this.documentSuspended
+    ) {
       this.clearTextBlinkTimer();
       this.textBlinkVisible = true;
       return;
@@ -694,6 +728,8 @@ export class WebGlTerminalSurface
   private armTextBlink(): void {
     if (
       this.textBlinkTimer !== null ||
+      !this.windowFocused ||
+      this.documentSuspended ||
       !this.visible ||
       !this.host ||
       !terminalWindowPresentation().visible
