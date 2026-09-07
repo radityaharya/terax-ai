@@ -143,7 +143,7 @@ describe.each([
     });
     it("pins the audited Ghostty and Restty sources", () => {
       expect(ADAPTED_GHOSTTY_COMMIT).toBe(
-        "349f026087d948f8f898dca3231ff91438f83ab8",
+        "f426f6f181ba95f45d33f683fb754b6359d9e04f",
       );
       expect(ADAPTED_RESTTY_COMMIT).toBe(
         "7700b14a7643ba9240818209ef1e0aa90d83ad77",
@@ -192,12 +192,38 @@ describe.each([
         terminal.releaseRenderState();
 
         expect(terminal.resourceStats()).toMatchObject({
-          cellCapacity: initialStats.cellCapacity,
-          rowCapacity: initialStats.rowCapacity,
+          cellCapacity: 0,
+          rowCapacity: 0,
           renderStateResets: initialStats.renderStateResets + 1,
         });
         const rebuilt = terminal.updateRenderState();
         expect(rebuilt.codepoints[0]).toBe("p".codePointAt(0));
+      } finally {
+        terminal.dispose();
+      }
+    });
+
+    it("allocates presentation only on demand and restores links and graphemes after release", () => {
+      const terminal = ghostty.createTerminal(120, 40);
+      try {
+        terminal.write(
+          new TextEncoder().encode(
+            "\x1b]8;;https://example.test\x07e\u0301\x1b]8;;\x07",
+          ),
+        );
+        terminal.resize(121, 41);
+        expect(terminal.resourceStats().cellCapacity).toBe(0);
+        const first = terminal.updateRenderState();
+        expect(terminal.graphemeAt(first, 0)).toBe("e\u0301");
+        expect(terminal.hyperlinkAt(first, 0)).toBe("https://example.test");
+        terminal.releaseRenderState();
+        expect(terminal.resourceStats().cellCapacity).toBe(0);
+        terminal.write(new TextEncoder().encode("next"));
+        expect(terminal.resourceStats().cellCapacity).toBe(0);
+        const restored = terminal.updateRenderState();
+        expect(terminal.graphemeAt(restored, 0)).toBe("e\u0301");
+        expect(terminal.hyperlinkAt(restored, 0)).toBe("https://example.test");
+        expect(restored.fullDamage).toBe(true);
       } finally {
         terminal.dispose();
       }

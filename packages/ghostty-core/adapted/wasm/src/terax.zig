@@ -98,25 +98,7 @@ const CellBuffers = struct {
     row_wrapped: []u8,
     row_dirty: []u8,
 
-    pub fn init(alloc: Allocator, rows: u16, cols: u16) !CellBuffers {
-        const cell_count: usize = @as(usize, rows) * @as(usize, cols);
-        return initCapacity(
-            alloc,
-            nextBufferCapacity(0, cell_count, cell_buffer_alignment),
-            nextBufferCapacity(0, rows, row_buffer_alignment),
-        );
-    }
-
-    fn initCapacity(
-        alloc: Allocator,
-        cell_capacity: usize,
-        row_capacity: usize,
-    ) !CellBuffers {
-        const storage = try alloc.alloc(u64, storageWordCount(cell_capacity, row_capacity));
-        const result = fromStorage(storage, cell_capacity, row_capacity);
-        @memset(result.row_dirty, 1);
-        return result;
-    }
+    const empty: CellBuffers = fromStorage(&.{}, 0, 0);
 
     fn ensureCapacity(self: *CellBuffers, alloc: Allocator, rows: u16, cols: u16) !bool {
         const required_cells: usize = @as(usize, rows) * @as(usize, cols);
@@ -1483,21 +1465,19 @@ fn createWithLimits(
         .max_scrollback_lines = max_scrollback_lines,
         .colors = colors,
     }) catch return null;
-    errdefer term.deinit(alloc);
     term.width_px = cols;
     term.height_px = rows;
 
-    var buffers = CellBuffers.init(alloc, rows, cols) catch return null;
-    errdefer buffers.deinit(alloc);
-
-    const handle = alloc.create(Restty) catch return null;
-    errdefer alloc.destroy(handle);
+    const handle = alloc.create(Restty) catch {
+        term.deinit(alloc);
+        return null;
+    };
     handle.* = .{
         .alloc = alloc,
         .term = term,
         .stream = undefined,
         .render_state = .empty,
-        .buffers = buffers,
+        .buffers = .empty,
         .rows = rows,
         .cols = cols,
     };
@@ -2202,6 +2182,20 @@ pub export fn restty_render_release(handle: ?*Restty) void {
     const h = handle orelse return;
     h.render_state.deinit(h.alloc);
     h.render_state = .empty;
+    h.buffers.deinit(h.alloc);
+    h.buffers = .empty;
+    h.graphemes.deinit(h.alloc);
+    h.graphemes = .empty;
+    h.link_offsets.deinit(h.alloc);
+    h.link_offsets = .empty;
+    h.link_lengths.deinit(h.alloc);
+    h.link_lengths = .empty;
+    h.link_map.deinit(h.alloc);
+    h.link_map = .empty;
+    h.link_buffer.deinit(h.alloc);
+    h.link_buffer = .empty;
+    h.kitty_placements.deinit(h.alloc);
+    h.kitty_placements = .empty;
     h.has_render_data = false;
     h.render_update_count = 0;
     h.render_reset_count +%= 1;

@@ -6,15 +6,15 @@ without importing Restty's application runtime, PTY transport, perpetual
 per-terminal frame loop, or per-pane GPU lifecycle.
 
 - Ghostty source: `https://github.com/ghostty-org/ghostty`
-- Ghostty commit: `349f026087d948f8f898dca3231ff91438f83ab8`
+- Ghostty commit: `f426f6f181ba95f45d33f683fb754b6359d9e04f`
 - Restty source: `https://github.com/wiedymi/restty`
 - Restty commit: `7700b14a7643ba9240818209ef1e0aa90d83ad77`
 - Zig: `0.16.0`
 - Optimization: `ReleaseFast`, WebAssembly SIMD and scalar variants
-- SIMD artifact size: `708426` bytes
-- Scalar artifact size: `713453` bytes
-- SIMD SHA-256: `b41c89cd5463fd4493432b5593f1e86b31597174bbdc9c43891eaf1243571fd6`
-- Scalar SHA-256: `6292f24c619279d6d4872b9b697728780f755639ddd8b73f2d9b73370b4332f7`
+- SIMD artifact size: `696505` bytes
+- Scalar artifact size: `699516` bytes
+- SIMD SHA-256: `b2305e15dcf4bac59eef3e25687444b9678b79b23cf90d5d62718acab61966e7`
+- Scalar SHA-256: `8e9d194130ee714c6ced2ab1ccaff751cad28eea9bb2355dd9844034abe67775`
 
 Terax-specific changes include:
 
@@ -49,6 +49,8 @@ Terax-specific changes include:
   churn during repeated window fitting and adjacent-size resize cycles;
 - one reallocatable cell-buffer arena instead of sixteen independent WASM
   allocations, removing resize fragmentation and transient high-water growth;
+- lazy cell-buffer allocation, with cell arrays, graphemes, links and placement
+  snapshots returned to the allocator when presentation is released;
 - explicit post-gesture bridge and render-state compaction with hysteresis;
 - periodic render-state renewal after 100,000 updates, releasing fragmented
   row arenas and retained high-water allocations during long-running agents;
@@ -72,6 +74,19 @@ retains renderer pooling, hidden-tab renderer release, damage-driven frame
 scheduling, shell integration, semantic routing, and fallback selection.
 
 ## Memory regression gate
+
+The September 7 pin includes upstream page allocation, default-palette sharing
+and fixed terminal allocation reductions. There is no tagged stable standalone
+libghostty WASM release in the inspected release list; Terax still builds its
+adapted bridge from an exact source revision, rather than consuming the nightly
+artifact or treating Ghostty's application version as a stable library ABI.
+
+The update alone saved only one 64 KiB WASM page across 20 blank 120x40 models.
+With Terax's lazy presentation arrays, the identical workload uses 10,878,976
+bytes instead of 16,187,392 bytes at `0e3fae9`, a 5,308,416-byte reduction.
+Isolated per-artifact row-edit, scrolling and OSC microbenchmarks were within
+roughly 2% of baseline; this is not evidence of an application CPU speedup.
+See `docs/architecture/ghostty-resource-efficiency.md` for reports and limits.
 
 The allocator rebase was measured against the previous pinned artifact with an
 identical five-terminal, approximately 16 MiB-per-terminal ASCII workload.
