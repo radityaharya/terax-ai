@@ -5333,6 +5333,7 @@ dependencies = [
 name = "terax"
 version = "0.9.0-beta"
 dependencies = [
+ "block2",
  "bytes",
  "dirs 6.0.0",
  "futures-util",
@@ -5348,6 +5349,7 @@ dependencies = [
  "notify",
  "nucleo-matcher",
  "objc2",
+ "objc2-app-kit",
  "objc2-foundation",
  "portable-pty",
  "proptest",
@@ -5370,6 +5372,7 @@ dependencies = [
  "tempfile",
  "terax-control-protocol",
  "tokio",
+ "wasmparser",
  "which",
  "window-vibrancy 0.8.0",
  "windows-sys 0.61.2",
