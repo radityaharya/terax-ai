@@ -256,6 +256,8 @@ export class GhosttyInputController {
       this.emitText(readline, "keydown");
       return;
     }
+    // Unclaimed Command shortcuts belong to the native menu, even in Kitty mode.
+    if (this.isMac && event.metaKey) return;
     if (
       event.key === "Enter" &&
       event.shiftKey &&

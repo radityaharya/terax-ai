@@ -27,6 +27,111 @@ describe("terminalMouseModifiers", () => {
 
 describe("GhosttyInputController", () => {
   it.each(["ghostty-vt.wasm", "ghostty-vt-scalar.wasm"])(
+    "leaves macOS Command shortcuts to the application in legacy and Kitty modes (%s)",
+    async (artifact) => {
+      const bytes = await readFile(
+        new URL(
+          `../../../../../packages/ghostty-core/adapted/${artifact}`,
+          import.meta.url,
+        ),
+      );
+      const core = await TeraxGhostty.loadBytes(Uint8Array.from(bytes).buffer);
+      const terminal = core.createTerminal(80, 24);
+      const input = new FakeTextArea();
+      const onData = vi.fn();
+      const encodeKey = vi.fn<GhosttyTerminalModelApi["encodeKey"]>((event) =>
+        terminal.encodeKey(event),
+      );
+      const controller = new GhosttyInputController({
+        model: { ...inputModel(), encodeKey },
+        input: input as unknown as HTMLTextAreaElement,
+        pointerTarget: new FakeElement() as unknown as HTMLElement,
+        cellSize: () => ({ width: 10, height: 20 }),
+        isMac: true,
+        onCopy: () => false,
+        onData,
+      });
+      try {
+        for (const mode of [0, 1, 11, 31]) {
+          terminal.write(new TextEncoder().encode(`\x1b[=${mode}u`));
+          for (const values of [
+            { key: "q", code: "KeyQ" },
+            { key: "h", code: "KeyH" },
+            { key: "m", code: "KeyM" },
+            { key: "h", code: "KeyH", altKey: true },
+            { key: "c", code: "KeyC" },
+          ]) {
+            for (const type of ["keydown", "keyup"]) {
+              const event = keyboardEvent({ ...values, metaKey: true }, type);
+              const stopPropagation = vi.spyOn(event, "stopPropagation");
+              input.dispatchEvent(event);
+              expect(event.defaultPrevented).toBe(false);
+              expect(stopPropagation).not.toHaveBeenCalled();
+            }
+          }
+        }
+        expect(encodeKey).not.toHaveBeenCalled();
+        expect(onData).not.toHaveBeenCalled();
+      } finally {
+        controller.dispose();
+        terminal.dispose();
+      }
+    },
+  );
+
+  it("preserves explicit macOS editing shortcuts and non-macOS Super encoding", () => {
+    for (const isMac of [true, false]) {
+      const input = new FakeTextArea();
+      const onData = vi.fn();
+      const onCopy = vi.fn(() => true);
+      const encodeKey = vi.fn(() => new Uint8Array([27, 113]));
+      const controller = new GhosttyInputController({
+        model: { ...inputModel(), encodeKey },
+        input: input as unknown as HTMLTextAreaElement,
+        pointerTarget: new FakeElement() as unknown as HTMLElement,
+        cellSize: () => ({ width: 10, height: 20 }),
+        isMac,
+        onCopy,
+        onData,
+      });
+      try {
+        if (isMac) {
+          const copy = keyboardEvent({ key: "c", code: "KeyC", metaKey: true });
+          input.dispatchEvent(copy);
+          expect(copy.defaultPrevented).toBe(true);
+          expect(onCopy).toHaveBeenCalledOnce();
+          expect(onData).not.toHaveBeenCalled();
+          for (const [key, sequence] of [
+            ["ArrowLeft", "\x01"],
+            ["ArrowRight", "\x05"],
+            ["Backspace", "\x15"],
+          ]) {
+            const event = keyboardEvent({ key, code: key, metaKey: true });
+            input.dispatchEvent(event);
+            expect(event.defaultPrevented).toBe(true);
+            expect(new TextDecoder().decode(onData.mock.lastCall?.[0])).toBe(
+              sequence,
+            );
+          }
+          expect(encodeKey).not.toHaveBeenCalled();
+        } else {
+          const event = keyboardEvent({
+            key: "q",
+            code: "KeyQ",
+            metaKey: true,
+          });
+          input.dispatchEvent(event);
+          expect(event.defaultPrevented).toBe(true);
+          expect(encodeKey).toHaveBeenCalledOnce();
+          expect(onData).toHaveBeenCalledWith(new Uint8Array([27, 113]));
+        }
+      } finally {
+        controller.dispose();
+      }
+    }
+  });
+
+  it.each(["ghostty-vt.wasm", "ghostty-vt-scalar.wasm"])(
     "preserves Control through Fish's Kitty keyboard mode (%s)",
     async (artifact) => {
       const bytes = await readFile(
@@ -375,23 +480,23 @@ class FakeTextArea extends FakeElement {
   value = "";
 }
 
-function keyboardEvent(values: Partial<KeyboardEvent>): KeyboardEvent {
-  return Object.assign(
-    new Event("keydown", { bubbles: true, cancelable: true }),
-    {
-      altKey: false,
-      code: "",
-      ctrlKey: false,
-      getModifierState: () => false,
-      isComposing: false,
-      key: "",
-      keyCode: 0,
-      metaKey: false,
-      repeat: false,
-      shiftKey: false,
-      ...values,
-    },
-  ) as KeyboardEvent;
+function keyboardEvent(
+  values: Partial<KeyboardEvent>,
+  type = "keydown",
+): KeyboardEvent {
+  return Object.assign(new Event(type, { bubbles: true, cancelable: true }), {
+    altKey: false,
+    code: "",
+    ctrlKey: false,
+    getModifierState: () => false,
+    isComposing: false,
+    key: "",
+    keyCode: 0,
+    metaKey: false,
+    repeat: false,
+    shiftKey: false,
+    ...values,
+  }) as KeyboardEvent;
 }
 
 function mouseEvent(type: string, values: Partial<MouseEvent>): MouseEvent {

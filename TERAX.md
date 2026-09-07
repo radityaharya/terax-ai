@@ -67,6 +67,8 @@ or search-mask work until presentation resumes.
 Terminal clipboard shortcuts use the native text clipboard plugin on all desktop
 platforms. Context clicks expose the selected text through the input element to
 restore the webview's native text menu; no persistent DOM scrollback is maintained.
+Unclaimed macOS Command shortcuts reach the native menu after explicit clipboard,
+block-editor, and readline bindings, including when Kitty keyboard mode is active.
 The block prompt retains an enabled terminal input proxy for native menus and
 routes editing keys, composed text and paste back to its command editor.
 Character drags retain a native selection pin from pointerdown, including before
