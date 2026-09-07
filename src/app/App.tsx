@@ -128,6 +128,11 @@ import {
 } from "./components/WorkspaceInputBar";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
 import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
+import {
+  hasOpenPathTab,
+  renamedPath,
+  spacesEmptiedByTabs,
+} from "./hooks/tabCloseGuards";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
@@ -399,6 +404,20 @@ export default function App() {
     [closeTabs],
   );
 
+  const disposeDeletedTabs = useCallback(
+    (ids: number[]) => {
+      if (ids.length === 0) return;
+      for (const spaceId of spacesEmptiedByTabs(tabsRef.current, ids)) {
+        const root = useSpaces
+          .getState()
+          .spaces.find((s) => s.id === spaceId)?.root;
+        newTabInSpace(spaceId, root ?? undefined);
+      }
+      for (const id of ids) disposeTab(id);
+    },
+    [disposeTab, newTabInSpace],
+  );
+
   const {
     pendingCloseTab,
     pendingTerminalCloseTab,
@@ -416,11 +435,12 @@ export default function App() {
     cancelDeleteClose,
     confirmCloseMany,
     cancelCloseMany,
-    handlePathDeleted,
+    handlePathsDeleted,
   } = useTabCloseGuards({
     tabs,
     activeId,
     disposeTab,
+    disposeDeletedTabs,
     disposeTabs,
   });
 
@@ -693,25 +713,25 @@ export default function App() {
     })();
   }, [booted, openLaunchFiles]);
 
-  const handlePathRenamed = useCallback(
+  const handleExplorerPathRenamed = useCallback(
     (from: string, to: string) => {
-      for (const t of tabs) {
-        if (t.kind !== "editor") continue;
-        if (t.path === from) {
-          const i = to.lastIndexOf("/");
-          updateTab(t.id, { path: to, title: i === -1 ? to : to.slice(i + 1) });
-        } else if (t.path.startsWith(`${from}/`)) {
-          const suffix = t.path.slice(from.length);
-          const newPath = `${to}${suffix}`;
-          const i = newPath.lastIndexOf("/");
-          updateTab(t.id, {
-            path: newPath,
-            title: i === -1 ? newPath : newPath.slice(i + 1),
-          });
-        }
+      for (const tab of tabsRef.current) {
+        if (tab.kind !== "editor" && tab.kind !== "markdown") continue;
+        const path = renamedPath(tab.path, from, to);
+        if (path === null) continue;
+        const i = path.lastIndexOf("/");
+        updateTab(tab.id, {
+          path,
+          title: i === -1 ? path : path.slice(i + 1),
+        });
       }
     },
-    [tabs, updateTab],
+    [updateTab],
+  );
+
+  const canReplaceExplorerPath = useCallback(
+    (path: string) => !hasOpenPathTab(tabsRef.current, path),
+    [],
   );
 
   const activeTerminalLeafCwd =
@@ -1428,8 +1448,9 @@ export default function App() {
                           }
                           activeFilePath={explorerActiveFilePath}
                           onOpenFile={handleOpenFile}
-                          onPathRenamed={handlePathRenamed}
-                          onPathDeleted={handlePathDeleted}
+                          onPathRenamed={handleExplorerPathRenamed}
+                          onPathsDeleted={handlePathsDeleted}
+                          canReplacePath={canReplaceExplorerPath}
                           onRevealInTerminal={cdInNewTab}
                           onOpenInSourceControl={
                             handleOpenRepositoryInSourceControl
