@@ -19,12 +19,22 @@
     "gzip": true
   },
   {
-    "name": "Ghostty terminal JS (lazy)",
+    "name": "Ghostty primary terminal JS (lazy entry and shared presentation)",
     "path": [
       "dist/assets/useGhosttyTerminalSession-*.js",
+      "dist/assets/TerminalFitQueue-*.js",
       "dist/assets/ghostty-vt-*.js"
     ],
     "limit": "56 KB",
+    "gzip": true
+  },
+  {
+    "name": "Ghostty WebGL fallback JS (loaded on demand)",
+    "path": [
+      "dist/assets/WebGlTerminalSurface-*.js",
+      "dist/assets/WebGlTerminalRuntime-*.js"
+    ],
+    "limit": "15 KB",
     "gzip": true
   },
   {

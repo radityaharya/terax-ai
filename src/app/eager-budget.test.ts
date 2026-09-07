@@ -24,6 +24,14 @@ function heavyEagerHits(entry: string): string[] {
 }
 
 describe("startup bundle budget", () => {
+  it("keeps the WebGL fallback outside the WebGPU terminal import graph", () => {
+    const { files } = traceEager(
+      "src/modules/terminal/ghostty/useGhosttyTerminalSession.ts",
+    );
+    expect(
+      [...files].filter((file) => /[/\\]ghostty[/\\]webgl[/\\]/.test(file)),
+    ).toEqual([]);
+  });
   it("ships no xterm model or addons, including lazy dependencies", () => {
     const manifest = JSON.parse(
       readFileSync(new URL("../../package.json", import.meta.url), "utf8"),

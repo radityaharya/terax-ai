@@ -1,3 +1,4 @@
+import { loadSessionRenderer } from "@/modules/terminal/ghostty/loadSessionRenderer";
 import {
   ensureGhosttyBlocks,
   ghosttyBlocks,
@@ -31,9 +32,9 @@ import { getWebGpuTerminalRuntime } from "./gpu/WebGpuTerminalRuntime";
 import { WebGpuTerminalSurface } from "./gpu/WebGpuTerminalSurface";
 import { GhosttyInputController } from "./input/GhosttyInputController";
 import { encodeTerminalSubmission } from "./input/terminalInputEncoding";
-import {
+import type {
   WebGlTerminalSurface,
-  type WebGlTerminalSurfaceOptions,
+  WebGlTerminalSurfaceOptions,
 } from "./webgl/WebGlTerminalSurface";
 
 type GhosttyBackend = Extract<TerminalBackendKind, `ghostty-${string}`>;
@@ -722,30 +723,28 @@ async function initializeSessionGeneration(
       });
     },
   };
-  let surface: GhosttySurface;
+  let surface: GhosttySurface | null = null;
   if (session.backend === "ghostty-webgpu" && !webGpuPreload.error) {
     try {
       surface = await WebGpuTerminalSurface.create(webGpuSurfaceOptions);
     } catch (error) {
       webGpuPreload.error = toError(error);
-      surface = createWebGlFallbackSurface(
-        session,
-        generation,
-        surfaceBaseOptions,
-      );
     }
-  } else if (session.backend === "ghostty-webgpu") {
-    surface = createWebGlFallbackSurface(
+  }
+  if (!surface) {
+    surface = await loadSessionRenderer(
       session,
       generation,
-      surfaceBaseOptions,
+      () => import("@/modules/terminal/ghostty/webgl/WebGlTerminalSurface"),
+      (renderer) =>
+        createWebGlFallbackSurface(
+          session,
+          generation,
+          surfaceBaseOptions,
+          renderer.WebGlTerminalSurface,
+        ),
     );
-  } else {
-    surface = createWebGlFallbackSurface(
-      session,
-      generation,
-      surfaceBaseOptions,
-    );
+    if (!surface) return;
   }
   if (webGpuPreload.error) {
     console.warn(
@@ -768,7 +767,7 @@ async function initializeSessionGeneration(
     } catch (error) {
       if (surface.backend !== "ghostty-webgpu") throw error;
       try {
-        surface = replaceGhosttySurface(
+        surface = await replaceGhosttySurface(
           session,
           generation,
           surfaceBaseOptions,
@@ -778,6 +777,7 @@ async function initializeSessionGeneration(
           `WebGPU surface attachment failed (${toError(error).message}); WebGL fallback also failed (${toError(fallbackError).message})`,
         );
       }
+      if (!surface) return;
       webGpuFallbackStarted = true;
       console.warn(
         "[terax] WebGPU surface attachment failed; preserved the Ghostty session with WebGL:",
@@ -933,8 +933,9 @@ function createWebGlFallbackSurface(
   session: GhosttySession,
   generation: number,
   options: GhosttySurfaceBaseOptions,
+  Surface: typeof WebGlTerminalSurface,
 ): WebGlTerminalSurface {
-  const surface = new WebGlTerminalSurface({
+  const surface = new Surface({
     ...options,
     onError: (error) => {
       queueMicrotask(() => {
@@ -951,12 +952,12 @@ function createWebGlFallbackSurface(
   return surface;
 }
 
-function fallbackWebGpuSurface(
+async function fallbackWebGpuSurface(
   session: GhosttySession,
   generation: number,
   options: GhosttySurfaceBaseOptions,
   cause: Error,
-): void {
+): Promise<void> {
   const failedSurface = session.surface;
   if (
     session.disposed ||
@@ -968,8 +969,14 @@ function fallbackWebGpuSurface(
   }
 
   try {
-    replaceGhosttySurface(session, generation, options);
+    if (!(await replaceGhosttySurface(session, generation, options))) return;
   } catch (error) {
+    if (
+      session.disposed ||
+      session.generation !== generation ||
+      session.surface !== failedSurface
+    )
+      return;
     reportRendererFailure(
       session,
       new Error(
@@ -984,25 +991,38 @@ function fallbackWebGpuSurface(
   );
 }
 
-function replaceGhosttySurface(
+async function replaceGhosttySurface(
   session: GhosttySession,
   generation: number,
   options: GhosttySurfaceBaseOptions,
-): GhosttySurface {
-  const currentOptions = session.surfaceOptions ?? options;
-  const replacement = replaceSessionSurface(
+): Promise<GhosttySurface | null> {
+  return loadSessionRenderer(
     session,
-    () => createWebGlFallbackSurface(session, generation, currentOptions),
-    (surface) => {
-      if (session.visible && session.container)
-        attachGhosttySurface(session, surface);
+    generation,
+    () => import("@/modules/terminal/ghostty/webgl/WebGlTerminalSurface"),
+    (renderer) => {
+      const currentOptions = session.surfaceOptions ?? options;
+      const replacement = replaceSessionSurface(
+        session,
+        () =>
+          createWebGlFallbackSurface(
+            session,
+            generation,
+            currentOptions,
+            renderer.WebGlTerminalSurface,
+          ),
+        (surface) => {
+          if (session.visible && session.container)
+            attachGhosttySurface(session, surface);
+        },
+        (surface) => createGhosttyInput(session, currentOptions.model, surface),
+      );
+      session.rendererError = null;
+      session.callbacks.onError?.(sessionFailure(session));
+      session.callbacks.onSearchReady?.(replacement.searchController());
+      return replacement;
     },
-    (surface) => createGhosttyInput(session, currentOptions.model, surface),
   );
-  session.rendererError = null;
-  session.callbacks.onError?.(sessionFailure(session));
-  session.callbacks.onSearchReady?.(replacement.searchController());
-  return replacement;
 }
 
 function reportRendererFailure(session: GhosttySession, error: Error): void {
@@ -1014,11 +1034,19 @@ function reportRendererFailure(session: GhosttySession, error: Error): void {
   session.callbacks.onError?.(sessionFailure(session));
 }
 
-function retryGhosttyRenderer(session: GhosttySession): void {
+async function retryGhosttyRenderer(session: GhosttySession): Promise<void> {
   if (session.disposed || !session.model || !session.surfaceOptions) return;
+  const generation = session.generation;
+  const failedSurface = session.surface;
   try {
-    replaceGhosttySurface(session, session.generation, session.surfaceOptions);
+    await replaceGhosttySurface(session, generation, session.surfaceOptions);
   } catch (error) {
+    if (
+      session.disposed ||
+      session.generation !== generation ||
+      session.surface !== failedSurface
+    )
+      return;
     reportRendererFailure(session, toError(error));
   }
 }
