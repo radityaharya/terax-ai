@@ -29,6 +29,7 @@ struct OutputQueueState {
     credit: OutputCredit,
     closed: bool,
     reader_done: bool,
+    reader_failed: bool,
     exit_ack_deadline: Option<(Instant, Duration)>,
     drain_timed_out: bool,
 }
@@ -46,6 +47,7 @@ impl OutputQueue {
                 credit: OutputCredit::default(),
                 closed: false,
                 reader_done: false,
+                reader_failed: false,
                 exit_ack_deadline: None,
                 drain_timed_out: false,
             }),
@@ -169,9 +171,12 @@ pub(super) struct OutputDiagnostics {
     reader_done: bool,
     closed: bool,
     drain_timed_out: bool,
+    reader_failed: bool,
 }
 
 pub struct Session {
+    #[cfg(unix)]
+    reader_control: Arc<super::unix_reader::ReaderControl>,
     // Drop the Windows job before pipe handles. The waiter retains the master
     // and closes ConPTY while the reader drains the final output through EOF.
     #[cfg(windows)]
@@ -189,6 +194,8 @@ pub struct Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.output.close();
+        #[cfg(unix)]
+        self.reader_control.cancel();
         // If the session Arc is dropped without an explicit pty_close (e.g.
         // frontend disconnected, window crashed, dev HMR), the reader/flusher
         // threads would otherwise stay alive forever holding the child. Kill
@@ -213,11 +220,14 @@ impl Session {
             reader_done: state.reader_done,
             closed: state.closed,
             drain_timed_out: state.drain_timed_out,
+            reader_failed: state.reader_failed,
         }
     }
 
     pub(super) fn close_output(&self) {
         self.output.close();
+        #[cfg(unix)]
+        self.reader_control.cancel();
     }
 
     pub(super) fn resize(&self, size: PtySize) -> Result<(), String> {
@@ -302,7 +312,11 @@ pub fn spawn(
     // can't outlive an aborted pty_open.
     let mut guard = ChildKillGuard::new(child.clone_killer());
     let killer = child.clone_killer();
+    #[cfg(windows)]
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    let (mut reader, reader_control) =
+        super::unix_reader::UnixPtyReader::new(pair.master.as_ref()).map_err(|e| e.to_string())?;
     let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(
         pair.master.take_writer().map_err(|e| e.to_string())?,
     ));
@@ -326,6 +340,8 @@ pub fn spawn(
     let output = Arc::new(OutputQueue::new());
 
     let session = Arc::new(Session {
+        #[cfg(unix)]
+        reader_control: reader_control.clone(),
         #[cfg(windows)]
         _job: job,
         shell_pid,
@@ -388,6 +404,12 @@ pub fn spawn(
                         }
                     }
                     Err(e) => {
+                        #[cfg(unix)]
+                        {
+                            output_r.state.lock().unwrap().reader_failed = true;
+                            log::error!("pty reader failed: {e}");
+                        }
+                        #[cfg(windows)]
                         log::debug!("pty reader ended: {e}");
                         break;
                     }
@@ -402,6 +424,8 @@ pub fn spawn(
 
     let on_data_flush = on_data;
     let output_f = output.clone();
+    #[cfg(unix)]
+    let reader_control_f = reader_control.clone();
     let flusher_thread = thread::Builder::new()
         .name("terax-pty-flusher".into())
         .spawn(move || {
@@ -425,6 +449,8 @@ pub fn spawn(
                 }
                 if let Err(e) = on_data_flush.send(Response::new(chunk)) {
                     output_f.close();
+                    #[cfg(unix)]
+                    reader_control_f.cancel();
                     log::debug!("pty flusher exiting, channel closed: {e}");
                     break;
                 }
@@ -450,6 +476,8 @@ pub fn spawn(
             };
             // Arm before ConPTY close and either join: both can depend on credit.
             output_e.begin_exit(EXIT_ACK_TIMEOUT);
+            #[cfg(unix)]
+            reader_control.finish();
             #[cfg(windows)]
             {
                 // Closing ConPTY can emit a final frame. Keep the reader alive until EOF.
@@ -464,11 +492,11 @@ pub fn spawn(
             if let Err(e) = flusher_thread.join() {
                 log::error!("pty flusher thread panicked: {e:?}");
             }
-            let code = if output_e.state.lock().unwrap().drain_timed_out {
-                -1
-            } else {
-                code
+            let delivery_failed = {
+                let state = output_e.state.lock().unwrap();
+                state.drain_timed_out || state.reader_failed
             };
+            let code = if delivery_failed { -1 } else { code };
             if let Err(e) = on_exit.send(code) {
                 log::debug!("pty exit send failed (channel closed): {e}");
             }
@@ -671,6 +699,9 @@ mod tests {
             Arc::new(Mutex::new(pair.master.take_writer().expect("writer")));
 
         let session = Arc::new(Session {
+            reader_control: super::super::unix_reader::UnixPtyReader::new(pair.master.as_ref())
+                .unwrap()
+                .1,
             shell_pid: child.process_id().unwrap_or(0),
             killer: Mutex::new(killer),
             writer,
@@ -721,6 +752,9 @@ mod tests {
             Arc::new(Mutex::new(pair.master.take_writer().expect("writer")));
 
         let session = Arc::new(Session {
+            reader_control: super::super::unix_reader::UnixPtyReader::new(pair.master.as_ref())
+                .unwrap()
+                .1,
             shell_pid: 0,
             killer: Mutex::new(killer),
             writer,

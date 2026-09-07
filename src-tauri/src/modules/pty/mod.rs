@@ -2,6 +2,8 @@ mod agent_detect;
 mod da_filter;
 mod output;
 mod session;
+#[cfg(unix)]
+mod unix_reader;
 pub(crate) mod shell_init;
 
 use std::collections::HashMap;

@@ -104,11 +104,15 @@ PTY output retains a 2 MiB pending plus in-flight byte limit and two-message
 window. Acknowledgments are cumulative parsed-byte offsets validated against
 native chunk boundaries, so duplicates and retries cannot grant extra credit.
 Parser failures stop delivery visibly without acknowledging unconsumed bytes.
-Exit waits for reader EOF and final parsing acknowledgments. After shell exit,
+Exit waits for the reader drain and final parsing acknowledgments. Unix readers
+sleep on PTY readiness plus an explicit shutdown signal without a polling timer.
+After shell exit they consume ready output, bounded to 2 MiB / 30 seconds, rather
+than wait indefinitely for an inherited slave descriptor to close. Exceeding this
+drain bound reports a reader failure and exit status -1. After shell exit,
 30 seconds without acknowledgment progress closes a stalled queue with a logged
 delivery failure and exit status -1. The deadline is armed before ConPTY close
 and thread joins; it does not run during live-shell backpressure. Close wakes blocked
-queue workers, and Windows keeps draining the pipe while ConPTY closes.
+queue workers and the Unix reader; Windows keeps draining the pipe while ConPTY closes.
 
 Enable release diagnostics with `localStorage.setItem("terax:terminal-diagnostics", "1")`
 and reload. `window.__teraxTerm()` reads frontend counters;
