@@ -1,3 +1,7 @@
+import {
+  clearAgentActivity,
+  ensureAgentActivityListener,
+} from "@/modules/terminal/lib/agentActivity";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
@@ -76,7 +80,10 @@ export async function openPty(
     if (released) return;
     released = true;
     receiver.dispose();
-    if (id !== null) receivers.delete(id);
+    if (id !== null) {
+      receivers.delete(id);
+      clearAgentActivity(id);
+    }
     if (notice !== undefined) toast.dismiss(notice);
     onData.onmessage = () => {};
     onExit.onmessage = () => {};
@@ -92,6 +99,7 @@ export async function openPty(
   };
 
   try {
+    await ensureAgentActivityListener();
     id = await invoke<number>("pty_open", {
       cols,
       rows,
@@ -108,6 +116,7 @@ export async function openPty(
     throw error;
   }
   if (!released) receivers.set(id, receiver);
+  else clearAgentActivity(id);
   receiver.start();
 
   let closed = false;
