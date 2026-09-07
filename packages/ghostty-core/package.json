@@ -9,7 +9,6 @@
     "./adapted": "./lib/adapted/index.ts",
     "./adapted/ghostty-vt.wasm": "./adapted/ghostty-vt.wasm",
     "./adapted/ghostty-vt-scalar.wasm": "./adapted/ghostty-vt-scalar.wasm",
-    "./input": "./lib/input-handler.ts",
     "./ghostty-vt.wasm": "./ghostty-vt.wasm",
     "./official": "./lib/official/index.ts",
     "./official/ghostty-vt.wasm": "./official/ghostty-vt.wasm"

@@ -7,7 +7,6 @@ export {
   KeyEncoderOption,
 } from "./ghostty";
 export { Key, KeyAction, Mods } from "./types";
-export { InputHandler, type MouseTrackingConfig, type TerminalInput } from "./input-handler";
 export type {
   GhosttyCell,
   GhosttyTerminalEvent,

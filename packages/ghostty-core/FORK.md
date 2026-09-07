@@ -1,14 +1,17 @@
 # Terax Ghostty core lineage
 
-The production-candidate core is the maintained adaptation documented in
+The production core is the maintained adaptation documented in
 `adapted/UPSTREAM.md`. It is built from current pinned Ghostty source and uses
-selected low-level bridge work from Restty. It is the model loaded by the
-experimental `ghostty-webgl` and `ghostty-webgpu` backends.
+selected low-level bridge work from Restty. It is the model loaded by the `ghostty-webgl` and `ghostty-webgpu` backends.
 
 The files described below are the first Ghostty WebAssembly integration kept
 temporarily for compatibility tests and source history. They are not imported
-by the active experimental runtime and Vite tree-shakes their WASM artifact
+by the active runtime and Vite tree-shakes their WASM artifact
 from the production application bundle.
+
+The unused legacy application model and browser input handler have been removed.
+The remaining legacy bridge is isolated to compatibility tests. Its types and
+key constants are available through the protocol entry point without loading it.
 
 ## Legacy ghostty-web fork
 
