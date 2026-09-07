@@ -1049,14 +1049,17 @@ export class TeraxGhosttyTerminal {
     if (this.inputPointer) {
       this.exports.restty_free(this.inputPointer, this.inputCapacity);
     }
-    this.inputCapacity = Math.max(
+    this.inputPointer = 0;
+    this.inputCapacity = 0;
+    const capacity = Math.max(
       INPUT_CAPACITY_ALIGNMENT,
       alignCapacity(
         Math.ceil(length * 1.125),
         INPUT_CAPACITY_ALIGNMENT,
       ),
     );
-    this.inputPointer = this.allocate(this.inputCapacity);
+    this.inputPointer = this.allocate(capacity);
+    this.inputCapacity = capacity;
   }
 
   private assertLive(): void {

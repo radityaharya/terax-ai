@@ -8,7 +8,7 @@ import {
   OFFICIAL_GHOSTTY_WASM_SHA256,
   OfficialGhostty,
 } from "@terax/ghostty-core/official";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 let ghostty: OfficialGhostty;
 let adaptedGhostty: TeraxGhostty;
@@ -33,6 +33,75 @@ beforeAll(async () => {
 });
 
 describe("official libghostty-vt integration", () => {
+  it.each(["adapted", "official"] as const)(
+    "recovers from %s input allocation failure without reusing freed storage",
+    (kind) => {
+      const terminal = (
+        kind === "adapted" ? adaptedGhostty : ghostty
+      ).createTerminal(20, 4);
+      const state = terminal as unknown as { exports: Record<string, unknown> };
+      const allocateName =
+        kind === "adapted" ? "restty_alloc" : "ghostty_wasm_alloc_u8_array";
+      const freeName =
+        kind === "adapted" ? "restty_free" : "ghostty_wasm_free_u8_array";
+      const originalAllocate = state.exports[allocateName] as (
+        length: number,
+      ) => number;
+      const originalFree = state.exports[freeName] as (
+        pointer: number,
+        length: number,
+      ) => void;
+      const allocate = vi.fn(originalAllocate);
+      const free = vi.fn(originalFree);
+      state.exports = {
+        ...state.exports,
+        [allocateName]: allocate,
+        [freeName]: free,
+      };
+      terminal.write(new TextEncoder().encode("first"));
+      const pointer = allocate.mock.results[0].value;
+      allocate.mockReturnValue(0);
+      expect(() => terminal.write(new Uint8Array(8192))).toThrow(/allocat/i);
+      expect(() => terminal.write(Uint8Array.of(65))).toThrow(/allocat/i);
+      expect(free.mock.calls.filter(([p]) => p === pointer)).toHaveLength(1);
+      allocate.mockImplementation(originalAllocate);
+      terminal.write(new TextEncoder().encode(" recovered"));
+      expect(allocate).toHaveBeenCalledTimes(4);
+      terminal.dispose();
+    },
+  );
+
+  it.each(["adapted", "official"] as const)(
+    "can dispose %s immediately after input allocation failure",
+    (kind) => {
+      const terminal = (
+        kind === "adapted" ? adaptedGhostty : ghostty
+      ).createTerminal(20, 4);
+      const state = terminal as unknown as { exports: Record<string, unknown> };
+      const allocateName =
+        kind === "adapted" ? "restty_alloc" : "ghostty_wasm_alloc_u8_array";
+      const freeName =
+        kind === "adapted" ? "restty_free" : "ghostty_wasm_free_u8_array";
+      const allocate = vi.fn(
+        state.exports[allocateName] as (length: number) => number,
+      );
+      const free = vi.fn(
+        state.exports[freeName] as (pointer: number, length: number) => void,
+      );
+      state.exports = {
+        ...state.exports,
+        [allocateName]: allocate,
+        [freeName]: free,
+      };
+      terminal.write(Uint8Array.of(65));
+      const pointer = allocate.mock.results[0].value;
+      allocate.mockReturnValue(0);
+      expect(() => terminal.write(new Uint8Array(8192))).toThrow(/allocat/i);
+      terminal.dispose();
+      expect(free.mock.calls.filter(([p]) => p === pointer)).toHaveLength(1);
+    },
+  );
+
   it("pins the audited upstream artifact", () => {
     expect(OFFICIAL_GHOSTTY_COMMIT).toBe(
       "cecf81678e47f967b0354acada67e69d229f436b",

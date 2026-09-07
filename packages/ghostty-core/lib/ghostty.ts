@@ -389,22 +389,26 @@ export class GhosttyTerminal {
   // ==========================================================================
 
   write(data: string | Uint8Array): void {
-    if (this.disposed) throw new Error('Terminal has been freed');
+    this.assertLive();
     const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
     if (bytes.length === 0) return;
     if (bytes.length > this.inputBufferSize) {
       if (this.inputBufferPtr) {
         this.exports.ghostty_wasm_free_u8_array(this.inputBufferPtr, this.inputBufferSize);
       }
-      this.inputBufferSize = nextPowerOfTwo(bytes.length);
-      this.inputBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(this.inputBufferSize);
+      this.inputBufferPtr = 0;
+      this.inputBufferSize = 0;
+      const size = nextPowerOfTwo(bytes.length);
+      this.inputBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(size);
       if (!this.inputBufferPtr) throw new Error('Failed to allocate terminal input buffer');
+      this.inputBufferSize = size;
     }
     new Uint8Array(this.memory.buffer, this.inputBufferPtr, bytes.length).set(bytes);
     this.exports.ghostty_terminal_write(this.handle, this.inputBufferPtr, bytes.length);
   }
 
   resize(cols: number, rows: number): void {
+    this.assertLive();
     if (cols === this._cols && rows === this._rows) return;
     this._cols = cols;
     this._rows = rows;
@@ -453,6 +457,8 @@ export class GhosttyTerminal {
       this.graphemeBufferPtr = 0;
       this.graphemeBuffer = null;
     }
+    this.viewportBufferSize = 0;
+    this.cellPool.length = 0;
     this.exports.ghostty_terminal_free(this.handle);
   }
 
@@ -474,6 +480,7 @@ export class GhosttyTerminal {
    * Safe to call multiple times - dirty state persists until markClean().
    */
   update(): DirtyState {
+    this.assertLive();
     return this.exports.ghostty_render_state_update(this.handle) as DirtyState;
   }
 
@@ -487,6 +494,7 @@ export class GhosttyTerminal {
   }
 
   getCursorSnapshot(): RenderStateCursor {
+    this.assertLive();
     return {
       x: this.exports.ghostty_render_state_get_cursor_x(this.handle),
       y: this.exports.ghostty_render_state_get_cursor_y(this.handle),
@@ -504,6 +512,7 @@ export class GhosttyTerminal {
    * Get default colors from render state
    */
   getColors(): RenderStateColors {
+    this.assertLive();
     const bg = this.exports.ghostty_render_state_get_bg_color(this.handle);
     const fg = this.exports.ghostty_render_state_get_fg_color(this.handle);
     return {
@@ -525,6 +534,7 @@ export class GhosttyTerminal {
    * Check if a specific row is dirty
    */
   isRowDirty(y: number): boolean {
+    this.assertLive();
     return this.exports.ghostty_render_state_is_row_dirty(this.handle, y);
   }
 
@@ -532,6 +542,7 @@ export class GhosttyTerminal {
    * Mark render state as clean (call after rendering)
    */
   markClean(): void {
+    this.assertLive();
     this.exports.ghostty_render_state_mark_clean(this.handle);
   }
 
@@ -546,6 +557,7 @@ export class GhosttyTerminal {
   }
 
   getPackedViewport(): PackedViewport {
+    this.assertLive();
     const totalCells = this._cols * this._rows;
     const neededSize = totalCells * GhosttyTerminal.CELL_SIZE;
 
@@ -554,7 +566,10 @@ export class GhosttyTerminal {
       if (this.viewportBufferPtr) {
         this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
       }
+      this.viewportBufferPtr = 0;
+      this.viewportBufferSize = 0;
       this.viewportBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(neededSize);
+      if (!this.viewportBufferPtr) throw new Error('Failed to allocate terminal viewport buffer');
       this.viewportBufferSize = neededSize;
     }
 
@@ -628,6 +643,7 @@ export class GhosttyTerminal {
   // ==========================================================================
 
   isAlternateScreen(): boolean {
+    this.assertLive();
     return !!this.exports.ghostty_terminal_is_alternate_screen(this.handle);
   }
 
@@ -642,6 +658,7 @@ export class GhosttyTerminal {
   }
 
   hasMouseTracking(): boolean {
+    this.assertLive();
     return this.exports.ghostty_terminal_has_mouse_tracking(this.handle) !== 0;
   }
 
@@ -656,6 +673,7 @@ export class GhosttyTerminal {
 
   /** Get number of scrollback lines (history, not including active screen) */
   getScrollbackLength(): number {
+    this.assertLive();
     return this.exports.ghostty_terminal_get_scrollback_length(this.handle);
   }
 
@@ -673,13 +691,17 @@ export class GhosttyTerminal {
    * This avoids repeated updates when reading several rows from one snapshot.
    */
   getPackedScrollbackLineSnapshot(offset: number): PackedViewport | null {
+    this.assertLive();
     const neededSize = this._cols * GhosttyTerminal.CELL_SIZE;
 
     if (!this.viewportBufferPtr || this.viewportBufferSize < neededSize) {
       if (this.viewportBufferPtr) {
         this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
       }
+      this.viewportBufferPtr = 0;
+      this.viewportBufferSize = 0;
       this.viewportBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(neededSize);
+      if (!this.viewportBufferPtr) throw new Error('Failed to allocate terminal viewport buffer');
       this.viewportBufferSize = neededSize;
     }
 
@@ -747,11 +769,13 @@ export class GhosttyTerminal {
 
   /** Check if a row in the active screen is wrapped (soft-wrapped to next line) */
   isRowWrapped(row: number): boolean {
+    this.assertLive();
     return this.exports.ghostty_terminal_is_row_wrapped(this.handle, row) !== 0;
   }
 
   /** Check if a scrollback row continues the previous logical line. */
   isScrollbackRowWrapped(offset: number): boolean {
+    this.assertLive();
     return (
       this.exports.ghostty_terminal_is_scrollback_row_wrapped(
         this.handle,
@@ -767,6 +791,7 @@ export class GhosttyTerminal {
    * @returns The URI string, or null if no hyperlink at that position
    */
   getHyperlinkUri(row: number, col: number): string | null {
+    this.assertLive();
     // Check if WASM has this function (requires rebuilt WASM with hyperlink support)
     if (!this.exports.ghostty_terminal_get_hyperlink_uri) {
       return null;
@@ -782,6 +807,7 @@ export class GhosttyTerminal {
    * @returns The URI string, or null if no hyperlink at that position
    */
   getScrollbackHyperlinkUri(offset: number, col: number): string | null {
+    this.assertLive();
     // Check if WASM has this function
     if (!this.exports.ghostty_terminal_get_scrollback_hyperlink_uri) {
       return null;
@@ -795,6 +821,7 @@ export class GhosttyTerminal {
    * Responses are generated by escape sequences like DSR (Device Status Report).
    */
   hasResponse(): boolean {
+    this.assertLive();
     return this.exports.ghostty_terminal_has_response(this.handle);
   }
 
@@ -816,6 +843,7 @@ export class GhosttyTerminal {
    * The returned bytes own their memory and remain valid after this call.
    */
   readResponseBytes(): Uint8Array | null {
+    this.assertLive();
     if (!this.hasResponse()) return null;
     if (!this.responseBufferPtr) {
       this.responseBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(
@@ -840,6 +868,7 @@ export class GhosttyTerminal {
 
   /** Drain semantic terminal events in parser order. */
   drainEvents(): GhosttyTerminalEvent[] {
+    this.assertLive();
     const events: GhosttyTerminalEvent[] = [];
     if (!this.exports.ghostty_terminal_has_events) return events;
     if (!this.eventBufferPtr) {
@@ -877,6 +906,7 @@ export class GhosttyTerminal {
    * @param isAnsi True for ANSI modes, false for DEC modes (default: false)
    */
   getMode(mode: number, isAnsi: boolean = false): boolean {
+    this.assertLive();
     return this.exports.ghostty_terminal_get_mode(this.handle, mode, isAnsi) !== 0;
   }
 
@@ -884,6 +914,7 @@ export class GhosttyTerminal {
     style: 'block' | 'underline' | 'bar',
     blinking: boolean
   ): void {
+    this.assertLive();
     this.exports.ghostty_terminal_set_cursor_style(
       this.handle,
       encodeCursorStyle(style)
@@ -895,8 +926,13 @@ export class GhosttyTerminal {
   // Private helpers
   // ==========================================================================
 
+  private assertLive(): void {
+    if (this.disposed) throw new Error('Terminal has been freed');
+  }
+
   private initCellPool(): void {
     const total = this._cols * this._rows;
+    if (this.cellPool.length > total) this.cellPool.length = total;
     if (this.cellPool.length < total) {
       for (let i = this.cellPool.length; i < total; i++) {
         this.cellPool.push({
@@ -959,6 +995,7 @@ export class GhosttyTerminal {
    * @returns Array of codepoints, or null on error
    */
   getGrapheme(row: number, col: number): number[] | null {
+    this.assertLive();
     this.ensureGraphemeBuffer();
 
     const count = this.exports.ghostty_render_state_get_grapheme(
@@ -993,6 +1030,7 @@ export class GhosttyTerminal {
    * @returns Array of codepoints, or null on error
    */
   getScrollbackGrapheme(offset: number, col: number): number[] | null {
+    this.assertLive();
     this.ensureGraphemeBuffer();
 
     const count = this.exports.ghostty_terminal_get_scrollback_grapheme(
@@ -1100,12 +1138,19 @@ class TerminalEventDecoder {
   private readonly header = new Uint8Array(TERMINAL_EVENT_HEADER_BYTES);
   private headerOffset = 0;
   private eventType = 0;
+  private skippedBytes = 0;
   private payload = new Uint8Array(0);
   private payloadOffset = 0;
 
   push(bytes: Uint8Array, target: GhosttyTerminalEvent[]): void {
     let offset = 0;
     while (offset < bytes.byteLength) {
+      if (this.skippedBytes > 0) {
+        const count = Math.min(this.skippedBytes, bytes.byteLength - offset);
+        this.skippedBytes -= count;
+        offset += count;
+        continue;
+      }
       if (this.headerOffset < TERMINAL_EVENT_HEADER_BYTES) {
         const count = Math.min(
           TERMINAL_EVENT_HEADER_BYTES - this.headerOffset,
@@ -1119,7 +1164,9 @@ class TerminalEventDecoder {
         const payloadBytes = new DataView(this.header.buffer).getUint32(1, true);
         if (payloadBytes > MAX_TERMINAL_EVENT_PAYLOAD_BYTES) {
           this.reset();
-          throw new Error(`Terminal semantic event exceeds ${MAX_TERMINAL_EVENT_PAYLOAD_BYTES} bytes`);
+          this.skippedBytes = payloadBytes;
+          target.push({ type: 'overflow', dropped: 1 });
+          continue;
         }
         this.eventType = this.header[0];
         this.payload = new Uint8Array(payloadBytes);

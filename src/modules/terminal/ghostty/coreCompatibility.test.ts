@@ -6,7 +6,8 @@ import {
   KeyAction,
   Mods,
 } from "@terax/ghostty-core";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import type { GhosttyTerminalEvent } from "@terax/ghostty-core/protocol";
 
 let ghostty: Ghostty;
 
@@ -20,6 +21,87 @@ beforeAll(async () => {
 });
 
 describe("vendored libghostty-vt compatibility", () => {
+  it("rejects model access after freeing the native handle", () => {
+    const terminal = ghostty.createTerminal(20, 4);
+    terminal.free();
+    for (const access of [
+      () => terminal.resize(20, 4),
+      () => terminal.update(),
+      () => terminal.getCursorSnapshot(),
+      () => terminal.getPackedViewport(),
+      () => terminal.getScrollbackLength(),
+      () => terminal.getPackedScrollbackLineSnapshot(0),
+      () => terminal.readResponseBytes(),
+      () => terminal.drainEvents(),
+      () => terminal.getMode(25),
+      () => terminal.getGrapheme(0, 0),
+      () => terminal.isRowDirty(0),
+      () => terminal.setCursorOptions("bar", true),
+    ])
+      expect(access).toThrow(/freed/);
+    expect(() => terminal.free()).not.toThrow();
+  });
+
+  it("returns only active cells after the viewport shrinks", () => {
+    const terminal = ghostty.createTerminal(20, 8);
+    terminal.update();
+    expect(terminal.getViewport()).toHaveLength(160);
+    terminal.resize(10, 4);
+    terminal.update();
+    const active = terminal.getViewport();
+    expect(active).toHaveLength(40);
+    expect(terminal.getViewport()).toBe(active);
+    terminal.free();
+  });
+
+  it.each([false, true])(
+    "rejects a null viewport allocation (scrollback: %s)",
+    (history) => {
+      const terminal = ghostty.createTerminal(20, 4);
+      terminal.write("line\r\n".repeat(8));
+      terminal.update();
+      const state = terminal as unknown as { exports: Record<string, unknown> };
+      const allocate = vi.fn(
+        state.exports.ghostty_wasm_alloc_u8_array as (length: number) => number,
+      );
+      state.exports = {
+        ...state.exports,
+        ghostty_wasm_alloc_u8_array: allocate,
+      };
+      const read = () =>
+        history
+          ? terminal.getPackedScrollbackLineSnapshot(0)
+          : terminal.getPackedViewport();
+      allocate.mockReturnValueOnce(0);
+      expect(read).toThrow(/allocate/);
+      expect(read()?.cellCount).toBeGreaterThan(0);
+      terminal.free();
+    },
+  );
+
+  it("skips oversized event payloads across chunks without interpreting their contents as headers", () => {
+    const terminal = ghostty.createTerminal(20, 4);
+    const { eventDecoder } = terminal as unknown as {
+      eventDecoder: {
+        push(bytes: Uint8Array, target: GhosttyTerminalEvent[]): void;
+      };
+    };
+    const events: GhosttyTerminalEvent[] = [];
+    const header = new Uint8Array(5);
+    header[0] = 2;
+    new DataView(header.buffer).setUint32(1, 1024 * 1024 + 1, true);
+    eventDecoder.push(header.subarray(0, 2), events);
+    eventDecoder.push(header.subarray(2), events);
+    for (let chunk = 0; chunk < 256; chunk++)
+      eventDecoder.push(new Uint8Array(4096).fill(1), events);
+    eventDecoder.push(Uint8Array.of(1, 1, 0, 0, 0, 0), events);
+    expect(events).toEqual([
+      { type: "overflow", dropped: 1 },
+      { type: "bell" },
+    ]);
+    terminal.free();
+  });
+
   it("returns operating status and cursor position reports", () => {
     const terminal = ghostty.createTerminal(80, 24);
     expect(query(terminal, "\x1b[5n")).toBe("\x1b[0n");

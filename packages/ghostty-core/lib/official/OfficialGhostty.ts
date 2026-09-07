@@ -681,8 +681,11 @@ export class OfficialGhosttyTerminal {
         this.inputCapacity,
       );
     }
-    this.inputCapacity = nextPowerOfTwo(length);
-    this.inputPointer = allocateBytes(this.exports, this.inputCapacity);
+    this.inputPointer = 0;
+    this.inputCapacity = 0;
+    const capacity = nextPowerOfTwo(length);
+    this.inputPointer = allocateBytes(this.exports, capacity);
+    this.inputCapacity = capacity;
   }
 
   private assertLive(): void {
