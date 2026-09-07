@@ -456,6 +456,8 @@ describe("GhosttyCoreRuntime", () => {
     expect(model.scrollPosition()).toEqual({ offset: 0, history: 0 });
     expect(readViewportRows(model)).toEqual(["prompt", "", ""]);
     expect(model.cursor()).toEqual(expect.objectContaining({ x: 6, y: 0 }));
+    model.clear();
+    expect(readViewportRows(model)).toEqual(["prompt", "", ""]);
     model.dispose();
   });
 

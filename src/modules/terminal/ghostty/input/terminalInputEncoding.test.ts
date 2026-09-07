@@ -23,4 +23,10 @@ describe("terminal input encoding", () => {
       "\x1b[200~a␛[201~b\x1b[201~",
     );
   });
+  it("applies the same escape protection to single-line command submissions", () => {
+    const command = "echo a\x1b[201~b";
+    expect(encodeTerminalSubmission(command, true)).toBe(
+      `${encodeTerminalPaste(command, true)}\r`,
+    );
+  });
 });

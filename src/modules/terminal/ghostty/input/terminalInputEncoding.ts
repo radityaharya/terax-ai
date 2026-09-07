@@ -16,8 +16,9 @@ export function encodeTerminalSubmission(
   bracketedPaste: boolean,
 ): string {
   const normalized = normalizeTerminalPaste(text);
-  const payload = normalized.includes("\r")
-    ? encodeTerminalPaste(normalized, bracketedPaste)
-    : normalized;
+  const payload =
+    normalized.includes("\r") || normalized.includes("\x1b")
+      ? encodeTerminalPaste(normalized, bracketedPaste)
+      : normalized;
   return `${payload}\r`;
 }

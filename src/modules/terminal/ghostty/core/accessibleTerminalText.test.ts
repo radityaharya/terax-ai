@@ -13,3 +13,7 @@ it("bounds announcements during full-screen redraws", () => {
     changedTerminalText("old", "new".repeat(10_000)).length,
   ).toBeLessThanOrEqual(2048);
 });
+it("announces the newest appended output when an update exceeds the limit", () => {
+  const next = `prompt${"old output\n".repeat(500)}finished`;
+  expect(changedTerminalText("prompt", next)).toBe(next.slice(-2048));
+});

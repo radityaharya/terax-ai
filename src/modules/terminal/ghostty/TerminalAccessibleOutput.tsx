@@ -1,5 +1,5 @@
 import { changedTerminalText } from "@/modules/terminal/ghostty/core/accessibleTerminalText";
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import type { GhosttyTerminalModelApi } from "@/modules/terminal/ghostty/GhosttyTerminalModel";
 import { subscribeWindowPresentation } from "@/modules/terminal/ghostty/windowPresentation";
 
@@ -16,6 +16,12 @@ export default function TerminalAccessibleOutput({
 }) {
   const [text, setText] = useState("");
   const [announcement, setAnnouncement] = useState("");
+  const announce = useEffectEvent((previous: string, next: string) => {
+    setAnnouncement(focused ? changedTerminalText(previous, next) : "");
+  });
+  useEffect(() => {
+    if (!focused) setAnnouncement("");
+  }, [focused]);
   useEffect(() => {
     if (!visible) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -30,7 +36,7 @@ export default function TerminalAccessibleOutput({
           .readTextRange?.(start, start + Math.min(model.rows, 256) - 1)
           .slice(0, 64 * 1024) ?? "";
       setText(next);
-      setAnnouncement(focused ? changedTerminalText(previous, next) : "");
+      announce(previous, next);
       previous = next;
     };
     const schedule = () => {
@@ -50,7 +56,7 @@ export default function TerminalAccessibleOutput({
       unsubscribe();
       if (timer !== null) clearTimeout(timer);
     };
-  }, [model, visible, focused]);
+  }, [model, visible]);
 
   return (
     <>

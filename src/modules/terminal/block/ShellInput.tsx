@@ -105,6 +105,9 @@ export default function ShellInput({
     });
     return () => {
       cancelAnimationFrame(frame);
+      const value = handle.getValue();
+      setLeafDraft(leafIdRef.current, value);
+      setLeafInputActivity(leafIdRef.current, value.length > 0);
       handle.destroy();
       handleRef.current = null;
     };
@@ -134,7 +137,7 @@ export default function ShellInput({
       }
     });
     return () => {
-      const value = handleRef.current?.getValue() ?? "";
+      const value = handleRef.current?.getValue() ?? getLeafDraft(leafId);
       setLeafDraft(leafId, value);
       setLeafInputActivity(leafId, value.length > 0);
       setLeafInputFocus(leafId, null);

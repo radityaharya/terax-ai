@@ -8,7 +8,7 @@ export function changedTerminalText(previous: string, next: string): string {
     previous[common] === next[common]
   )
     common++;
-  if (common > 0) return next.slice(common, common + 2048);
+  if (common > 0) return next.slice(Math.max(common, next.length - 2048));
   const oldLines = previous.split("\n").slice(-128);
   const newLines = next.split("\n").slice(-128);
   for (
