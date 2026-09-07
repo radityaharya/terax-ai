@@ -5,6 +5,10 @@ ownership around desktop transitions, occlusion, and sleep. It does not yet
 attribute the reported Activity Monitor spike to a specific process or prove
 multi-day application memory and energy stability.
 
+The [final September 7 audit](ghostty-final-audit-2026-09-07.md) adds startup and
+presentation-view cleanup, repeats both core profiles and block stress variants,
+and records the remaining limits of the resource evidence.
+
 ## September 7 allocation and redundant-work pass
 
 The baseline is `0e3fae9`. The current core is built from Ghostty

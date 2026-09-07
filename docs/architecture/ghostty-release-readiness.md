@@ -5,6 +5,11 @@ still open. xterm and its addons are removed. All terminals, including blocks,
 use Ghostty with WebGPU or Terax WebGL. This is a testable release candidate,
 not evidence of multi-platform, multi-day production certification.
 
+The [final resource audit](ghostty-final-audit-2026-09-07.md) records the latest
+lifecycle fixes, fresh allocation/stress data, a rejected native I/O experiment,
+and validation of 1,155 frontend tests and 356 Rust tests. It leaves the packaged
+release gates below open.
+
 ## September 7 PR review
 
 The [review dispositions](ghostty-review-2026-09-07.md) record the initial 27 CodeRabbit
@@ -273,6 +278,7 @@ or long-duration stability. Do not use them as application performance claims.
 
 | Gate | Required evidence or implementation |
 | --- | --- |
+| Platform and installers | Packaged macOS 13 WKWebView, Windows WebView2/ConPTY, and Linux WebKitGTK runs; existing/missing runtime installation and offline behavior. The handoff's macOS 10.15 minimum is stale; see the platform configuration below. |
 | Ghostty blocks | Native boundaries, reflow/pruning/reset, exact output, Unicode search, metadata caps, navigation, and occlusion tests pass. Validate overlay placement and shared input with real shells in packaged webviews. |
 | Accessibility | Bounded accessible output, history paging, and announcements are implemented. VoiceOver, NVDA, and Orca validation remains required. |
 | Product events | Plain-text URLs and OSC 8 are implemented. Title, bell, and generic notification events remain exposed by the bridge; product routing beyond existing agent notifications is not implemented. |
