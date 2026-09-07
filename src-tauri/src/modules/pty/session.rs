@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,11 +23,14 @@ const FLUSH_SUSTAINED_COALESCE: Duration = Duration::from_millis(16);
 const FLUSH_SUSTAINED_WINDOW: Duration = Duration::from_millis(40);
 const FLUSH_IMMEDIATE_BYTES: usize = 64 * 1024;
 const READ_BUF: usize = 16 * 1024;
+const EXIT_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 struct OutputQueueState {
     pending: Vec<u8>,
     credit: OutputCredit,
     closed: bool,
     reader_done: bool,
+    exit_ack_deadline: Option<(Instant, Duration)>,
+    drain_timed_out: bool,
 }
 
 struct OutputQueue {
@@ -43,6 +46,8 @@ impl OutputQueue {
                 credit: OutputCredit::default(),
                 closed: false,
                 reader_done: false,
+                exit_ack_deadline: None,
+                drain_timed_out: false,
             }),
             changed: Condvar::new(),
         }
@@ -51,6 +56,9 @@ impl OutputQueue {
     fn acknowledge(&self, bytes: u64) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
         if state.credit.acknowledge(bytes)? {
+            if let Some((deadline, timeout)) = &mut state.exit_ack_deadline {
+                *deadline = Instant::now() + *timeout;
+            }
             self.changed.notify_all();
         }
         Ok(())
@@ -69,13 +77,40 @@ impl OutputQueue {
         self.changed.notify_all();
     }
 
+    fn begin_exit(&self, timeout: Duration) {
+        let mut state = self.state.lock().unwrap();
+        state.exit_ack_deadline = Some((Instant::now() + timeout, timeout));
+        self.changed.notify_all();
+    }
+
+    fn wait_change<'a>(
+        &'a self,
+        mut state: MutexGuard<'a, OutputQueueState>,
+    ) -> MutexGuard<'a, OutputQueueState> {
+        if let Some((deadline, _)) = state.exit_ack_deadline {
+            if state.credit.in_flight_chunks() > 0 {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    log::error!("PTY output drain timed out after shell exit: {} bytes unacknowledged, {} bytes pending", state.credit.in_flight_bytes(), state.pending.len());
+                    state.drain_timed_out = true;
+                    state.closed = true;
+                    state.pending = Vec::new();
+                    self.changed.notify_all();
+                    return state;
+                }
+                return self.changed.wait_timeout(state, remaining).unwrap().0;
+            }
+        }
+        self.changed.wait(state).unwrap()
+    }
+
     fn push(&self, bytes: &[u8]) -> bool {
         let mut state = self.state.lock().unwrap();
         while !state.closed
             && state.pending.len() + state.credit.in_flight_bytes() + bytes.len()
                 > MAX_BUFFERED_BYTES
         {
-            state = self.changed.wait(state).unwrap();
+            state = self.wait_change(state);
         }
         if state.closed {
             return false;
@@ -91,7 +126,7 @@ impl OutputQueue {
             if state.reader_done && state.credit.in_flight_chunks() == 0 {
                 return None;
             }
-            state = self.changed.wait(state).unwrap();
+            state = self.wait_change(state);
         }
         if state.closed {
             None
@@ -103,13 +138,18 @@ impl OutputQueue {
     fn take(&self) -> Option<Vec<u8>> {
         let mut state = self.state.lock().unwrap();
         while !state.closed && !state.credit.can_send() {
-            state = self.changed.wait(state).unwrap();
+            state = self.wait_change(state);
         }
         if state.closed {
             return None;
         }
         let chunk = std::mem::replace(&mut state.pending, Vec::with_capacity(READ_BUF));
         if !chunk.is_empty() {
+            if state.credit.in_flight_chunks() == 0 {
+                if let Some((deadline, timeout)) = &mut state.exit_ack_deadline {
+                    *deadline = Instant::now() + *timeout;
+                }
+            }
             state.credit.sent(chunk.len());
         }
         Some(chunk)
@@ -128,6 +168,7 @@ pub(super) struct OutputDiagnostics {
     in_flight_chunks: usize,
     reader_done: bool,
     closed: bool,
+    drain_timed_out: bool,
 }
 
 pub struct Session {
@@ -171,6 +212,7 @@ impl Session {
             in_flight_chunks: state.credit.in_flight_chunks(),
             reader_done: state.reader_done,
             closed: state.closed,
+            drain_timed_out: state.drain_timed_out,
         }
     }
 
@@ -406,6 +448,8 @@ pub fn spawn(
                     -1
                 }
             };
+            // Arm before ConPTY close and either join: both can depend on credit.
+            output_e.begin_exit(EXIT_ACK_TIMEOUT);
             #[cfg(windows)]
             {
                 // Closing ConPTY can emit a final frame. Keep the reader alive until EOF.
@@ -420,6 +464,11 @@ pub fn spawn(
             if let Err(e) = flusher_thread.join() {
                 log::error!("pty flusher thread panicked: {e:?}");
             }
+            let code = if output_e.state.lock().unwrap().drain_timed_out {
+                -1
+            } else {
+                code
+            };
             if let Err(e) = on_exit.send(code) {
                 log::debug!("pty exit send failed (channel closed): {e}");
             }
@@ -450,6 +499,60 @@ fn flush_coalesce_delay(since_last_flush: Option<Duration>, pending_bytes: usize
 mod flow_control_tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[test]
+    fn shell_exit_releases_both_workers_when_frontend_stops_acknowledging() {
+        let output = Arc::new(OutputQueue::new());
+        for _ in 0..2 {
+            output.push(&vec![0; MAX_BUFFERED_BYTES / 2]);
+            output.take().unwrap();
+        }
+        let (sent, received) = mpsc::channel();
+        let reader_output = output.clone();
+        let reader_sent = sent.clone();
+        let reader = thread::spawn(move || {
+            reader_sent.send(!reader_output.push(&[1])).unwrap();
+        });
+        let flusher_output = output.clone();
+        let flusher = thread::spawn(move || {
+            sent.send(flusher_output.take().is_none()).unwrap();
+        });
+        output.begin_exit(Duration::from_millis(30));
+        assert!(received.recv_timeout(Duration::from_secs(1)).unwrap());
+        assert!(received.recv_timeout(Duration::from_secs(1)).unwrap());
+        reader.join().unwrap();
+        flusher.join().unwrap();
+        assert!(output.state.lock().unwrap().drain_timed_out);
+    }
+
+    #[test]
+    fn final_unacknowledged_chunk_times_out_after_reader_eof() {
+        let output = OutputQueue::new();
+        output.push(&[1]);
+        output.take().unwrap();
+        output.finish_reading();
+        output.begin_exit(Duration::ZERO);
+        assert_eq!(output.wait_pending(), None);
+        assert!(output.state.lock().unwrap().drain_timed_out);
+    }
+
+    #[test]
+    fn progressing_exit_drain_preserves_tail_and_renews_deadline() {
+        let output = OutputQueue::new();
+        output.push(&[1]);
+        output.take().unwrap();
+        output.begin_exit(Duration::from_secs(1));
+        output.state.lock().unwrap().exit_ack_deadline =
+            Some((Instant::now(), Duration::from_secs(1)));
+        output.acknowledge(1).unwrap();
+        assert!(output.state.lock().unwrap().exit_ack_deadline.unwrap().0 > Instant::now());
+        output.push(&[2]);
+        assert_eq!(output.take().unwrap(), vec![2]);
+        output.finish_reading();
+        output.acknowledge(2).unwrap();
+        assert_eq!(output.wait_pending(), None);
+        assert!(!output.state.lock().unwrap().drain_timed_out);
+    }
 
     #[test]
     fn reader_backpressure_releases_only_after_valid_cumulative_credit() {

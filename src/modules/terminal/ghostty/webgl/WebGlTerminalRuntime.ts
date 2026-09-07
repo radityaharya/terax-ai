@@ -100,18 +100,23 @@ export class WebGlTerminalRuntime {
     const existing = this.leases.get(surface);
     if (existing) {
       const key = rendererProfileKey(profile);
-      existing.renderer.configure(
-        profile,
-        () => this.schedule(surface),
-        (error) => surface.handleRendererError(error),
-      );
-      if (existing.profileKey !== key) {
-        existing.renderer.resetModel();
+      try {
+        existing.renderer.configure(
+          profile,
+          () => this.schedule(surface),
+          (error) => surface.handleRendererError(error),
+        );
+        if (existing.profileKey !== key) {
+          existing.renderer.resetModel();
+        }
+        existing.profileKey = key;
+        existing.renderer.attach(host);
+        existing.lastUsed = this.dependencies.now();
+        return existing.renderer;
+      } catch (error) {
+        this.discard(surface);
+        throw error;
       }
-      existing.profileKey = key;
-      existing.renderer.attach(host);
-      existing.lastUsed = this.dependencies.now();
-      return existing.renderer;
     }
 
     const key = rendererProfileKey(profile);
@@ -119,7 +124,6 @@ export class WebGlTerminalRuntime {
       (candidate) => !candidate.owner && candidate.profileKey === key,
     );
     slot ??= this.slots.find((candidate) => !candidate.owner);
-    let created = false;
     if (!slot && this.slots.length < MAX_WEBGL_RENDERER_SLOTS) {
       slot = {
         renderer: this.dependencies.createRenderer(),
@@ -128,7 +132,6 @@ export class WebGlTerminalRuntime {
         lastUsed: this.dependencies.now(),
       };
       this.slots.push(slot);
-      created = true;
     }
     if (!slot) {
       throw new Error(
@@ -149,13 +152,7 @@ export class WebGlTerminalRuntime {
       slot.renderer.resetModel();
       slot.renderer.attach(host);
     } catch (error) {
-      this.leases.delete(surface);
-      slot.owner = null;
-      slot.renderer.detach();
-      if (created) {
-        slot.renderer.dispose();
-        this.slots.splice(this.slots.indexOf(slot), 1);
-      }
+      this.discard(surface);
       throw error;
     }
     this.scheduleIdleSweep();

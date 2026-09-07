@@ -738,6 +738,10 @@ export class WebGpuTerminalRuntime {
 
     const warm = unused[0];
     if (!warm || !this.atlases.has(warm.key)) return;
+    if (warm.atlas.hasEncodedUploads) {
+      this.atlasReapDeferred = true;
+      return;
+    }
     const remaining = Math.max(
       1,
       Math.ceil(ATLAS_IDLE_TTL_MS - (performance.now() - warm.lastUsed)),
@@ -753,6 +757,10 @@ export class WebGpuTerminalRuntime {
     const now = performance.now();
     for (const entry of this.atlases.values()) {
       if (entry.references === 0 && now - entry.lastUsed >= ATLAS_IDLE_TTL_MS) {
+        if (entry.atlas.hasEncodedUploads) {
+          this.atlasReapDeferred = true;
+          continue;
+        }
         entry.atlas.dispose();
         this.atlases.delete(entry.key);
       }

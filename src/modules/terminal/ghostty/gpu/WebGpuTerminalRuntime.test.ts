@@ -244,6 +244,27 @@ describe("WebGpuTerminalRuntime", () => {
     runtime.dispose();
   });
 
+  it("defers idle atlas reclamation while uploads are encoded but unsubmitted", async () => {
+    vi.useFakeTimers();
+    const h = createHarness();
+    const runtime = await createRuntime();
+    const lease = runtime.acquireGlyphAtlas(METRICS, 1);
+    const pending = vi
+      .spyOn(lease.atlas, "hasEncodedUploads", "get")
+      .mockReturnValue(true);
+    lease.release();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(runtime.diagnostics().atlasCount).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+    pending.mockReturnValue(false);
+    const surface = createSurface();
+    runtime.register(surface);
+    runtime.schedule(surface);
+    h.flushFrame();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(runtime.diagnostics().atlasCount).toBe(0);
+  });
+
   it("releases hidden atlas textures while retaining one bounded warm glyph cache", async () => {
     vi.useFakeTimers();
     const harness = createHarness();

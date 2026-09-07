@@ -16,6 +16,28 @@ import type {
 } from "./WebGlCellRenderer";
 
 describe("WebGlTerminalRuntime", () => {
+  it.each([true, false])(
+    "retires a failed reconfiguration (idle: %s)",
+    (idle) => {
+      const h = createHarness();
+      const runtime = new WebGlTerminalRuntime(h.dependencies);
+      const surface = createSurface();
+      runtime.acquire(surface, {} as HTMLElement, PROFILE);
+      if (idle) runtime.release(surface);
+      h.renderers[0].configure.mockImplementationOnce(() => {
+        throw new Error("reconfigure failed");
+      });
+      expect(() =>
+        runtime.acquire(surface, {} as HTMLElement, PROFILE),
+      ).toThrow("reconfigure failed");
+      expect(runtime.diagnostics().slotCount).toBe(0);
+      expect(h.renderers[0].dispose).toHaveBeenCalledOnce();
+      runtime.acquire(surface, {} as HTMLElement, PROFILE);
+      expect(h.renderers).toHaveLength(2);
+      runtime.dispose();
+    },
+  );
+
   it("interrupts an unfocused pacing timer for user input and returns to idle afterward", () => {
     const h = createHarness();
     h.windowFocused = false;
