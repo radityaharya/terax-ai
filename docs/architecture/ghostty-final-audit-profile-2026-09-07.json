@@ -8,7 +8,7 @@
   "warmupSamples": 1,
   "results": [
     {
-      "directory": "/Users/crynta/Dev/terminal/terax-ghostty/packages/ghostty-core/adapted",
+      "directory": "packages/ghostty-core/adapted",
       "artifact": "ghostty-vt.wasm",
       "sha256": "b2305e15dcf4bac59eef3e25687444b9678b79b23cf90d5d62718acab61966e7",
       "allocations": [
@@ -61,7 +61,7 @@
       }
     },
     {
-      "directory": "/Users/crynta/Dev/terminal/terax-ghostty/packages/ghostty-core/adapted",
+      "directory": "packages/ghostty-core/adapted",
       "artifact": "ghostty-vt-scalar.wasm",
       "sha256": "8e9d194130ee714c6ced2ab1ccaff751cad28eea9bb2355dd9844034abe67775",
       "allocations": [

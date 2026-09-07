@@ -58,6 +58,8 @@ artifact checksums and raw samples. Runs used Node 26.5.0 on macOS arm64. Heavy
 audit build/test jobs did not overlap these runs, but the workstation was not
 an otherwise idle, controlled benchmark machine. The user's Terax was not
 launched, replaced, or used as candidate measurement data.
+The profile's directory labels are repository-relative; numerical samples and
+artifact checksums are unchanged from the generated report.
 
 Blank 120x40 model allocation, before first presentation, was identical for
 both variants:
@@ -127,12 +129,21 @@ drain overhead remains a correctness tradeoff and a packaged throughput gate.
 - All asset budgets pass: startup JS 228.06 kB gzip / 540 kB, total client JS
   1.43 MB / 1.5 MB, primary Ghostty JS 46.05 kB / 56 kB, lazy WebGL 14.08 kB /
   15 kB, both WASM variants 413.4 kB / 450 kB. No budget was raised.
-- All seven CI jobs and CodeRabbit passed on the starting commit, including
-  macOS and Windows tests. Results for the new head are tracked on the PR;
-  the starting commit's checks do not substitute for them.
+- All seven CI jobs pass on `c5ab994`, including macOS and Windows tests:
+  [exact-revision run](https://github.com/crynta/terax-ai/actions/runs/34135456841).
+  CodeRabbit's follow-up found only local directory labels in the new profile
+  JSON; those are now repository-relative.
 - The latest CodeRabbit comment requested an explicit platform-validation row;
   the release-gate table now includes it and identifies the stale macOS 10.15
   handoff. The checked-in minimum remains macOS 13.
+
+A fresh macOS arm64 bundle was built from `c5ab994` as
+`src-tauri/target/release/bundle/macos/Terax Resource Candidate.app`. Its local
+ad-hoc signature passes `codesign --verify --deep --strict`, and it occupies
+9,880 KiB on disk. It was not launched or installed. This is an application
+directory measurement, not an installer size or a notarized release. The bundle
+retains Terax's application identifier and settings, so quit the existing Terax
+before switching to it for manual testing.
 
 The identified lifecycle defects are fixed and regression-tested. This audit
 does **not** close the [packaged release gates](ghostty-release-readiness.md#release-gates-still-open):
