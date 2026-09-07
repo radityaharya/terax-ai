@@ -1,3 +1,4 @@
+import { homeRelativePath } from "@/lib/homeRelativePath";
 import { cn } from "@/lib/utils";
 import { AiInputBarConnect } from "@/modules/ai";
 import { Chip } from "@/modules/ai/components/Chip";
@@ -107,7 +108,7 @@ export function WorkspaceInputBar({
       {os && <Chip tone="neutral" iconNode={<OsIcon os={os} />} title={os} />}
       {cwd && (
         <Chip tone="blue" icon={Folder01Icon} title={cwd}>
-          {relPath(cwd, home)}
+          {homeRelativePath(cwd, home)}
         </Chip>
       )}
       {branch && (
@@ -259,11 +260,4 @@ function SegButton({
       {label}
     </button>
   );
-}
-
-function relPath(p: string, home: string | null): string {
-  if (!home) return p;
-  const h = home.replace(/\/+$/, "");
-  if (p === h || p.startsWith(`${h}/`)) return `~${p.slice(h.length)}`;
-  return p;
 }
