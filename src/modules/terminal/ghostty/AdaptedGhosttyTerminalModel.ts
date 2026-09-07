@@ -131,7 +131,12 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     );
     this.synchronizedOutputPresentation =
       new SynchronizedOutputPresentationGate(() => this.notifyDamage());
-    this.applyConfig(options.config);
+    try {
+      this.applyConfig(options.config);
+    } catch (error) {
+      this.terminal.dispose();
+      throw error;
+    }
   }
 
   isDisposed(): boolean {
@@ -168,6 +173,7 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     if (this.presentationResourcesReleased) return;
     this.plainLinks = null;
     this.renderState = null;
+    this.directCellReader.clear();
     this.renderStateCurrent = false;
     this.packedViewport = new Uint8Array(0);
     this.packedRenderVersion = -1;
@@ -179,6 +185,7 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
 
   compactPresentationResources(): void {
     this.assertLive();
+    this.directCellReader.clear();
     this.terminal.compactRenderState();
     this.renderState = null;
     this.renderStateCurrent = false;
@@ -697,6 +704,9 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     this.replySink = null;
     this.eventSink = null;
     this.renderState = null;
+    this.directCellReader.clear();
+    this.plainLinks = null;
+    this.blockMatch = null;
     this.packedViewport = new Uint8Array(0);
     this.promptPresentation.dispose();
     this.synchronizedOutputPresentation.dispose();
@@ -897,6 +907,10 @@ class GhosttyRenderCellView implements TerminalCellReader {
 
   update(state: TeraxGhosttyRenderState): void {
     this.state = state;
+  }
+
+  clear(): void {
+    this.state = null;
   }
 
   codepoint(index: number): number {

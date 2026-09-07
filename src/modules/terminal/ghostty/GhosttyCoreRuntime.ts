@@ -39,6 +39,7 @@ export class GhosttyCoreRuntime {
   private nativeDeviceAttributes: boolean | null = null;
   private lastError: string | null = null;
   private idleReleaseTimer: ReturnType<typeof setTimeout> | null = null;
+  private disposed = false;
 
   constructor(loader: GhosttyLoader = () => TeraxGhostty.load()) {
     this.loader = loader;
@@ -46,7 +47,7 @@ export class GhosttyCoreRuntime {
 
   preload(): Promise<void> {
     this.cancelIdleRelease();
-    return this.load().then(() => undefined);
+    return this.load().then(() => this.scheduleIdleRelease());
   }
 
   async createModel(
@@ -65,6 +66,7 @@ export class GhosttyCoreRuntime {
     this.pendingModels.add(options.leafId);
     try {
       const ghostty = await this.load();
+      this.assertLive();
       const model = new AdaptedGhosttyTerminalModel(ghostty, {
         backend: options.backend ?? "ghostty-webgpu",
         cols: options.cols,
@@ -98,6 +100,7 @@ export class GhosttyCoreRuntime {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.disposeAllModels();
     this.cancelIdleRelease();
     this.ghostty = null;
@@ -120,22 +123,32 @@ export class GhosttyCoreRuntime {
   }
 
   private load(): Promise<TeraxGhostty> {
+    if (this.disposed)
+      return Promise.reject(new Error("Ghostty runtime is disposed"));
     if (this.ghostty) return Promise.resolve(this.ghostty);
     if (this.loadPromise) return this.loadPromise;
 
     this.status = "loading";
     this.lastError = null;
-    this.loadPromise = this.loader()
+    this.loadPromise = Promise.resolve()
+      .then(() => {
+        this.assertLive();
+        return this.loader();
+      })
       .then((ghostty) => {
+        this.assertLive();
         this.nativeDeviceAttributes = probeNativeDeviceAttributes(ghostty);
         this.ghostty = ghostty;
         this.status = "ready";
         return ghostty;
       })
       .catch((error: unknown) => {
-        this.status = "failed";
-        this.lastError = error instanceof Error ? error.message : String(error);
-        this.loadPromise = null;
+        if (!this.disposed) {
+          this.status = "failed";
+          this.lastError =
+            error instanceof Error ? error.message : String(error);
+          this.loadPromise = null;
+        }
         throw error;
       });
     return this.loadPromise;
@@ -143,6 +156,7 @@ export class GhosttyCoreRuntime {
 
   private scheduleIdleRelease(): void {
     if (
+      this.disposed ||
       this.idleReleaseTimer !== null ||
       !this.ghostty ||
       this.models.size > 0 ||
@@ -166,6 +180,10 @@ export class GhosttyCoreRuntime {
     if (this.idleReleaseTimer === null) return;
     clearTimeout(this.idleReleaseTimer);
     this.idleReleaseTimer = null;
+  }
+
+  private assertLive(): void {
+    if (this.disposed) throw new Error("Ghostty runtime is disposed");
   }
 }
 

@@ -16,6 +16,152 @@ beforeAll(async () => {
 });
 
 describe("GhosttyCoreRuntime", () => {
+  it.each(["release", "compact", "dispose"] as const)(
+    "invalidates borrowed cells when presentation storage is freed by %s",
+    async (operation) => {
+      const runtime = new GhosttyCoreRuntime(() =>
+        TeraxGhostty.loadBytes(wasmBytes),
+      );
+      try {
+        const model = await runtime.createModel({
+          leafId: 99,
+          cols: 80,
+          rows: 24,
+        });
+        model.write(new TextEncoder().encode("retained output"));
+        const cells = model.renderCells();
+        expect(cells.codepoint(0)).toBe("r".codePointAt(0));
+        if (operation === "release") model.releasePresentationResources();
+        else if (operation === "compact") model.compactPresentationResources();
+        else model.dispose();
+        expect(() => cells.codepoint(0)).toThrow(
+          "render cells are unavailable",
+        );
+        if (operation !== "dispose") {
+          expect(model.renderCells().codepoint(0)).toBe("r".codePointAt(0));
+          expect(model.readText(24)).toBe("retained output");
+        }
+      } finally {
+        runtime.dispose();
+      }
+    },
+  );
+
+  it("releases a preload that never becomes a terminal, including a reused high-water instance", async () => {
+    vi.useFakeTimers();
+    const runtime = new GhosttyCoreRuntime(() =>
+      TeraxGhostty.loadBytes(wasmBytes),
+    );
+    try {
+      await runtime.preload();
+      expect(runtime.diagnostics().idleReleaseScheduled).toBe(true);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(runtime.diagnostics().wasmMemoryBytes).toBe(0);
+      const model = await runtime.createModel({
+        leafId: 1,
+        cols: 120,
+        rows: 40,
+      });
+      model.write(new TextEncoder().encode("output\r\n".repeat(10_000)));
+      model.dispose();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await runtime.preload();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(runtime.diagnostics()).toMatchObject({
+        status: "cold",
+        wasmMemoryBytes: 0,
+        idleReleaseScheduled: false,
+      });
+    } finally {
+      runtime.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retain a late WASM load or create a model after disposal", async () => {
+    const core = await TeraxGhostty.loadBytes(wasmBytes);
+    const createTerminal = vi.spyOn(core, "createTerminal");
+    let deliver = (_core: TeraxGhostty) => {};
+    const runtime = new GhosttyCoreRuntime(
+      () =>
+        new Promise((resolve) => {
+          deliver = resolve;
+        }),
+    );
+    const pending = runtime.createModel({ leafId: 2, cols: 80, rows: 24 });
+    const rejection = expect(pending).rejects.toThrow("disposed");
+    await Promise.resolve();
+    runtime.dispose();
+    deliver(core);
+    await rejection;
+    expect(createTerminal).not.toHaveBeenCalled();
+    expect(runtime.diagnostics()).toMatchObject({
+      status: "cold",
+      modelCount: 0,
+      pendingModelCount: 0,
+      wasmMemoryBytes: 0,
+      idleReleaseScheduled: false,
+    });
+    await expect(runtime.preload()).rejects.toThrow("disposed");
+  });
+
+  it("skips a load cancelled before it starts and retries a synchronous loader failure", async () => {
+    const loader = vi.fn(() => TeraxGhostty.loadBytes(wasmBytes));
+    const abandoned = new GhosttyCoreRuntime(loader);
+    const loading = abandoned.preload();
+    abandoned.dispose();
+    await expect(loading).rejects.toThrow("disposed");
+    expect(loader).not.toHaveBeenCalled();
+    loader.mockImplementationOnce(() => {
+      throw new Error("load failed");
+    });
+    const runtime = new GhosttyCoreRuntime(loader);
+    try {
+      await expect(runtime.preload()).rejects.toThrow("load failed");
+      expect(runtime.diagnostics().status).toBe("failed");
+      await runtime.preload();
+      expect(runtime.diagnostics().status).toBe("ready");
+    } finally {
+      runtime.dispose();
+    }
+  });
+
+  it("releases a native terminal when its initial configuration fails", async () => {
+    const core = await TeraxGhostty.loadBytes(wasmBytes);
+    const runtime = new GhosttyCoreRuntime(() => Promise.resolve(core));
+    try {
+      await runtime.preload();
+      const native = core.createTerminal(80, 24);
+      const dispose = vi.spyOn(native, "dispose");
+      vi.spyOn(native, "setPalette").mockImplementationOnce(() => {
+        throw new Error("palette allocation failed");
+      });
+      vi.spyOn(core, "createTerminal").mockReturnValueOnce(native);
+      await expect(
+        runtime.createModel({
+          leafId: 3,
+          cols: 80,
+          rows: 24,
+          config: { palette: [0xffffff] },
+        }),
+      ).rejects.toThrow("palette allocation failed");
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(runtime.diagnostics()).toMatchObject({
+        modelCount: 0,
+        pendingModelCount: 0,
+        idleReleaseScheduled: true,
+      });
+      const retry = await runtime.createModel({
+        leafId: 3,
+        cols: 80,
+        rows: 24,
+      });
+      expect(retry.cols).toBe(80);
+    } finally {
+      runtime.dispose();
+    }
+  });
+
   it("loads one WASM runtime for concurrent terminal models", async () => {
     const loader = vi.fn(() => TeraxGhostty.loadBytes(wasmBytes.slice(0)));
     const runtime = new GhosttyCoreRuntime(loader);
