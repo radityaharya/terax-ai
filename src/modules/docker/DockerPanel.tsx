@@ -3,6 +3,7 @@ import {
   RotateClockwiseIcon,
   Cancel01Icon,
   Delete02Icon,
+  File02Icon,
   HardDriveIcon,
   PlayIcon,
   StopIcon,
@@ -11,6 +12,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { CleanupHub } from "./components/CleanupHub";
 import { DetailsDrawer } from "./components/DetailsDrawer";
+import { DockerLogsPane } from "./DockerLogsPane";
 import { PullDialog } from "./dialogs/PullDialog";
 import { RegistryDialog } from "./dialogs/RegistryDialog";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -52,6 +54,11 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
   const [pullReference, setPullReference] = useState("");
   const [registryOpen, setRegistryOpen] = useState(false);
   const [activePulls, setActivePulls] = useState<string[]>([]);
+  const [logsTarget, setLogsTarget] = useState<{
+    kind: "container";
+    id: string;
+    title: string;
+  } | null>(null);
   const startPull = useDockerStore((s) => s.startPull);
 
   const openPull = (reference: string) => {
@@ -144,6 +151,15 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
       ) : null}
       {cleanupOpen ? (
         <CleanupHub hostId={hostId} onClose={() => setCleanupOpen(false)} />
+      ) : null}
+      {logsTarget ? (
+        <DockerLogsPane
+          hostId={hostId}
+          kind={logsTarget.kind}
+          id={logsTarget.id}
+          title={logsTarget.title}
+          onClose={() => setLogsTarget(null)}
+        />
       ) : null}
       {activePulls.map((jobId) => (
         <PullDialog
@@ -286,6 +302,13 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
                       onCancelRemove={() => setConfirmRemove(null)}
                       onInspect={() =>
                         setInspecting({
+                          kind: "container",
+                          id,
+                          title: containerName(c),
+                        })
+                      }
+                      onLogs={() =>
+                        setLogsTarget({
                           kind: "container",
                           id,
                           title: containerName(c),
@@ -600,6 +623,7 @@ function ContainerRow({
   onAction,
   onCancelRemove,
   onInspect,
+  onLogs,
   stats,
 }: {
   container: DockerContainer;
@@ -608,6 +632,7 @@ function ContainerRow({
   onAction: (a: ContainerAction) => void;
   onCancelRemove: () => void;
   onInspect: () => void;
+  onLogs: () => void;
   stats?: { cpuPerc: string; memUsage: string } | null;
 }) {
   const id = containerId(container);
@@ -700,6 +725,9 @@ function ContainerRow({
               <HugeiconsIcon icon={PlayIcon} size={13} strokeWidth={1.75} />
             </RowButton>
           )}
+          <RowButton label={`Logs for ${name}`} onClick={onLogs}>
+            <HugeiconsIcon icon={File02Icon} size={13} strokeWidth={1.75} />
+          </RowButton>
           <RowButton label={`Remove ${name}`} onClick={() => onAction("remove")}>
             <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
           </RowButton>

@@ -1,6 +1,7 @@
 export { DockerPanel } from "./DockerPanel";
 export { DetailsDrawer } from "./components/DetailsDrawer";
 export { CleanupHub } from "./components/CleanupHub";
+export { DockerLogsPane } from "./DockerLogsPane";
 export {
   useDockerStore,
   hostDocker,
@@ -8,6 +9,8 @@ export {
   type ContainerAction,
   type DiskUsage,
   type InspectState,
+  type LogFollowState,
+  type LogViewOptions,
   type PruneTarget,
   type StatsSample,
 } from "./lib/dockerStore";

@@ -72,6 +72,8 @@ type HostDockerState = {
   registries: Record<string, { loggedIn: boolean; busy: boolean; error: string | null }>;
   /** Pull jobs keyed by local job id. */
   pulls: Record<string, PullJob>;
+  /** Live log follows keyed by `container:<id>` or `service:<id>`. */
+  logFollows: Record<string, LogFollowState>;
 };
 
 export type ImageUpdateState =
@@ -96,6 +98,25 @@ export type PullJob = {
   error: string | null;
 };
 
+export type LogViewOptions = {
+  timestamps: boolean;
+  tail: number;
+  since: string;
+};
+
+export type LogFollowState = {
+  /** Agent bg handle for `docker logs -f`. */
+  handle: number | null;
+  phase: "starting" | "following" | "done" | "error";
+  lines: string[];
+  offset: number;
+  dropped: number;
+  exited: boolean;
+  exitCode: number | null;
+  error: string | null;
+  options: LogViewOptions;
+};
+
 function emptyHost(): HostDockerState {
   return {
     daemon: { status: "unknown" },
@@ -116,6 +137,7 @@ function emptyHost(): HostDockerState {
     updates: {},
     registries: {},
     pulls: {},
+    logFollows: {},
   };
 }
 
@@ -172,6 +194,19 @@ type State = {
     password: string,
   ) => Promise<void>;
   registryLogout: (hostId: string, registry: string) => Promise<void>;
+  startLogFollow: (
+    hostId: string,
+    kind: "container" | "service",
+    id: string,
+    options?: Partial<LogViewOptions>,
+  ) => string;
+  pollLogFollow: (hostId: string, followId: string) => Promise<void>;
+  stopLogFollow: (hostId: string, followId: string) => Promise<void>;
+  setLogOptions: (
+    hostId: string,
+    followId: string,
+    options: Partial<LogViewOptions>,
+  ) => void;
 };
 
 function patch(
@@ -746,6 +781,152 @@ export const useDockerStore = create<State>((set) => ({
         [registry]: { loggedIn: false, busy: false, error: null },
       },
     }));
+  },
+
+  startLogFollow: (hostId, kind, id, options) => {
+    const followId = `${kind}:${id}`;
+    const opts: LogViewOptions = {
+      timestamps: options?.timestamps ?? true,
+      tail: options?.tail ?? 500,
+      since: options?.since ?? "",
+    };
+    const follow: LogFollowState = {
+      handle: null,
+      phase: "starting",
+      lines: [],
+      offset: 0,
+      dropped: 0,
+      exited: false,
+      exitCode: null,
+      error: null,
+      options: opts,
+    };
+    patch(set, hostId, (h) => ({
+      ...h,
+      logFollows: { ...h.logFollows, [followId]: follow },
+    }));
+    void (async () => {
+      try {
+        const params =
+          kind === "container"
+            ? {
+                container: id,
+                timestamps: opts.timestamps,
+                tail: opts.tail,
+                ...(opts.since ? { since: opts.since } : {}),
+              }
+            : { service: id, tail: opts.tail };
+        const method = kind === "container" ? "docker_logs_spawn" : "docker_service_logs";
+        // Services use one-shot logs (no follow lane on the agent); the
+        // follow state still gives the pane a uniform shape.
+        const info = await sshRpc<{ handle?: number; output?: string }>(
+          method,
+          params,
+          hostId,
+        );
+        patch(set, hostId, (h) => ({
+          ...h,
+          logFollows: {
+            ...h.logFollows,
+            [followId]: {
+              ...(h.logFollows[followId] ?? follow),
+              handle: info.handle ?? null,
+              phase: kind === "container" ? "following" : "done",
+              lines:
+                kind === "container"
+                  ? []
+                  : String(info.output ?? "").split("\n"),
+              exited: kind !== "container",
+            },
+          },
+        }));
+        if (kind === "container") {
+          await useDockerStore.getState().pollLogFollow(hostId, followId);
+        }
+      } catch (e) {
+        patch(set, hostId, (h) => ({
+          ...h,
+          logFollows: {
+            ...h.logFollows,
+            [followId]: {
+              ...(h.logFollows[followId] ?? follow),
+              phase: "error",
+              error: String(e),
+            },
+          },
+        }));
+      }
+    })();
+    return followId;
+  },
+
+  pollLogFollow: async (hostId, followId) => {
+    const follow = useDockerStore.getState().byHost[hostId]?.logFollows[followId];
+    if (!follow || follow.handle === null || follow.phase === "done" || follow.phase === "error") {
+      return;
+    }
+    try {
+      const res = await sshRpc<{
+        bytes: string;
+        next_offset: number;
+        dropped: number;
+        exited: boolean;
+        exit_code: number | null;
+      }>("docker_logs_poll", { handle: follow.handle, sinceOffset: follow.offset }, hostId);
+      patch(set, hostId, (h) => {
+        const cur = h.logFollows[followId] ?? follow;
+        const chunk = res.bytes ?? "";
+        const next: LogFollowState = {
+          ...cur,
+          lines: chunk
+            ? [...cur.lines, ...chunk.split("\n")].slice(-5000)
+            : cur.lines,
+          offset: res.next_offset ?? cur.offset,
+          dropped: Math.max(cur.dropped, res.dropped ?? 0),
+          exited: res.exited,
+          exitCode: res.exit_code,
+          phase: res.exited ? "done" : "following",
+        };
+        return { ...h, logFollows: { ...h.logFollows, [followId]: next } };
+      });
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        logFollows: {
+          ...h.logFollows,
+          [followId]: { ...(h.logFollows[followId] ?? follow), phase: "error", error: String(e) },
+        },
+      }));
+    }
+  },
+
+  stopLogFollow: async (hostId, followId) => {
+    const follow = useDockerStore.getState().byHost[hostId]?.logFollows[followId];
+    if (follow?.handle !== null && follow?.handle !== undefined) {
+      try {
+        await sshRpc("docker_logs_kill", { handle: follow.handle }, hostId);
+      } catch {
+        // best effort
+      }
+    }
+    patch(set, hostId, (h) => {
+      const next = { ...h.logFollows };
+      delete next[followId];
+      return { ...h, logFollows: next };
+    });
+  },
+
+  setLogOptions: (hostId, followId, options) => {
+    const cur = useDockerStore.getState().byHost[hostId]?.logFollows[followId];
+    if (!cur) return;
+    const kind = followId.startsWith("service:") ? ("service" as const) : ("container" as const);
+    const id = followId.slice(followId.indexOf(":") + 1);
+    void useDockerStore.getState().stopLogFollow(hostId, followId).then(() => {
+      useDockerStore.getState().startLogFollow(hostId, kind, id, {
+        ...cur.options,
+        ...options,
+      });
+    });
   },
 }));
 
