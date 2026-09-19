@@ -332,7 +332,18 @@ export default function App() {
   // Per-tab hosts: the global workspace env mirrors the ACTIVE TAB's env.
   // Switching tabs between hosts swaps explorer/git/terminal routing without
   // touching other tabs; background tabs keep their own env + live sessions.
-  useEffect(() => {
+  //
+  // useLayoutEffect (not useEffect) is load-bearing here: on a tab switch,
+  // FileExplorer/useFileTree re-fires its own effect off the new rootPath
+  // in the SAME commit. Ordinary effects run children-before-parents, so a
+  // plain useEffect here could still point sshHostId()/currentWorkspaceEnv()
+  // at the PREVIOUS host when that child fetch goes out — the request lands
+  // on the wrong agent and gets rejected as "outside the authorized
+  // workspace". Layout effects across the whole tree all run before any
+  // passive effects, so this guarantees the store is re-pointed at the new
+  // tab's host first (setWorkspaceEnv inside adoptWorkspaceEnv is
+  // synchronous; only the home-resolution after it is async).
+  useLayoutEffect(() => {
     if (!spacesHydrated || !booted) return;
     const tab = tabsRef.current.find((t) => t.id === activeId);
     if (!tab) return;
