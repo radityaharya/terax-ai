@@ -398,7 +398,8 @@ export function useFileTree(rootPath: string | null, options?: Options) {
       const cmd =
         pendingCreate.kind === "dir" ? "fs_create_dir" : "fs_create_file";
       try {
-        await invoke(cmd, { path, workspace: currentWorkspaceEnv() });
+        if (sshHostId()) await sshRpc<void>(cmd, { path });
+        else await invoke(cmd, { path, workspace: currentWorkspaceEnv() });
         await fetchChildren(pendingCreate.parentPath);
       } catch (e) {
         console.error(`${cmd} failed:`, e);
@@ -428,11 +429,13 @@ export function useFileTree(rootPath: string | null, options?: Options) {
       }
       const to = joinPath(parent, trimmed);
       try {
-        await invoke("fs_rename", {
-          from: renaming,
-          to,
-          workspace,
-        });
+        if (sshHostId()) await sshRpc<void>("fs_rename", { from: renaming, to });
+        else
+          await invoke("fs_rename", {
+            from: renaming,
+            to,
+            workspace,
+          });
         optionsRef.current?.onPathRenamed?.(renaming, to);
         if (scopeKeyRef.current === scopeKey) await fetchChildren(parent);
       } catch (e) {
@@ -447,7 +450,8 @@ export function useFileTree(rootPath: string | null, options?: Options) {
   const deletePath = useCallback(
     async (path: string) => {
       try {
-        await invoke("fs_delete", { path, workspace });
+        if (sshHostId()) await sshRpc<void>("fs_delete", { path });
+        else await invoke("fs_delete", { path, workspace });
         optionsRef.current?.onPathsDeleted?.([path]);
         if (scopeKeyRef.current === scopeKey) {
           await fetchChildren(dirname(path));
@@ -465,10 +469,16 @@ export function useFileTree(rootPath: string | null, options?: Options) {
       const topLevelPaths = excludeNestedSources(paths);
       const run = async () => {
         if (scopeKeyRef.current !== scopeKey) return;
-        const { deleted, failed } = await invoke<DeleteBatchResult>(
-          "fs_delete_batch",
-          { paths: topLevelPaths, root: rootPath ?? "", workspace },
-        );
+        const { deleted, failed } = sshHostId()
+          ? await sshRpc<DeleteBatchResult>("fs_delete_batch", {
+              paths: topLevelPaths,
+              root: rootPath ?? "",
+            })
+          : await invoke<DeleteBatchResult>("fs_delete_batch", {
+              paths: topLevelPaths,
+              root: rootPath ?? "",
+              workspace,
+            });
         if (deleted.length > 0) {
           optionsRef.current?.onPathsDeleted?.(deleted);
         }
@@ -517,13 +527,20 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         const parents = new Set<string>([toDir]);
         const outcome = await executeBatchMove(sources, toDir, {
           move: (item, expectedConflict) =>
-            invoke<FsMoveResult>("fs_move", {
-              from: item.from,
-              to: item.to,
-              root: rootPath ?? "",
-              expectedConflict,
-              workspace,
-            }),
+            sshHostId()
+              ? sshRpc<FsMoveResult>("fs_move", {
+                  from: item.from,
+                  to: item.to,
+                  root: rootPath ?? "",
+                  expectedConflict: expectedConflict ?? "",
+                })
+              : invoke<FsMoveResult>("fs_move", {
+                  from: item.from,
+                  to: item.to,
+                  root: rootPath ?? "",
+                  expectedConflict,
+                  workspace,
+                }),
           resolveConflict: (item) => resolveMoveConflict(item.name),
           canReplace: (item) =>
             optionsRef.current?.canReplacePath?.(item.to) ?? true,

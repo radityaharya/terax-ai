@@ -215,7 +215,6 @@ fn read_byte_with_timeout(
     byte: &mut [u8; 1],
     deadline: std::time::Instant,
 ) -> Result<usize, String> {
-    use std::io::Read;
     loop {
         // BufReader over a pipe blocks; poll in short slices so the deadline
         // stays responsive without losing buffered bytes.

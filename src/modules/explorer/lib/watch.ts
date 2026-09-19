@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { sshHostId } from "@/modules/ai/lib/native";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 
 const FS_CHANGED_EVENT = "fs:changed";
@@ -8,6 +9,9 @@ type FsChangedPayload = { paths: string[] };
 
 export function watchAdd(paths: string[]): void {
   if (paths.length === 0) return;
+  // SSH has no remote push watch yet: the explorer polls on focus/refresh
+  // instead. Skip the local watcher so remote paths never reach it.
+  if (sshHostId()) return;
   void invoke("fs_watch_add", {
     paths,
     workspace: currentWorkspaceEnv(),
@@ -16,6 +20,7 @@ export function watchAdd(paths: string[]): void {
 
 export function watchRemove(paths: string[]): void {
   if (paths.length === 0) return;
+  if (sshHostId()) return;
   void invoke("fs_watch_remove", {
     paths,
     workspace: currentWorkspaceEnv(),

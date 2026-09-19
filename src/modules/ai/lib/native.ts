@@ -252,18 +252,37 @@ export const native = {
     });
   },
 
-  shellSessionOpen: (cwd?: string | null) =>
-    invoke<number>("shell_session_open", {
+  shellSessionOpen: (cwd?: string | null) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<number>("shell_session_open", { cwd: cwd ?? "" });
+    return invoke<number>("shell_session_open", {
       cwd: cwd ?? null,
       workspace: currentWorkspaceEnv(),
-    }),
+    });
+  },
   shellSessionRun: (
     id: number,
     command: string,
     cwd?: string | null,
     timeoutSecs?: number,
-  ) =>
-    invoke<{
+  ) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<{
+        stdout: string;
+        stderr: string;
+        exit_code: number | null;
+        timed_out: boolean;
+        truncated: boolean;
+        cwd_after: string;
+      }>("shell_session_run", {
+        id,
+        command,
+        cwd: cwd ?? "",
+        timeoutSecs: timeoutSecs ?? 30,
+      });
+    return invoke<{
       stdout: string;
       stderr: string;
       exit_code: number | null;
@@ -276,24 +295,49 @@ export const native = {
       cwd: cwd ?? null,
       timeoutSecs: timeoutSecs ?? null,
       workspace: currentWorkspaceEnv(),
-    }),
-  shellSessionClose: (id: number) =>
-    invoke<void>("shell_session_close", { id }),
-  shellBgSpawn: (command: string, cwd?: string | null) =>
-    invoke<number>("shell_bg_spawn", {
+    });
+  },
+  shellSessionClose: (id: number) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<void>("shell_session_close", { id });
+    return invoke<void>("shell_session_close", { id });
+  },
+  shellBgSpawn: (command: string, cwd?: string | null) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<number>("shell_bg_spawn", {
+        command,
+        cwd: cwd ?? "",
+      });
+    return invoke<number>("shell_bg_spawn", {
       command,
       cwd: cwd ?? null,
       workspace: currentWorkspaceEnv(),
-    }),
-  shellBgLogs: (handle: number, sinceOffset?: number) =>
-    invoke<{
+    });
+  },
+  shellBgLogs: (handle: number, sinceOffset?: number) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<{
+        bytes: string;
+        next_offset: number;
+        dropped: number;
+        exited: boolean;
+        exit_code: number | null;
+      }>("shell_bg_logs", { handle, sinceOffset: sinceOffset ?? 0 });
+    return invoke<{
       bytes: string;
       next_offset: number;
       dropped: number;
       exited: boolean;
       exit_code: number | null;
-    }>("shell_bg_logs", { handle, sinceOffset: sinceOffset ?? null }),
-  shellBgKill: (handle: number) => invoke<void>("shell_bg_kill", { handle }),
+    }>("shell_bg_logs", { handle, sinceOffset: sinceOffset ?? null });
+  },
+  shellBgKill: (handle: number) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<void>("shell_bg_kill", { handle });
+    return invoke<void>("shell_bg_kill", { handle });
+  },
   shellBgList: () =>
     invoke<
       {
@@ -305,11 +349,14 @@ export const native = {
         exit_code: number | null;
       }[]
     >("shell_bg_list"),
-  gitResolveRepo: (cwd: string) =>
-    invoke<GitRepoInfo | null>("git_resolve_repo", {
+  gitResolveRepo: (cwd: string) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<GitRepoInfo | null>("git_resolve_repo", { cwd });
+    return invoke<GitRepoInfo | null>("git_resolve_repo", {
       cwd,
       workspace: currentWorkspaceEnv(),
-    }),
+    });
+  },
   gitPanelSnapshot: (cwd: string) => {
     const hostId = sshHostId();
     if (hostId) return sshRpc<GitPanelSnapshot>("git_panel_snapshot", { cwd });
@@ -326,112 +373,187 @@ export const native = {
       workspace: currentWorkspaceEnv(),
     });
   },
-  gitDiff: (repoRoot: string, path: string | null, staged: boolean) =>
-    invoke<GitDiffResult>("git_diff", {
+  gitDiff: (repoRoot: string, path: string | null, staged: boolean) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<GitDiffResult>("git_diff", {
+        repoRoot,
+        path: path ?? "",
+        staged,
+      });
+    return invoke<GitDiffResult>("git_diff", {
       repoRoot,
       path,
       staged,
       workspace: currentWorkspaceEnv(),
-    }),
+    });
+  },
   gitDiffContent: (
     repoRoot: string,
     path: string,
     staged: boolean,
     originalPath?: string | null,
-  ) =>
-    invoke<GitDiffContentResult>("git_diff_content", {
+  ) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<GitDiffContentResult>("git_diff_content", {
+        repoRoot,
+        path,
+        staged,
+        originalPath: originalPath ?? "",
+      });
+    return invoke<GitDiffContentResult>("git_diff_content", {
       repoRoot,
       path,
       staged,
       originalPath: originalPath ?? null,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitStage: (repoRoot: string, paths: string[]) =>
-    invoke<void>("git_stage", {
+    });
+  },
+  gitStage: (repoRoot: string, paths: string[]) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<void>("git_stage", { repoRoot, paths });
+    return invoke<void>("git_stage", {
       repoRoot,
       paths,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitUnstage: (repoRoot: string, paths: string[]) =>
-    invoke<void>("git_unstage", {
+    });
+  },
+  gitUnstage: (repoRoot: string, paths: string[]) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<void>("git_unstage", { repoRoot, paths });
+    return invoke<void>("git_unstage", {
       repoRoot,
       paths,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitDiscard: (repoRoot: string, entries: GitDiscardEntry[]) =>
-    invoke<void>("git_discard", {
+    });
+  },
+  gitDiscard: (repoRoot: string, entries: GitDiscardEntry[]) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<void>("git_discard", { repoRoot, entries });
+    return invoke<void>("git_discard", {
       repoRoot,
       entries,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitCommit: (repoRoot: string, message: string) =>
-    invoke<GitCommitResult>("git_commit", {
+    });
+  },
+  gitCommit: (repoRoot: string, message: string) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<GitCommitResult>("git_commit", { repoRoot, message });
+    return invoke<GitCommitResult>("git_commit", {
       repoRoot,
       message,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitFetch: (repoRoot: string) =>
-    invoke<void>("git_fetch", {
+    });
+  },
+  gitFetch: (repoRoot: string) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<void>("git_fetch", { repoRoot });
+    return invoke<void>("git_fetch", {
       repoRoot,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitPullFfOnly: (repoRoot: string) =>
-    invoke<void>("git_pull_ff_only", {
+    });
+  },
+  gitPullFfOnly: (repoRoot: string) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<void>("git_pull_ff_only", { repoRoot });
+    return invoke<void>("git_pull_ff_only", {
       repoRoot,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitPush: (repoRoot: string) =>
-    invoke<GitPushResult>("git_push", {
+    });
+  },
+  gitPush: (repoRoot: string) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<GitPushResult>("git_push", { repoRoot });
+    return invoke<GitPushResult>("git_push", {
       repoRoot,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitLog: (repoRoot: string, options?: { limit?: number; beforeSha?: string }) =>
-    invoke<GitLogEntry[]>("git_log", {
+    });
+  },
+  gitLog: (repoRoot: string, options?: { limit?: number; beforeSha?: string }) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<GitLogEntry[]>("git_log", {
+        repoRoot,
+        limit: options?.limit ?? 100,
+        beforeSha: options?.beforeSha ?? "",
+      });
+    return invoke<GitLogEntry[]>("git_log", {
       repoRoot,
       limit: options?.limit ?? null,
       beforeSha: options?.beforeSha ?? null,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitShowCommit: (repoRoot: string, sha: string) =>
-    invoke<GitDiffResult>("git_show_commit", {
+    });
+  },
+  gitShowCommit: (repoRoot: string, sha: string) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<GitDiffResult>("git_show_commit", { repoRoot, sha });
+    return invoke<GitDiffResult>("git_show_commit", {
       repoRoot,
       sha,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitCommitFiles: (repoRoot: string, sha: string) =>
-    invoke<GitCommitFileChange[]>("git_commit_files", {
+    });
+  },
+  gitCommitFiles: (repoRoot: string, sha: string) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<GitCommitFileChange[]>("git_commit_files", { repoRoot, sha });
+    return invoke<GitCommitFileChange[]>("git_commit_files", {
       repoRoot,
       sha,
       workspace: currentWorkspaceEnv(),
-    }),
+    });
+  },
   gitCommitFileDiff: (
     repoRoot: string,
     sha: string,
     path: string,
     originalPath?: string | null,
-  ) =>
-    invoke<GitDiffContentResult>("git_commit_file_diff", {
+  ) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<GitDiffContentResult>("git_commit_file_diff", {
+        repoRoot,
+        sha,
+        path,
+        originalPath: originalPath ?? "",
+      });
+    return invoke<GitDiffContentResult>("git_commit_file_diff", {
       repoRoot,
       sha,
       path,
       originalPath: originalPath ?? null,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitRemoteUrl: (repoRoot: string, name?: string) =>
-    invoke<string | null>("git_remote_url", {
+    });
+  },
+  gitRemoteUrl: (repoRoot: string, name?: string) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<string | null>("git_remote_url", {
+        repoRoot,
+        name: name ?? "origin",
+      });
+    return invoke<string | null>("git_remote_url", {
       repoRoot,
       name: name ?? null,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitListBranches: (repoRoot: string) =>
-    invoke<GitBranchListResult>("git_list_branches", {
+    });
+  },
+  gitListBranches: (repoRoot: string) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<GitBranchListResult>("git_list_branches", { repoRoot });
+    return invoke<GitBranchListResult>("git_list_branches", {
       repoRoot,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitCheckoutBranch: (repoRoot: string, branch: string) =>
-    invoke<void>("git_checkout_branch", {
+    });
+  },
+  gitCheckoutBranch: (repoRoot: string, branch: string) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<void>("git_checkout_branch", { repoRoot, branch });
+    return invoke<void>("git_checkout_branch", {
       repoRoot,
       branch,
       workspace: currentWorkspaceEnv(),
-    }),
+    });
+  },
 };
