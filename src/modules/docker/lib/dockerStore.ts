@@ -287,6 +287,8 @@ type State = {
   refreshImages: (hostId: string) => Promise<void>;
   refreshVolumes: (hostId: string) => Promise<void>;
   refreshNetworks: (hostId: string) => Promise<void>;
+  removeVolume: (hostId: string, name: string) => Promise<void>;
+  removeNetwork: (hostId: string, name: string) => Promise<void>;
   refreshAll: (hostId: string) => Promise<void>;
   containerAction: (
     hostId: string,
@@ -394,6 +396,14 @@ function patch(
     ...s,
     byHost: { ...s.byHost, [hostId]: f(s.byHost[hostId] ?? emptyHost()) },
   }));
+}
+
+/** Pane refcount per follow id so drawer + tab for the same container
+ *  share one agent lane instead of spawning/killing on every open. */
+const followRefs = new Map<string, number>();
+
+export function retainLogFollow(followId: string): void {
+  followRefs.set(followId, (followRefs.get(followId) ?? 0) + 1);
 }
 
 function classifyDaemonError(e: unknown): DockerDaemonState {
@@ -539,6 +549,30 @@ export const useDockerStore = create<State>((set) => ({
       patch(set, hostId, (h) => ({
         ...h,
         networks: { ...h.networks, loading: false, error: String(e) },
+      }));
+    }
+  },
+
+  removeVolume: async (hostId, name) => {
+    try {
+      await sshRpc("docker_volume_rm", { names: [name] }, hostId);
+      await useDockerStore.getState().refreshVolumes(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        volumes: { ...h.volumes, error: String(e) },
+      }));
+    }
+  },
+
+  removeNetwork: async (hostId, name) => {
+    try {
+      await sshRpc("docker_network_rm", { names: [name] }, hostId);
+      await useDockerStore.getState().refreshNetworks(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        networks: { ...h.networks, error: String(e) },
       }));
     }
   },
@@ -961,6 +995,17 @@ export const useDockerStore = create<State>((set) => ({
 
   startLogFollow: (hostId, kind, id, options) => {
     const followId = `${kind}:${id}`;
+    // Reuse a live follow instead of spawning a duplicate lane: reopening
+    // the pane for the same container must attach to the existing stream,
+    // not orphan a second `docker logs -f` on the agent.
+    const live = useDockerStore.getState().byHost[hostId]?.logFollows[followId];
+    if (live && (live.phase === "following" || live.phase === "starting") && live.handle !== null) {
+      return followId;
+    }
+    if (live && live.phase === "following" && live.handle === null) {
+      // Spawn raced but hasn't returned yet; the in-flight spawn owns it.
+      return followId;
+    }
     const opts: LogViewOptions = {
       timestamps: options?.timestamps ?? true,
       tail: options?.tail ?? 500,
@@ -982,6 +1027,7 @@ export const useDockerStore = create<State>((set) => ({
       logFollows: { ...h.logFollows, [followId]: follow },
     }));
     void (async () => {
+      let info: { handle?: number; output?: string };
       try {
         const params =
           kind === "container"
@@ -995,30 +1041,11 @@ export const useDockerStore = create<State>((set) => ({
         const method = kind === "container" ? "docker_logs_spawn" : "docker_service_logs";
         // Services use one-shot logs (no follow lane on the agent); the
         // follow state still gives the pane a uniform shape.
-        const info = await sshRpc<{ handle?: number; output?: string }>(
+        info = await sshRpc<{ handle?: number; output?: string }>(
           method,
           params,
           hostId,
         );
-        patch(set, hostId, (h) => ({
-          ...h,
-          logFollows: {
-            ...h.logFollows,
-            [followId]: {
-              ...(h.logFollows[followId] ?? follow),
-              handle: info.handle ?? null,
-              phase: kind === "container" ? "following" : "done",
-              lines:
-                kind === "container"
-                  ? []
-                  : String(info.output ?? "").split("\n"),
-              exited: kind !== "container",
-            },
-          },
-        }));
-        if (kind === "container") {
-          await useDockerStore.getState().pollLogFollow(hostId, followId);
-        }
       } catch (e) {
         patch(set, hostId, (h) => ({
           ...h,
@@ -1031,6 +1058,40 @@ export const useDockerStore = create<State>((set) => ({
             },
           },
         }));
+        return;
+      }
+      if (typeof info.handle !== "number") {
+        patch(set, hostId, (h) => ({
+          ...h,
+          logFollows: {
+            ...h.logFollows,
+            [followId]: {
+              ...(h.logFollows[followId] ?? follow),
+              phase: "error",
+              error: "agent did not return a log handle",
+            },
+          },
+        }));
+        return;
+      }
+      patch(set, hostId, (h) => ({
+        ...h,
+        logFollows: {
+          ...h.logFollows,
+          [followId]: {
+            ...(h.logFollows[followId] ?? follow),
+            handle: info.handle ?? null,
+            phase: kind === "container" ? "following" : "done",
+            lines:
+              kind === "container"
+                ? []
+                : String(info.output ?? "").split("\n"),
+            exited: kind !== "container",
+          },
+        },
+      }));
+      if (kind === "container") {
+        await useDockerStore.getState().pollLogFollow(hostId, followId);
       }
     })();
     return followId;
@@ -1077,6 +1138,15 @@ export const useDockerStore = create<State>((set) => ({
   },
 
   stopLogFollow: async (hostId, followId) => {
+    // Drawer opens/closes share one follow per container: only kill the
+    // agent lane when nobody is watching. The refcount below tracks
+    // mounted panes; the last unmount kills the lane.
+    const refs = followRefs.get(followId) ?? 0;
+    if (refs > 1) {
+      followRefs.set(followId, refs - 1);
+      return;
+    }
+    followRefs.delete(followId);
     const follow = useDockerStore.getState().byHost[hostId]?.logFollows[followId];
     if (follow?.handle !== null && follow?.handle !== undefined) {
       try {

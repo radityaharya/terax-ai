@@ -3,7 +3,7 @@ import { Cancel01Icon, CopyIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ansiSpans, stripAnsi } from "./lib/ansi";
-import { useDockerStore } from "./lib/dockerStore";
+import { retainLogFollow, useDockerStore } from "./lib/dockerStore";
 
 type Props = {
   hostId: string;
@@ -37,15 +37,13 @@ export function DockerLogsPane({ hostId, kind, id, title, onClose, inline }: Pro
   const phase = follow?.phase;
 
   useEffect(() => {
-    // Tab surfaces own their follow lifecycle (see DockerLogsTabPane);
-    // the pane only starts one when rendered standalone (drawer).
-    if (inline) return;
     const fid = `${kind}:${id}`;
+    retainLogFollow(fid);
     startLogFollow(hostId, kind, id);
     return () => {
       void stopLogFollow(hostId, fid);
     };
-  }, [hostId, kind, id, inline, startLogFollow, stopLogFollow]);
+  }, [hostId, kind, id, startLogFollow, stopLogFollow]);
 
   useEffect(() => {
     if (phase !== "following" && phase !== "starting") return;

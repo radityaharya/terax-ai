@@ -1107,8 +1107,7 @@ fn docker_bg_spawn(state: &DockerShared, id: String, params: &Value, kind: &str)
         }
         _ => return failure(id, "invalid_kind", format!("unknown bg kind: {kind}")),
     };
-    let command = argv.join(" ");
-    match terax_core::shell::background::spawn(command, None) {
+    match terax_core::shell::background::spawn_argv(argv, None) {
         Ok(proc) => {
             let handle = state.next_handle.fetch_add(1, Ordering::Relaxed);
             let info = proc.info(handle);

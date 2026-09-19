@@ -76,7 +76,7 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
   const [filter, setFilter] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [inspecting, setInspecting] = useState<{
-    kind: "container";
+    kind: "container" | "volume" | "network";
     id: string;
     title: string;
   } | null>(null);
@@ -445,8 +445,18 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
                   setServiceLogsTarget({ serviceId, title })
                 }
               />
+            ) : segment === "volumes" ? (
+              <VolumesList
+                hostId={hostId}
+                filter={filter}
+                onInspect={(kind, id, title) => setInspecting({ kind, id, title })}
+              />
             ) : (
-              <EmptyNote text={`${SEGMENTS.find((s) => s.id === segment)?.label} land with volumes/networks wiring (D2).`} />
+              <NetworksList
+                hostId={hostId}
+                filter={filter}
+                onInspect={(kind, id, title) => setInspecting({ kind, id, title })}
+              />
             )}
           </div>
         </>
@@ -805,6 +815,206 @@ function ImagesList({
           Registry login…
         </button>
       </div>
+    </>
+  );
+}
+
+function VolumesList({
+  hostId,
+  filter,
+  onInspect,
+}: {
+  hostId: string;
+  filter: string;
+  onInspect: (kind: "volume", id: string, title: string) => void;
+}) {
+  const volumes = useDockerStore((s) => s.byHost[hostId]?.volumes);
+  const removeVolume = useDockerStore((s) => s.removeVolume);
+  const [confirm, setConfirm] = useState<string | null>(null);
+
+  const filtered = useMemo(() => {
+    const items = volumes?.items ?? [];
+    const q = filter.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter((v) =>
+      [v.Name, v.Driver, v.Mountpoint, v.Scope]
+        .filter(Boolean)
+        .some((x) => String(x).toLowerCase().includes(q)),
+    );
+  }, [volumes?.items, filter]);
+
+  if (volumes?.loading && filtered.length === 0) {
+    return <EmptyNote text="Loading volumes…" />;
+  }
+  if (volumes?.error && filtered.length === 0) {
+    return <EmptyNote text={volumes.error} />;
+  }
+  if (filtered.length === 0) {
+    return (
+      <EmptyNote
+        text={filter ? "No volumes match the filter." : "No volumes on this host."}
+      />
+    );
+  }
+  return (
+    <>
+      {filtered.map((v) => {
+        const name = String(v.Name ?? "?");
+        return (
+          <div
+            key={name}
+            className="group relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 outline-none transition-colors hover:bg-accent/50"
+          >
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-[12px] font-medium leading-tight">{name}</span>
+              <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
+                {confirm === name
+                  ? `Remove volume ${name}? Data will be lost.`
+                  : `${String(v.Driver ?? "")} · ${String(v.Scope ?? "")}`}
+              </span>
+            </span>
+            {confirm === name ? (
+              <span className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirm(null);
+                    void removeVolume(hostId, name);
+                  }}
+                  className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10"
+                >
+                  Remove
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirm(null)}
+                  className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
+                >
+                  Keep
+                </button>
+              </span>
+            ) : (
+              <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+                <RowButton
+                  label={`Inspect volume ${name}`}
+                  onClick={() => onInspect("volume", name, name)}
+                >
+                  <HugeiconsIcon icon={File02Icon} size={13} strokeWidth={1.75} />
+                </RowButton>
+                <RowButton label={`Remove volume ${name}`} onClick={() => setConfirm(name)}>
+                  <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
+                </RowButton>
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function NetworksList({
+  hostId,
+  filter,
+  onInspect,
+}: {
+  hostId: string;
+  filter: string;
+  onInspect: (kind: "network", id: string, title: string) => void;
+}) {
+  const networks = useDockerStore((s) => s.byHost[hostId]?.networks);
+  const removeNetwork = useDockerStore((s) => s.removeNetwork);
+  const [confirm, setConfirm] = useState<string | null>(null);
+
+  const filtered = useMemo(() => {
+    const items = networks?.items ?? [];
+    const q = filter.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter((n) =>
+      [n.Name, n.Driver, n.Scope, n.ID ?? n.Id]
+        .filter(Boolean)
+        .some((x) => String(x).toLowerCase().includes(q)),
+    );
+  }, [networks?.items, filter]);
+
+  if (networks?.loading && filtered.length === 0) {
+    return <EmptyNote text="Loading networks…" />;
+  }
+  if (networks?.error && filtered.length === 0) {
+    return <EmptyNote text={networks.error} />;
+  }
+  if (filtered.length === 0) {
+    return (
+      <EmptyNote
+        text={filter ? "No networks match the filter." : "No networks on this host."}
+      />
+    );
+  }
+  const isBuiltin = (name: string) =>
+    name === "bridge" || name === "host" || name === "none";
+  return (
+    <>
+      {filtered.map((n) => {
+        const name = String(n.Name ?? "?");
+        const builtin = isBuiltin(name);
+        return (
+          <div
+            key={String(n.ID ?? n.Id ?? name)}
+            className="group relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 outline-none transition-colors hover:bg-accent/50"
+          >
+            <span
+              role="img"
+              aria-label={n.Driver ? String(n.Driver) : "network"}
+              className="size-2 shrink-0 rounded-full bg-muted-foreground/40"
+            />
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-[12px] font-medium leading-tight">{name}</span>
+              <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
+                {confirm === name
+                  ? `Remove network ${name}?`
+                  : `${String(n.Driver ?? "")} · ${String(n.Scope ?? "")}`}
+              </span>
+            </span>
+            {builtin ? (
+              <span className="shrink-0 rounded bg-accent px-1 py-px text-[10px] text-muted-foreground/70">
+                builtin
+              </span>
+            ) : confirm === name ? (
+              <span className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirm(null);
+                    void removeNetwork(hostId, name);
+                  }}
+                  className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10"
+                >
+                  Remove
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirm(null)}
+                  className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
+                >
+                  Keep
+                </button>
+              </span>
+            ) : (
+              <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+                <RowButton
+                  label={`Inspect network ${name}`}
+                  onClick={() => onInspect("network", name, name)}
+                >
+                  <HugeiconsIcon icon={File02Icon} size={13} strokeWidth={1.75} />
+                </RowButton>
+                <RowButton label={`Remove network ${name}`} onClick={() => setConfirm(name)}>
+                  <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
+                </RowButton>
+              </span>
+            )}
+          </div>
+        );
+      })}
     </>
   );
 }

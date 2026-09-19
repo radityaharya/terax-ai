@@ -101,7 +101,34 @@ pub fn spawn(command: String, cwd: Option<String>) -> Result<Arc<BackgroundProc>
         }
     }
 
-    let mut cmd = build_oneshot_command(&trimmed, cwd.as_deref())?;
+    let cmd = build_oneshot_command(&trimmed, cwd.as_deref())?;
+    spawn_with(cmd, trimmed, cwd)
+}
+
+/// Spawn a pre-built argv directly (no shell). Use for server-assembled
+/// argv (e.g. docker) so validated identifiers can never meet a shell.
+pub fn spawn_argv(argv: Vec<String>, cwd: Option<String>) -> Result<Arc<BackgroundProc>, String> {
+    if argv.is_empty() || argv[0].trim().is_empty() {
+        return Err("empty command".into());
+    }
+    if let Some(ref dir) = cwd {
+        if !std::path::PathBuf::from(dir).is_dir() {
+            return Err(format!("cwd is not a directory: {dir}"));
+        }
+    }
+    let label = argv.join(" ");
+    let mut cmd = std::process::Command::new(&argv[0]);
+    for a in &argv[1..] {
+        cmd.arg(a);
+    }
+    spawn_with(cmd, label, cwd)
+}
+
+fn spawn_with(
+    mut cmd: std::process::Command,
+    label: String,
+    cwd: Option<String>,
+) -> Result<Arc<BackgroundProc>, String> {
     if let Some(ref dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -130,7 +157,7 @@ pub fn spawn(command: String, cwd: Option<String>) -> Result<Arc<BackgroundProc>
         .unwrap_or(0);
 
     let proc = Arc::new(BackgroundProc {
-        command: trimmed,
+        command: label,
         cwd,
         started_at_ms,
         child,

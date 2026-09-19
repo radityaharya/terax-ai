@@ -27,32 +27,45 @@ export function DockerNotifications({ hostId, onOpenLogs }: Props) {
   const seenServicesRef = useRef(new Set<string>());
   const seenUpdatesRef = useRef(new Set<string>());
 
-  const feed = useDockerStore((s) => (hostId ? (s.byHost[hostId]?.eventsFeed ?? null) : null));
+  // Select primitives, not derived objects: returning fresh object/array
+  // literals from a zustand selector re-renders on every store change,
+  // which re-created the polling interval below and looped forever.
+  const feedPhase = useDockerStore((s) =>
+    hostId ? (s.byHost[hostId]?.eventsFeed?.phase ?? null) : null,
+  );
+  const eventCount = useDockerStore((s) =>
+    hostId ? (s.byHost[hostId]?.eventsFeed?.events.length ?? 0) : 0,
+  );
   const startEventsFeed = useDockerStore((s) => s.startEventsFeed);
   const pollEventsFeed = useDockerStore((s) => s.pollEventsFeed);
-  const updates = useDockerStore((s) => (hostId ? (s.byHost[hostId]?.updates ?? {}) : {}));
 
   // Keep one background events stream per active host.
   useEffect(() => {
     if (!hostId) return;
     seenRef.current.clear();
+    seenServicesRef.current.clear();
+    seenUpdatesRef.current.clear();
     void startEventsFeed(hostId);
   }, [hostId, startEventsFeed]);
 
   useEffect(() => {
-    if (!hostId || feed?.phase !== "streaming") return;
+    if (!hostId || feedPhase !== "streaming") return;
     const t = setInterval(() => {
       void pollEventsFeed(hostId);
     }, 3000);
     return () => clearInterval(t);
-  }, [hostId, feed?.phase, pollEventsFeed]);
+  }, [hostId, feedPhase, pollEventsFeed]);
 
-  // Evaluate fresh events.
+  // Evaluate fresh events. Depends on the event COUNT (a number), not the
+  // feed object — reading `feed.events` inside the effect via getState()
+  // avoids re-subscribing on every poll append.
   useEffect(() => {
-    if (!hostId || !feed) return;
+    if (!hostId) return;
+    const feed = useDockerStore.getState().byHost[hostId]?.eventsFeed;
+    if (!feed) return;
     const muted = new Set(mutedRules(hostId));
     for (const ev of feed.events) {
-      const n = evaluateEvent(hostId, ev, new Set());
+      const n = evaluateEvent(hostId, ev, seenUpdatesRef.current);
       if (!n || seenRef.current.has(n.id)) continue;
       seenRef.current.add(n.id);
       if (muted.has(n.rule)) continue;
@@ -71,17 +84,14 @@ export function DockerNotifications({ hostId, onOpenLogs }: Props) {
         // sonner unavailable — ignore
       }
     }
-  }, [hostId, feed]);
-
-  // Under-replicated services: derived from service_ls replicaHealth in a
-  // later phase (D7). Hook point kept here so D7 only adds the watcher.
-  useEffect(() => {
-    void updates;
-    void seenUpdatesRef;
-    void seenServicesRef;
-    void underReplicatedNotification;
-    void updateAvailableNotification;
-  }, [updates]);
+    // Under-replicated services + image updates hook into this same pass
+    // in D7 (reads the swarm/services + updates snapshots via getState).
+    // Referenced here so the imports stay live until D7 wires them.
+    if (eventCount < 0) {
+      void underReplicatedNotification;
+      void updateAvailableNotification;
+    }
+  }, [hostId, eventCount]);
 
   return null;
 }
