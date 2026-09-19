@@ -3,7 +3,7 @@ pub mod modules;
 #[cfg(target_os = "macos")]
 use modules::app_menu;
 use modules::{
-    agent, control, fs, git, history, lsp, net, pty, secrets, shell, vibrancy, workspace,
+    agent, control, fs, git, history, lsp, net, pty, secrets, shell, ssh, vibrancy, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -235,6 +235,7 @@ pub fn run() {
         .manage(modules::window_presentation::WindowPresentationState::default())
         .manage(control_state)
         .manage(shell::ShellState::default())
+        .manage(ssh::SshShared::default())
         .manage(secrets::SecretsState::default())
         .manage(fs::watch::FsWatchState::default())
         .manage(history::HistoryState::default())
@@ -320,6 +321,19 @@ pub fn run() {
             workspace::wsl_home,
             workspace::workspace_authorize,
             workspace::workspace_current_dir,
+            ssh::commands::ssh_list_hosts,
+            ssh::commands::ssh_save_host,
+            ssh::commands::ssh_delete_host,
+            ssh::commands::ssh_bind_space,
+            ssh::commands::ssh_test,
+            ssh::commands::ssh_import_config,
+            ssh::commands::ssh_import_host,
+            ssh::commands::ssh_host_key_status,
+            ssh::commands::ssh_scan_host_keys,
+            ssh::commands::ssh_known_hosts_path,
+            ssh::commands::ssh_home_for,
+            ssh::commands::ssh_login_shell_for,
+            ssh::commands::ssh_probe_auth,
             control::control_frontend_ready,
             control::control_respond,
             get_launch_dir,
