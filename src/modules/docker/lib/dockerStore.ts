@@ -80,6 +80,8 @@ type HostDockerState = {
   notifyMute: Record<string, boolean>;
   /** Compose projects keyed by project name. */
   compose: Record<string, ComposeProjectState>;
+  /** Swarm overview (nodes/services/stacks) for swarm-active hosts. */
+  swarm: SwarmState;
 };
 
 export type ImageUpdateState =
@@ -166,6 +168,68 @@ export type ComposeProjectState = {
   updatedAt: number | null;
 };
 
+export type SwarmNode = {
+  ID?: string;
+  Hostname?: string;
+  Status?: string;
+  Availability?: string;
+  ManagerStatus?: string;
+  EngineVersion?: string;
+  [key: string]: unknown;
+};
+
+export type SwarmService = {
+  ID?: string;
+  Name?: string;
+  Mode?: string;
+  Replicas?: string;
+  Image?: string;
+  replicaHealth?: { running: number; desired: number; underReplicated: boolean };
+  [key: string]: unknown;
+};
+
+export type SwarmStack = {
+  Name?: string;
+  Services?: string;
+  [key: string]: unknown;
+};
+
+export type SwarmInfo = {
+  LocalNodeState?: string;
+  ControlAvailable?: boolean;
+  [key: string]: unknown;
+};
+
+export type SwarmSecret = {
+  ID?: string;
+  Name?: string;
+  CreatedAt?: string;
+  UpdatedAt?: string;
+  [key: string]: unknown;
+};
+
+export type SwarmConfig = {
+  ID?: string;
+  Name?: string;
+  CreatedAt?: string;
+  UpdatedAt?: string;
+  [key: string]: unknown;
+};
+
+export type SwarmState = {
+  info: SwarmInfo | null;
+  nodes: SwarmNode[];
+  services: SwarmService[];
+  stacks: SwarmStack[];
+  secrets: SwarmSecret[];
+  configs: SwarmConfig[];
+  loading: boolean;
+  error: string | null;
+  updatedAt: number | null;
+  busyService: Record<string, string>;
+  drift: Record<string, { running: string[]; desired: string[] }>;
+};
+
 function emptyHost(): HostDockerState {
   return {
     daemon: { status: "unknown" },
@@ -190,6 +254,19 @@ function emptyHost(): HostDockerState {
     eventsFeed: null,
     notifyMute: {},
     compose: {},
+    swarm: {
+      info: null,
+      nodes: [],
+      services: [],
+      stacks: [],
+      secrets: [],
+      configs: [],
+      loading: false,
+      error: null,
+      updatedAt: null,
+      busyService: {},
+      drift: {},
+    },
   };
 }
 
@@ -279,6 +356,33 @@ type State = {
     action: "up" | "down" | "restart" | "pull",
     opts?: { build?: boolean; volumes?: boolean; services?: string[] },
   ) => Promise<void>;
+  refreshSwarm: (hostId: string) => Promise<void>;
+  refreshSwarmSecrets: (hostId: string) => Promise<void>;
+  serviceAction: (
+    hostId: string,
+    action: "scale" | "update-image" | "rm" | "rollback",
+    service: string,
+    opts?: { replicas?: number; image?: string },
+  ) => Promise<void>;
+  stackAction: (
+    hostId: string,
+    action: "deploy" | "rm",
+    stack: string,
+    composeFile?: string,
+  ) => Promise<void>;
+  nodeAction: (
+    hostId: string,
+    action: "drain" | "activate" | "pause" | "promote" | "demote",
+    node: string,
+  ) => Promise<void>;
+  swarmInit: (hostId: string, advertiseAddr?: string) => Promise<void>;
+  swarmJoin: (hostId: string, token: string, addr: string) => Promise<void>;
+  swarmLeave: (hostId: string, force?: boolean) => Promise<void>;
+  secretCreate: (hostId: string, name: string, value: string) => Promise<void>;
+  secretRemove: (hostId: string, name: string) => Promise<void>;
+  configCreate: (hostId: string, name: string, file: string) => Promise<void>;
+  configRemove: (hostId: string, name: string) => Promise<void>;
+  refreshStackDrift: (hostId: string, stack: string, composeFile: string) => Promise<void>;
 };
 
 function patch(
@@ -1189,6 +1293,225 @@ export const useDockerStore = create<State>((set) => ({
           [project]: { ...(h.compose[project] ?? { name: project, files, projectDir: "", containers: [], updatedAt: null }), loading: false, error: String(e) },
         },
       }));
+    }
+  },
+
+  refreshSwarm: async (hostId) => {
+    patch(set, hostId, (h) => ({
+      ...h,
+      swarm: { ...h.swarm, loading: true, error: null },
+    }));
+    try {
+      const [info, nodes, services, stacks] = await Promise.all([
+        sshRpc<SwarmInfo>("docker_swarm_info", {}, hostId),
+        sshRpc<SwarmNode[]>("docker_node_ls", {}, hostId).catch(() => [] as SwarmNode[]),
+        sshRpc<SwarmService[]>("docker_service_ls", {}, hostId).catch(() => [] as SwarmService[]),
+        sshRpc<SwarmStack[]>("docker_stack_ls", {}, hostId).catch(() => [] as SwarmStack[]),
+      ]);
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, info, nodes, services, stacks, loading: false, error: null, updatedAt: Date.now() },
+      }));
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, loading: false, error: String(e) },
+      }));
+    }
+  },
+
+  refreshSwarmSecrets: async (hostId) => {
+    try {
+      const [secrets, configs] = await Promise.all([
+        sshRpc<SwarmSecret[]>("docker_secret_ls", {}, hostId).catch(() => [] as SwarmSecret[]),
+        sshRpc<SwarmConfig[]>("docker_config_ls", {}, hostId).catch(() => [] as SwarmConfig[]),
+      ]);
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, secrets, configs },
+      }));
+    } catch {
+      // best effort — list rows show their own errors
+    }
+  },
+
+  serviceAction: async (hostId, action, service, opts) => {
+    patch(set, hostId, (h) => ({
+      ...h,
+      swarm: { ...h.swarm, busyService: { ...h.swarm.busyService, [service]: action } },
+    }));
+    try {
+      if (action === "scale") {
+        await sshRpc("docker_service_scale", { service, replicas: opts?.replicas ?? 1 }, hostId);
+      } else if (action === "update-image") {
+        await sshRpc("docker_service_update", { service, image: opts?.image ?? "" }, hostId);
+      } else if (action === "rm") {
+        await sshRpc("docker_service_rm", { service }, hostId);
+      } else {
+        await sshRpc("docker_service_rollback", { service }, hostId);
+      }
+      await useDockerStore.getState().refreshSwarm(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, error: String(e) },
+      }));
+    } finally {
+      patch(set, hostId, (h) => {
+        const busy = { ...h.swarm.busyService };
+        delete busy[service];
+        return { ...h, swarm: { ...h.swarm, busyService: busy } };
+      });
+    }
+  },
+
+  stackAction: async (hostId, action, stack, composeFile) => {
+    try {
+      if (action === "deploy") {
+        if (!composeFile) return;
+        await sshRpc("docker_stack_deploy", { stack, composeFile }, hostId);
+      } else {
+        await sshRpc("docker_stack_rm", { stack }, hostId);
+      }
+      await useDockerStore.getState().refreshSwarm(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, error: String(e) },
+      }));
+    }
+  },
+
+  nodeAction: async (hostId, action, node) => {
+    try {
+      if (action === "promote") {
+        await sshRpc("docker_node_promote", { node }, hostId);
+      } else if (action === "demote") {
+        await sshRpc("docker_node_demote", { node }, hostId);
+      } else {
+        const availability = action === "drain" ? "drain" : action === "pause" ? "pause" : "active";
+        await sshRpc("docker_node_update", { node, availability }, hostId);
+      }
+      await useDockerStore.getState().refreshSwarm(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, error: String(e) },
+      }));
+    }
+  },
+
+  swarmInit: async (hostId, advertiseAddr) => {
+    try {
+      await sshRpc("docker_swarm_init", advertiseAddr ? { advertiseAddr } : {}, hostId);
+      await useDockerStore.getState().refreshSwarm(hostId);
+      await useDockerStore.getState().refreshCapabilities(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, error: String(e) },
+      }));
+    }
+  },
+
+  swarmJoin: async (hostId, token, addr) => {
+    // Token travels the token-authenticated RPC channel only, passed to
+    // `docker swarm join --token` server-side. Never stored, never logged.
+    try {
+      await sshRpc("docker_swarm_join", { token, addr }, hostId);
+      await useDockerStore.getState().refreshSwarm(hostId);
+      await useDockerStore.getState().refreshCapabilities(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, error: String(e) },
+      }));
+    }
+  },
+
+  swarmLeave: async (hostId, force) => {
+    try {
+      await sshRpc("docker_swarm_leave", force ? { force: true } : {}, hostId);
+      await useDockerStore.getState().refreshSwarm(hostId);
+      await useDockerStore.getState().refreshCapabilities(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, error: String(e) },
+      }));
+    }
+  },
+
+  secretCreate: async (hostId, name, value) => {
+    // Secret value travels the token-authenticated channel into
+    // `docker secret create <name> -` stdin. Never stored, never logged.
+    try {
+      await sshRpc("docker_secret_create", { name, value }, hostId);
+      await useDockerStore.getState().refreshSwarmSecrets(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, error: String(e) },
+      }));
+    }
+  },
+
+  secretRemove: async (hostId, name) => {
+    try {
+      await sshRpc("docker_secret_rm", { name }, hostId);
+      await useDockerStore.getState().refreshSwarmSecrets(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, error: String(e) },
+      }));
+    }
+  },
+
+  configCreate: async (hostId, name, file) => {
+    try {
+      await sshRpc("docker_config_create", { name, file }, hostId);
+      await useDockerStore.getState().refreshSwarmSecrets(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, error: String(e) },
+      }));
+    }
+  },
+
+  configRemove: async (hostId, name) => {
+    try {
+      await sshRpc("docker_config_rm", { name }, hostId);
+      await useDockerStore.getState().refreshSwarmSecrets(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, error: String(e) },
+      }));
+    }
+  },
+
+  refreshStackDrift: async (hostId, stack, composeFile) => {
+    try {
+      const [services, config] = await Promise.all([
+        sshRpc<{ Image?: string }[]>("docker_stack_services", { stack }, hostId),
+        sshRpc<{ config: string }>("docker_compose_config", { files: [composeFile] }, hostId),
+      ]);
+      const running = services.map((s) => String(s.Image ?? "")).filter(Boolean).sort();
+      const desired = config.config
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith("image:"))
+        .map((l) => l.slice("image:".length).trim().replace(/["']/g, ""))
+        .filter(Boolean)
+        .sort();
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, drift: { ...h.swarm.drift, [stack]: { running, desired } } },
+      }));
+    } catch {
+      // best effort — drift row stays hidden
     }
   },
 }));

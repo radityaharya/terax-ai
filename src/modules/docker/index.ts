@@ -25,6 +25,13 @@ export {
   type LogViewOptions,
   type PruneTarget,
   type StatsSample,
+  type SwarmConfig,
+  type SwarmInfo,
+  type SwarmNode,
+  type SwarmSecret,
+  type SwarmService,
+  type SwarmStack,
+  type SwarmState,
 } from "./lib/dockerStore";
 export { daemonLabel, swarmLabel, composeLabel } from "./lib/capabilities";
 export { checkImageUpdate, type ImageUpdate } from "./lib/updateCheck";

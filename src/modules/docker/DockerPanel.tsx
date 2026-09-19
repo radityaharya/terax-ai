@@ -15,6 +15,9 @@ import {
 } from "@hugeicons/core-free-icons";
 import { CleanupHub } from "./components/CleanupHub";
 import { ComposeCard } from "./components/ComposeCard";
+import { SwarmInitPrompt } from "./components/SwarmInitPrompt";
+import { SwarmPanel } from "./components/SwarmPanel";
+import { SwarmSecretsPanel } from "./components/SwarmSecretsPanel";
 import { DetailsDrawer } from "./components/DetailsDrawer";
 import { DockerEventsPane } from "./DockerEventsPane";
 import { DockerLogsPane } from "./DockerLogsPane";
@@ -55,16 +58,17 @@ type Props = {
   openExecTabRef?: React.MutableRefObject<OpenExecTabFn | null>;
 };
 
-const SEGMENTS: { id: DockerResourceKind | "compose"; label: string }[] = [
+const SEGMENTS: { id: DockerResourceKind | "compose" | "swarm"; label: string }[] = [
   { id: "containers", label: "Containers" },
   { id: "images", label: "Images" },
   { id: "compose", label: "Compose" },
+  { id: "swarm", label: "Swarm" },
   { id: "volumes", label: "Volumes" },
   { id: "networks", label: "Networks" },
 ];
 
 export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef }: Props) {
-  const [segment, setSegment] = useState<DockerResourceKind | "compose">("containers");
+  const [segment, setSegment] = useState<DockerResourceKind | "compose" | "swarm">("containers");
   const [execTarget, setExecTarget] = useState<{
     container: string;
     containerName: string;
@@ -85,6 +89,10 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
   const [logsTarget, setLogsTarget] = useState<{
     kind: "container";
     id: string;
+    title: string;
+  } | null>(null);
+  const [serviceLogsTarget, setServiceLogsTarget] = useState<{
+    serviceId: string;
     title: string;
   } | null>(null);
   const startPull = useDockerStore((s) => s.startPull);
@@ -222,6 +230,15 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
           id={logsTarget.id}
           title={logsTarget.title}
           onClose={() => setLogsTarget(null)}
+        />
+      ) : null}
+      {serviceLogsTarget ? (
+        <DockerLogsPane
+          hostId={hostId}
+          kind="service"
+          id={serviceLogsTarget.serviceId}
+          title={serviceLogsTarget.title}
+          onClose={() => setServiceLogsTarget(null)}
         />
       ) : null}
       {activePulls.map((jobId) => (
@@ -420,6 +437,14 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
                   setLogsTarget({ kind: "container", id, title })
                 }
               />
+            ) : segment === "swarm" ? (
+              <SwarmView
+                hostId={hostId}
+                capabilities={daemon.status === "ready" ? daemon.capabilities : null}
+                onOpenServiceLogs={(serviceId, title) =>
+                  setServiceLogsTarget({ serviceId, title })
+                }
+              />
             ) : (
               <EmptyNote text={`${SEGMENTS.find((s) => s.id === segment)?.label} land with volumes/networks wiring (D2).`} />
             )}
@@ -521,6 +546,61 @@ function ComposeList({
         />
       ))}
     </>
+  );
+}
+
+function SwarmView({
+  hostId,
+  capabilities,
+  onOpenServiceLogs,
+}: {
+  hostId: string;
+  capabilities: { swarmState: string } | null;
+  onOpenServiceLogs: (serviceId: string, title: string) => void;
+}) {
+  const swarmActive = (capabilities?.swarmState ?? "").toLowerCase() === "active";
+  const [secretsOpen, setSecretsOpen] = useState(false);
+  const [initOpen, setInitOpen] = useState(false);
+  if (!swarmActive) {
+    return (
+      <div className="flex flex-col gap-1.5 px-1.5 pb-2">
+        <EmptyNote text="Swarm is inactive on this host — services, nodes and stacks need an initialized swarm." />
+        <button
+          type="button"
+          onClick={() => setInitOpen(true)}
+          className="mx-auto rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:opacity-90"
+        >
+          Initialize or join swarm…
+        </button>
+        {initOpen ? (
+          <SwarmInitPrompt hostId={hostId} onClose={() => setInitOpen(false)} />
+        ) : null}
+      </div>
+    );
+  }
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <SwarmPanel
+        hostId={hostId}
+        swarmActive
+        onOpenServiceLogs={onOpenServiceLogs}
+      />
+      <div className="px-1.5 pb-2">
+        <button
+          type="button"
+          onClick={() => setSecretsOpen((v) => !v)}
+          aria-expanded={secretsOpen}
+          className="w-full rounded-md border border-border/40 px-2 py-1 text-left text-[11px] font-medium text-muted-foreground hover:text-foreground"
+        >
+          {secretsOpen ? "▾" : "▸"} Secrets & configs
+        </button>
+        {secretsOpen ? (
+          <div className="mt-1">
+            <SwarmSecretsPanel hostId={hostId} />
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
