@@ -57,6 +57,20 @@ fn target(host: &SshHost) -> String {
     format!("{}@{}", host.user, host.hostname)
 }
 
+/// POSIX-shell-quote one argument for the remote command line.
+pub fn shell_quote(arg: &str) -> String {
+    if arg.is_empty() {
+        return "''".to_string();
+    }
+    if arg
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '=' | ','))
+    {
+        return arg.to_string();
+    }
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
 fn run_ssh_capture(host: &SshHost, batch: bool, extra: &[String], timeout: Duration) -> Result<(i32, String, String), String> {
     let mut cmd = Command::new(ssh_binary());
     for arg in base_args(host, batch) {
@@ -65,8 +79,15 @@ fn run_ssh_capture(host: &SshHost, batch: bool, extra: &[String], timeout: Durat
     // OpenSSH syntax is `ssh [options] [user@]hostname [command]`: the
     // target must precede the remote command, never follow it.
     cmd.arg(target(host));
-    for arg in extra {
-        cmd.arg(arg);
+    // The remote command must be ONE ssh argument. ssh space-joins multiple
+    // argv elements before sending, which destroys inner quoting (e.g.
+    // `sh -c 'printf %s "$HOME"'` arrives as `sh -c printf %s ...` and the
+    // remote shell runs bare `printf` with no format: the classic
+    // `%s: 1: printf: usage` failure. Quote each element POSIX-style and
+    // join into a single command string.
+    if !extra.is_empty() {
+        let joined = extra.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ");
+        cmd.arg(joined);
     }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
