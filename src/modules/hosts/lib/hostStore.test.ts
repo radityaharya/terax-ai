@@ -102,7 +102,7 @@ describe("probeHost", () => {
     });
     const status = await probeHost(host());
     expect(status).toEqual({ state: "online", home: "/home/deploy" });
-    expect(useHostStore.getState().connections["prod"]).toEqual(status);
+    expect(useHostStore.getState().connections.prod).toEqual(status);
   });
 
   it("surfaces host-key state before probing auth", async () => {
@@ -138,5 +138,10 @@ describe("refreshImported", () => {
     const imported = await refreshImported();
     expect(imported).toHaveLength(1);
     expect(useHostStore.getState().importedLoaded).toBe(true);
+  });
+
+  it("marks the ssh scope key distinctly", async () => {
+    const { workspaceScopeKey } = await import("@/modules/workspace");
+    expect(workspaceScopeKey({ kind: "ssh", hostId: "prod" })).toBe("ssh:prod");
   });
 });

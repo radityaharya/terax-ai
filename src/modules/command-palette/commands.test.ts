@@ -47,6 +47,7 @@ function baseContext(
     openSettings: noop,
     openKeyboardShortcuts: noop,
     openSpacesOverview: noop,
+    openHostsPanel: noop,
     newSpace: noop,
     switchSpace: noop,
     ...over,

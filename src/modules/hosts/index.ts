@@ -10,4 +10,5 @@ export {
   probeHost,
   type ConnectionStatus,
 } from "./lib/hostStore";
+export { markHostActive, cancelIdleDisconnect } from "./lib/idleDisconnect";
 export type { SshHost, ImportedHost, ProbeOutcome } from "./lib/types";

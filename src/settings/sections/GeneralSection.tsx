@@ -107,6 +107,7 @@ export function GeneralSection() {
   const terminalShell = usePreferencesStore((s) => s.terminalShell);
   const [shells, setShells] = useState<ShellInfo[]>([]);
   const [wslDistros, setWslDistros] = useState<{ name: string }[]>([]);
+  const [sshHosts, setSshHosts] = useState<{ id: string; alias: string }[]>([]);
   const defaultWorkspaceEnv = usePreferencesStore((s) => s.defaultWorkspaceEnv);
   const terminalLetterSpacing = usePreferencesStore(
     (s) => s.terminalLetterSpacing,
@@ -156,6 +157,11 @@ export function GeneralSection() {
       .catch(() => {});
     void invoke<{ name: string }[]>("wsl_list_distros")
       .then(setWslDistros)
+      .catch(() => {});
+    void invoke<{ id: string; alias: string }[]>("ssh_list_hosts")
+      .then((hosts) =>
+        setSshHosts(hosts.map((h) => ({ id: h.id, alias: h.alias }))),
+      )
       .catch(() => {});
   }, []);
 
@@ -376,10 +382,12 @@ export function GeneralSection() {
             </SelectContent>
           </Select>
         </SettingRow>
-        {(wslDistros.length > 0 || defaultWorkspaceEnv !== "local") && (
+        {(wslDistros.length > 0 ||
+          sshHosts.length > 0 ||
+          defaultWorkspaceEnv !== "local") && (
           <SettingRow
             title="Workspace environment"
-            description="Where new spaces run, terminal and AI agent alike: Windows or a WSL distro. Existing spaces keep theirs; switch any from the status bar."
+            description="Where new spaces run, terminal and AI agent alike: Windows, a WSL distro, or an SSH host. Existing spaces keep theirs; switch any from the status bar."
           >
             <Select
               value={defaultWorkspaceEnv}
@@ -404,6 +412,15 @@ export function GeneralSection() {
                     WSL: {d.name}
                   </SelectItem>
                 ))}
+                {sshHosts.map((h) => (
+                  <SelectItem
+                    key={h.id}
+                    value={`ssh:${h.id}`}
+                    className="text-[12px]"
+                  >
+                    SSH: {h.alias}
+                  </SelectItem>
+                ))}
                 {defaultWorkspaceEnv.startsWith("wsl:") &&
                   !wslDistros.some(
                     (d) => `wsl:${d.name}` === defaultWorkspaceEnv,
@@ -413,6 +430,17 @@ export function GeneralSection() {
                       className="text-[12px]"
                     >
                       {defaultWorkspaceEnv.slice("wsl:".length)} (unavailable)
+                    </SelectItem>
+                  )}
+                {defaultWorkspaceEnv.startsWith("ssh:") &&
+                  !sshHosts.some(
+                    (h) => `ssh:${h.id}` === defaultWorkspaceEnv,
+                  ) && (
+                    <SelectItem
+                      value={defaultWorkspaceEnv}
+                      className="text-[12px]"
+                    >
+                      {defaultWorkspaceEnv.slice("ssh:".length)} (unavailable)
                     </SelectItem>
                   )}
               </SelectContent>

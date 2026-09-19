@@ -45,6 +45,7 @@ import {
   HostsPanel,
   SshAuthDialog,
   bindHostSpace,
+  markHostActive,
   probeHost,
   type SshAuthChoice,
   type SshHost,
@@ -297,6 +298,10 @@ export default function App() {
       .getState()
       .spaces.find((s) => s.id === activeSpaceId);
     if (meta) void adoptWorkspaceEnv(meta.env);
+    // Idle-disconnect background SSH hosts; cancel for the active one.
+    markHostActive(
+      meta && meta.env.kind === "ssh" ? meta.env.hostId : null,
+    );
     const inSpace = tabsRef.current.filter((t) => t.spaceId === activeSpaceId);
     if (inSpace.length === 0) return;
     // Keep the active tab if it already belongs to the newly active space (a
@@ -1196,6 +1201,7 @@ export default function App() {
   // the remote; the agent transport serves fs calls once connected.
   const handleConnectHost = useCallback(
     async (host: SshHost) => {
+      markHostActive(host.id);
       const { spaces, create, setActive } = useSpaces.getState();
       const bound = host.boundSpaceId
         ? spaces.find((s) => s.id === host.boundSpaceId)
@@ -1327,6 +1333,7 @@ export default function App() {
             openNewEditor: () => setNewEditorOpen(true),
             openNewPreview: () => openPreviewTab(""),
             openGitGraph: openGitGraphFromContext,
+            openHostsPanel: () => openSidebarView("hosts"),
             toggleSourceControl,
             closeActiveTabOrPane: handleCloseTabOrPane,
             splitPaneRight: () => splitActivePaneInActiveTab("row"),
