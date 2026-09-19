@@ -60,7 +60,13 @@ pub async fn pty_open(
 ) -> Result<u32, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
     let blocks = blocks.unwrap_or(false);
-    let cwd = user_spawn_cwd_or_home(&registry, cwd.as_deref(), &workspace);
+    // SSH cwds are remote paths: validated host-side, never canonicalized
+    // locally. Pass the raw string through; build_ssh applies it remotely.
+    let cwd = if workspace.is_ssh() {
+        cwd.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    } else {
+        user_spawn_cwd_or_home(&registry, cwd.as_deref(), &workspace)
+    };
     // A Windows helper cannot execute inside WSL without explicit path and
     // network translation. Do not inject credentials for a broken command.
     // Same for SSH: the helper runs on the remote in Phase 3, not locally.

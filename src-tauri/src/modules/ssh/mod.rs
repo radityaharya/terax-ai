@@ -7,3 +7,4 @@ pub mod known_hosts;
 pub mod session;
 
 pub use commands::SshShared;
+pub use session::ssh_binary;

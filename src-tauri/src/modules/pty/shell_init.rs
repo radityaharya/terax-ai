@@ -57,6 +57,11 @@ pub fn build_command(
     shell: Option<String>,
     control: Option<ShellControlEnv>,
 ) -> Result<CommandBuilder, String> {
+    // SSH terminal tabs run on all desktop OSes: the transport is system ssh.
+    if let WorkspaceEnv::Ssh { host_id } = &workspace {
+        let _ = (blocks, shell, control);
+        return build_ssh(cwd, host_id);
+    }
     let shell = sanitize_shell_override(shell);
     #[cfg(unix)]
     {
@@ -67,6 +72,41 @@ pub fn build_command(
     {
         windows::build(cwd, workspace, blocks, shell, control)
     }
+}
+
+/// Interactive SSH terminal: `ssh -t user@host <remote shell>`. Passwords
+/// and 2FA complete natively in the PTY. No shell integration yet (bare
+/// fallback like unsupported shells): remote OSC 7/133 arrives once the
+/// agent installs integration scripts in Phase 3. The remote cwd, when set,
+/// is applied with a safe `cd` prefix; quoting follows the remote login
+/// shell (POSIX).
+pub fn build_ssh(cwd: Option<String>, host_id: &str) -> Result<CommandBuilder, String> {
+    crate::modules::workspace::validate_ssh_host_id(host_id)?;
+    let host = crate::modules::ssh::hosts::host_store()
+        .get(host_id)
+        .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
+    let remote_shell = crate::modules::ssh::session::ssh_login_shell(&host)
+        .map_err(|e| e.to_string())
+        .unwrap_or_else(|_| "/bin/sh".to_string());
+    let mut cmd = CommandBuilder::new(crate::modules::ssh::ssh_binary());
+    for arg in crate::modules::ssh::session::terminal_args(&host, None) {
+        cmd.arg(arg);
+    }
+    // Apply the remote cwd inside the remote shell. Single-quoted with
+    // embedded-quote escaping; empty/absent cwd starts at the remote home.
+    if let Some(dir) = cwd.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        let quoted = format!("'{}'", dir.replace('\'', "'\\''"));
+        cmd.arg(format!("cd {quoted} && exec {remote_shell}"));
+    } else {
+        cmd.arg(remote_shell);
+    }
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERAX_TERMINAL", "1");
+    // TERAX_BLOCKS intentionally unset: no remote integration yet, so the
+    // frontend must not expect command blocks on SSH tabs.
+    log::info!("spawning SSH shell: {}@{}", host.user, host.hostname);
+    Ok(cmd)
 }
 
 // Honor the override only if it matches an enumerated shell, so a tampered
@@ -1103,7 +1143,7 @@ mod tests {
 
     use portable_pty::CommandBuilder;
 
-    use super::{apply_common, sanitize_shell_override, ShellControlEnv};
+    use super::{apply_common, build_ssh, sanitize_shell_override, ShellControlEnv};
 
     #[test]
     fn rejects_non_enumerated_override() {
@@ -1151,5 +1191,68 @@ mod tests {
                 .and_then(|path| std::env::split_paths(path).next()),
             Some(std::path::PathBuf::from("/app/bin"))
         );
+    }
+
+    fn seed_ssh_host(id: &str) {
+        use crate::modules::ssh::hosts::{host_store, SshHost};
+        host_store().upsert(SshHost {
+            id: id.into(),
+            alias: id.into(),
+            user: "deploy".into(),
+            hostname: "10.0.0.5".into(),
+            port: 22,
+            identity_file: None,
+            remote_root: None,
+            bound_space_id: None,
+            agent_forward: false,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        });
+    }
+
+    #[test]
+    fn ssh_rejects_unsafe_host_id() {
+        let err = build_ssh(None, "../evil").expect_err("unsafe id must fail");
+        assert!(err.contains("unsafe"), "got: {err}");
+    }
+
+    #[test]
+    fn ssh_rejects_unknown_host() {
+        let err = build_ssh(None, "no-such-host-xyz").expect_err("unknown host must fail");
+        assert!(err.contains("unknown SSH host"), "got: {err}");
+    }
+
+    #[test]
+    fn ssh_launch_has_no_secrets_in_argv() {
+        seed_ssh_host("argv-check");
+        let cmd = build_ssh(Some("/home/u/repo".into()), "argv-check").expect("build");
+        let argv: Vec<_> = cmd
+            .get_argv()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let joined = argv.join(" ");
+        assert!(joined.contains("-t"), "got: {joined}");
+        assert!(joined.contains("deploy@10.0.0.5"), "got: {joined}");
+        assert!(joined.contains("StrictHostKeyChecking=yes"), "got: {joined}");
+        // No BatchMode on interactive sessions: passwords/2FA need the PTY.
+        assert!(!argv.iter().any(|a| a == "BatchMode=yes"), "got: {joined}");
+        // Remote cwd is applied inside the remote shell, never as local cwd.
+        assert!(joined.contains("cd '/home/u/repo'"), "got: {joined}");
+        assert_eq!(cmd.get_env("TERM"), Some(OsStr::new("xterm-256color")));
+        assert_eq!(cmd.get_env("TERAX_BLOCKS"), None);
+    }
+
+    #[test]
+    fn ssh_launch_quotes_remote_cwd_safely() {
+        seed_ssh_host("quote-check");
+        let cmd = build_ssh(Some("/home/u/o'brien".into()), "quote-check").expect("build");
+        let argv: Vec<_> = cmd
+            .get_argv()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let joined = argv.join(" ");
+        assert!(joined.contains("o'\\''brien"), "got: {joined}");
     }
 }

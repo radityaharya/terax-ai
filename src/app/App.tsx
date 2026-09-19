@@ -1082,6 +1082,10 @@ export default function App() {
   const handleTerminalCwd = useCallback(
     (leafId: number, cwd: string) => {
       setLeafCwd(leafId, cwd);
+      // SSH cwds are remote paths: they authorize on the remote agent, never
+      // in the local registry. Authorizing them locally would canonicalize a
+      // remote path against the local FS.
+      if (workspaceEnv.kind === "ssh") return;
       if (cwd && !authorizedCwds.current.has(cwd)) {
         authorizedCwds.current.add(cwd);
         native.workspaceAuthorize(cwd).catch(() => {
@@ -1089,7 +1093,7 @@ export default function App() {
         });
       }
     },
-    [setLeafCwd],
+    [setLeafCwd, workspaceEnv],
   );
 
   const handleFocusLeaf = useCallback(
@@ -1720,10 +1724,15 @@ export default function App() {
                 if (!open) setSshAuthPrompt(null);
               }}
               onChoice={(_choice: SshAuthChoice) => {
-                // Phase 2 opens a terminal tab to complete auth; for now
-                // switch to the Hosts view so the user can retry.
+                // Complete auth natively in a terminal tab: connect the
+                // host env first so the new tab spawns ssh, then open it.
+                const pending = sshAuthPrompt;
                 setSshAuthPrompt(null);
-                openSidebarView("hosts");
+                if (pending) {
+                  void handleConnectHost(pending.host).then(() => {
+                    newTab(undefined);
+                  });
+                }
               }}
             />
           )}

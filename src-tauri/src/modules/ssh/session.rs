@@ -10,7 +10,7 @@ use crate::modules::proc::hide_console;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn ssh_binary() -> String {
+pub fn ssh_binary() -> String {
     if cfg!(windows) {
         let system32 = std::env::var_os("SystemRoot")
             .map(std::path::PathBuf::from)
