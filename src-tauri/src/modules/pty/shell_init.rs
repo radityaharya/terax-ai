@@ -124,6 +124,11 @@ pub fn build_docker_exec(spec: &DockerExecSpec) -> Result<CommandBuilder, String
     cmd.env("TERM_PROGRAM", "terax");
     cmd.env("TERAX_TERMINAL", "1");
     cmd.env("TERAX_DOCKER_EXEC", &spec.container);
+    // The integration scripts key cwd/title off HOST; inside a container
+    // the hostname differs, so tag the session explicitly. The shell
+    // scripts emit `file://$TERAX_SESSION_TAG/...` when set, letting the
+    // frontend attribute OSC 7 to the exec tab instead of the host.
+    cmd.env("TERAX_SESSION_TAG", format!("docker:{}", spec.container));
     log::info!(
         "spawning docker exec: {}@{} container {} ({})",
         host.user,

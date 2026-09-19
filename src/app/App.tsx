@@ -1230,6 +1230,17 @@ export default function App() {
   const authorizedCwds = useRef(new Set<string>());
   const handleTerminalCwd = useCallback(
     (leafId: number, cwd: string) => {
+      // docker exec tabs report container-internal paths (e.g. /app):
+      // record them on the leaf for display, but never let them drive the
+      // explorer root or the auth registry — they belong to the container
+      // filesystem, not the host workspace.
+      const tab = tabsRef.current.find(
+        (t) => t.kind === "terminal" && hasLeaf(t.paneTree, leafId),
+      );
+      if (tab?.kind === "terminal" && tab.dockerExec) {
+        setLeafCwd(leafId, cwd);
+        return;
+      }
       setLeafCwd(leafId, cwd);
       // SSH cwds are remote paths: they authorize on the remote agent, never
       // in the local registry. Authorizing them locally would canonicalize a
