@@ -242,6 +242,9 @@ pub struct SshShared {
     pub masters: std::sync::Arc<MasterRegistry>,
     pub probes: std::sync::Arc<ProbeCache>,
     pub rpc: std::sync::Arc<super::rpc::SshRpcManager>,
+    /// Serializes agent ensure+upload per host: parallel first-use calls
+    /// (explorer + git + status bar) must not race duplicate uploads.
+    ensure_lock: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl Default for SshShared {
@@ -250,6 +253,9 @@ impl Default for SshShared {
             masters: std::sync::Arc::new(MasterRegistry::default()),
             probes: std::sync::Arc::new(ProbeCache::default()),
             rpc: std::sync::Arc::new(super::rpc::SshRpcManager::default()),
+            ensure_lock: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
         }
     }
 }
@@ -257,6 +263,44 @@ impl Default for SshShared {
 /// Version reported by the bundled agent binary. The remote must match or
 /// the RPC channel is refused: mixed versions corrupt the method contract.
 pub const REMOTE_AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// RAII per-host serialization for agent ensure. Concurrent first-use
+/// ssh_rpc calls for one host queue here; the losers re-check the version
+/// after the winner's upload and skip their own.
+struct HoldEnsure<'a> {
+    set: &'a std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    host_id: String,
+}
+
+impl<'a> HoldEnsure<'a> {
+    fn acquire(
+        set: &'a std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+        host_id: &str,
+    ) -> Self {
+        loop {
+            {
+                let mut guard = set.lock().expect("ensure lock poisoned");
+                if guard.insert(host_id.to_string()) {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        Self {
+            set,
+            host_id: host_id.to_string(),
+        }
+    }
+}
+
+impl Drop for HoldEnsure<'_> {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .expect("ensure lock poisoned")
+            .remove(&self.host_id);
+    }
+}
 
 fn bundled_remote_bin() -> Option<std::path::PathBuf> {
     // Dev + release both stage the agent under src-tauri/binaries/.
@@ -280,7 +324,7 @@ pub fn ensure_remote_agent(host: &SshHost) -> Result<String, String> {
         .ok_or_else(|| "remote agent binary not built yet (run pnpm build:remote)".to_string())?;
     let remote_path = "~/.cache/terax/terax-remote";
     // Version check first: reuse the installed agent when it matches.
-    let probe = super::session::run_ssh_capture_version(host, &format!("{remote_path} --version"))?;
+    let probe = super::session::run_ssh_capture_version(host, remote_path)?;
     if probe.trim().ends_with(REMOTE_AGENT_VERSION) {
         return Ok(remote_path.to_string());
     }
@@ -348,7 +392,14 @@ pub async fn ssh_rpc(
     if !allowed.contains(&method.as_str()) {
         return Err(format!("remote method not allowed: {method}"));
     }
-    let remote_bin = ensure_remote_agent(&host)?;
+    // Serialize agent ensure per host: the first fan-out (explorer + git
+    // + status bar) fires concurrent ssh_rpc calls, and without this they
+    // race duplicate version probes and uploads over separate connections.
+    // The second waiter finds the agent already installed and skips upload.
+    let remote_bin = {
+        let _guard = HoldEnsure::acquire(&state.ensure_lock, &host_id);
+        ensure_remote_agent(&host)?
+    };
     // Resolve the agent root: explicit setting wins, else probe the remote
     // home once and remember it on the host so later calls skip the probe.
     let remote_root = match host.remote_root.clone().filter(|r| !r.is_empty()) {

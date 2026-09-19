@@ -58,14 +58,17 @@ fn target(host: &SshHost) -> String {
 }
 
 /// POSIX-shell-quote one argument for the remote command line.
+/// `~` stays unquoted: tilde expansion only happens at word starts (exactly
+/// where remote paths like `~/.cache/...` need it); mid-word it is literal
+/// in POSIX shells, so leaving it bare is safe in both positions. Quoting
+/// it would freeze it into a literal `~` directory name.
 pub fn shell_quote(arg: &str) -> String {
     if arg.is_empty() {
         return "''".to_string();
     }
-    if arg
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '=' | ','))
-    {
+    if arg.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '=' | ',' | '~')
+    }) {
         return arg.to_string();
     }
     format!("'{}'", arg.replace('\'', "'\\''"))
@@ -147,9 +150,12 @@ fn wait_with_timeout(
 }
 
 /// Runs a remote command over the multiplexed channel and returns stdout.
-/// Used for agent management (version probe). Always BatchMode.
-pub fn run_ssh_capture_version(host: &SshHost, remote_cmd: &str) -> Result<String, String> {
-    let parts: Vec<String> = vec![remote_cmd.to_string()];
+/// Used for agent management (version probe). Always BatchMode. Takes the
+/// binary and its args separately: joining them into one string would get
+/// single-quoted as a whole and the remote would look for a file with
+/// spaces in its name.
+pub fn run_ssh_capture_version(host: &SshHost, remote_bin: &str) -> Result<String, String> {
+    let parts = vec![remote_bin.to_string(), "--version".to_string()];
     match run_ssh_capture(host, true, &parts, DEFAULT_TIMEOUT) {
         Ok((0, stdout, _)) => Ok(stdout.trim().to_string()),
         Ok((_, _, _)) => Ok(String::new()),
@@ -159,10 +165,18 @@ pub fn run_ssh_capture_version(host: &SshHost, remote_cmd: &str) -> Result<Strin
 
 /// Uploads a local file to the remote via stdin redirect:
 /// `ssh host 'mkdir -p ~/.cache/terax && cat > <remote> && chmod +x <remote>'`.
-/// No scp dependency; works everywhere system ssh works.
+/// No scp dependency; works everywhere system ssh works. Writes in chunks
+/// with a liveness check: if ssh exits early (auth failure, remote error)
+/// the write fails fast with the remote stderr instead of a bare broken
+/// pipe.
 pub fn upload_file(host: &SshHost, local: &std::path::Path, remote: &str) -> Result<(), String> {
     let bytes = std::fs::read(local).map_err(|e| format!("read local agent: {e}"))?;
-    let script = format!("mkdir -p ~/.cache/terax && cat > {remote} && chmod +x {remote}");
+    // Quote the destination: it is interpolated into a remote shell script.
+    let script = format!(
+        "mkdir -p ~/.cache/terax && cat > {} && chmod +x {}",
+        shell_quote(remote),
+        shell_quote(remote)
+    );
     let mut cmd = Command::new(ssh_binary());
     for arg in base_args(host, true) {
         cmd.arg(arg);
@@ -176,10 +190,53 @@ pub fn upload_file(host: &SshHost, local: &std::path::Path, remote: &str) -> Res
     let mut child = cmd.spawn().map_err(|e| format!("spawn ssh upload: {e}"))?;
     let mut stdin = child.stdin.take().ok_or("no upload stdin")?;
     use std::io::Write;
-    stdin.write_all(&bytes).map_err(|e| format!("upload write: {e}"))?;
+    const CHUNK: usize = 64 * 1024;
+    let mut wrote = 0;
+    for chunk in bytes.chunks(CHUNK) {
+        // Fail fast when ssh died mid-upload instead of pushing into a
+        // broken pipe (Windows surfaces this as os error 109).
+        if let Some(status) = child.try_wait().map_err(|e| format!("upload poll: {e}"))? {
+            let mut err = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                let _ = stderr.read_to_end(&mut buf);
+                err = String::from_utf8_lossy(&buf).trim().to_string();
+            }
+            return Err(format!(
+                "ssh exited during upload (code {}): {}",
+                status.code().unwrap_or(-1),
+                if err.is_empty() { "no remote error" } else { &err }
+            ));
+        }
+        stdin
+            .write_all(chunk)
+            .map_err(|e| format!("upload write at {wrote}/{} bytes: {e}", bytes.len()))?;
+        wrote += chunk.len();
+    }
     drop(stdin);
     let out = child.wait_with_output().map_err(|e| format!("upload wait: {e}"))?;
     if out.status.success() {
+        // Verify the bytes landed intact before declaring success.
+        let check = run_ssh_capture(
+            host,
+            true,
+            &["wc".to_string(), "-c".to_string(), remote.to_string()],
+            DEFAULT_TIMEOUT,
+        )
+        .map_err(|e| format!("upload verify: {e}"))?;
+        let size: usize = check
+            .1
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if size != bytes.len() {
+            return Err(format!(
+                "upload size mismatch: sent {} bytes, remote has {size}",
+                bytes.len()
+            ));
+        }
         Ok(())
     } else {
         Err(format!(
@@ -303,11 +360,15 @@ pub fn terminal_args(host: &SshHost, remote_shell: Option<&str>) -> Vec<String> 
 }
 
 /// Args for the agent RPC channel. Always BatchMode: interactive auth only
-/// ever happens through the ControlMaster establishment flow.
+/// ever happens through the ControlMaster establishment flow. The remote
+/// command is passed as ONE ssh argument; splitting it lets word-splitting
+/// corrupt paths/args with spaces (same class of bug as run_ssh_capture).
 pub fn rpc_args(host: &SshHost, remote_cmd: &str) -> Vec<String> {
     let mut args = base_args(host, true);
     args.push("-T".to_string());
     args.push(target(host));
+    // remote_cmd is already a fully-formed local-style command string built
+    // by ensure_remote_agent (paths quoted there). Pass through untouched.
     args.push(remote_cmd.to_string());
     args
 }
