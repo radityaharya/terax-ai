@@ -14,6 +14,7 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { CleanupHub } from "./components/CleanupHub";
+import { ComposeCard } from "./components/ComposeCard";
 import { DetailsDrawer } from "./components/DetailsDrawer";
 import { DockerEventsPane } from "./DockerEventsPane";
 import { DockerLogsPane } from "./DockerLogsPane";
@@ -54,19 +55,20 @@ type Props = {
   openExecTabRef?: React.MutableRefObject<OpenExecTabFn | null>;
 };
 
-const SEGMENTS: { id: DockerResourceKind; label: string }[] = [
+const SEGMENTS: { id: DockerResourceKind | "compose"; label: string }[] = [
   { id: "containers", label: "Containers" },
   { id: "images", label: "Images" },
+  { id: "compose", label: "Compose" },
   { id: "volumes", label: "Volumes" },
   { id: "networks", label: "Networks" },
 ];
 
 export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef }: Props) {
+  const [segment, setSegment] = useState<DockerResourceKind | "compose">("containers");
   const [execTarget, setExecTarget] = useState<{
     container: string;
     containerName: string;
   } | null>(null);
-  const [segment, setSegment] = useState<DockerResourceKind>("containers");
   const [filter, setFilter] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [inspecting, setInspecting] = useState<{
@@ -152,6 +154,30 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
         .some((v) => String(v).toLowerCase().includes(q)),
     );
   }, [hostId, containers?.items, filter]);
+
+  // Compose project grouping from container labels
+  // (com.docker.compose.project + .config_files), refreshed when the
+  // container list changes. Projects with no live containers still show
+  // if the store already knows their files.
+  const refreshCompose = useDockerStore((s) => s.refreshCompose);
+
+  const containerNamesById = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const c of containers?.items ?? []) {
+      out[containerId(c)] = containerName(c);
+    }
+    return out;
+  }, [containers?.items]);
+
+  useEffect(() => {
+    if (!hostId || !containers?.items) return;
+    const groups = groupComposeProjects(containers.items);
+    for (const [name, g] of Object.entries(groups)) {
+      void refreshCompose(hostId, name, g.files, g.projectDir).catch(() => {});
+    }
+    // Grouping derives from the container list; refresh per list change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostId, containers?.updatedAt]);
 
   const runAction = (action: ContainerAction, id: string) => {
     if (!hostId) return;
@@ -385,6 +411,15 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
                 onRegistry={() => setRegistryOpen(true)}
                 activePulls={activePulls}
               />
+            ) : segment === "compose" ? (
+              <ComposeList
+                hostId={hostId}
+                filter={filter}
+                containerNames={containerNamesById}
+                onOpenLogs={(id, title) =>
+                  setLogsTarget({ kind: "container", id, title })
+                }
+              />
             ) : (
               <EmptyNote text={`${SEGMENTS.find((s) => s.id === segment)?.label} land with volumes/networks wiring (D2).`} />
             )}
@@ -403,6 +438,89 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
         </div>
       )}
     </div>
+  );
+}
+
+/** Group containers into compose projects via labels. */
+function groupComposeProjects(items: DockerContainer[]): Record<
+  string,
+  { files: string[]; projectDir: string }
+> {
+  const out: Record<string, { files: string[]; projectDir: string }> = {};
+  for (const c of items) {
+    const labels = parseLabels(c.Labels);
+    const project = labels["com.docker.compose.project"];
+    if (!project) continue;
+    const filesRaw = labels["com.docker.compose.project.config_files"] ?? "";
+    const files = filesRaw.split(",").map((f) => f.trim()).filter(Boolean);
+    const dir = labels["com.docker.compose.project.working_dir"] ?? "";
+    if (!out[project]) out[project] = { files, projectDir: dir };
+    else {
+      for (const f of files) {
+        if (!out[project].files.includes(f)) out[project].files.push(f);
+      }
+      if (!out[project].projectDir && dir) out[project].projectDir = dir;
+    }
+  }
+  return out;
+}
+
+function parseLabels(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "string") return {};
+  const out: Record<string, string> = {};
+  for (const part of raw.split(",")) {
+    const idx = part.indexOf("=");
+    if (idx <= 0) continue;
+    out[part.slice(0, idx)] = part.slice(idx + 1);
+  }
+  return out;
+}
+
+function ComposeList({
+  hostId,
+  filter,
+  containerNames,
+  onOpenLogs,
+}: {
+  hostId: string;
+  filter: string;
+  containerNames: Record<string, string>;
+  onOpenLogs: (id: string, title: string) => void;
+}) {
+  const projects = useDockerStore((s) => s.byHost[hostId]?.compose ?? {});
+  const list = useMemo(() => {
+    const all = Object.values(projects);
+    const q = filter.trim().toLowerCase();
+    if (!q) return all;
+    return all.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        p.files.some((f) => f.toLowerCase().includes(q)),
+    );
+  }, [projects, filter]);
+  if (list.length === 0) {
+    return (
+      <EmptyNote
+        text={
+          filter
+            ? "No compose projects match the filter."
+            : "No compose projects detected — run containers with a compose file to see them here."
+        }
+      />
+    );
+  }
+  return (
+    <>
+      {list.map((p) => (
+        <ComposeCard
+          key={p.name}
+          hostId={hostId}
+          project={p}
+          containerNames={containerNames}
+          onOpenLogs={onOpenLogs}
+        />
+      ))}
+    </>
   );
 }
 

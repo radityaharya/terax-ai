@@ -45,7 +45,7 @@ import {
   useExplorerPinStore,
 } from "@/modules/explorer";
 import type { GitHistorySearchHandle } from "@/modules/git-history";
-import { DockerPanel } from "@/modules/docker";
+import { DockerNotifications, DockerPanel } from "@/modules/docker";
 import {
   HostEditorDialog,
   HostKeyDialog,
@@ -1813,6 +1813,18 @@ export default function App() {
             tabs={tabs}
             activeId={activeId}
             onActivate={onActivateAgent}
+          />
+          <DockerNotifications
+            hostId={activeTabHostId}
+            onOpenLogs={({ kind, id, title }) => {
+              if (kind === "container") {
+                openDockerLogsTab({
+                  targetKind: kind,
+                  targetId: id,
+                  title: `${title} logs`,
+                });
+              }
+            }}
           />
           <Toaster position="bottom-right" />
 

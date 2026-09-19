@@ -15,6 +15,7 @@ export {
   hostDocker,
   inspectKey,
   mutedRules,
+  type ComposeProjectState,
   type ContainerAction,
   type DiskUsage,
   type DockerEvent,

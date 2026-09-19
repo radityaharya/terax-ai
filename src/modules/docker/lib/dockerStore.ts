@@ -78,6 +78,8 @@ type HostDockerState = {
   eventsFeed: EventsFeedState | null;
   /** Muted notification rule kinds per host. */
   notifyMute: Record<string, boolean>;
+  /** Compose projects keyed by project name. */
+  compose: Record<string, ComposeProjectState>;
 };
 
 export type ImageUpdateState =
@@ -152,6 +154,18 @@ export type NotifyMute = {
   byHost: Record<string, string[]>;
 };
 
+export type ComposeProjectState = {
+  name: string;
+  /** Compose files backing the project (authorized paths). */
+  files: string[];
+  projectDir: string;
+  /** Containers belonging to the project (by container id). */
+  containers: string[];
+  loading: boolean;
+  error: string | null;
+  updatedAt: number | null;
+};
+
 function emptyHost(): HostDockerState {
   return {
     daemon: { status: "unknown" },
@@ -175,6 +189,7 @@ function emptyHost(): HostDockerState {
     logFollows: {},
     eventsFeed: null,
     notifyMute: {},
+    compose: {},
   };
 }
 
@@ -251,6 +266,19 @@ type State = {
   stopEventsFeed: (hostId: string) => Promise<void>;
   setRuleMuted: (hostId: string, rule: string, muted: boolean) => void;
   isRuleMuted: (hostId: string, rule: string) => boolean;
+  detectCompose: (hostId: string, dir: string) => Promise<string[]>;
+  refreshCompose: (
+    hostId: string,
+    project: string,
+    files: string[],
+    projectDir?: string,
+  ) => Promise<void>;
+  composeAction: (
+    hostId: string,
+    project: string,
+    action: "up" | "down" | "restart" | "pull",
+    opts?: { build?: boolean; volumes?: boolean; services?: string[] },
+  ) => Promise<void>;
 };
 
 function patch(
@@ -1064,6 +1092,104 @@ export const useDockerStore = create<State>((set) => ({
 
   isRuleMuted: (hostId: string, rule: string): boolean => {
     return useDockerStore.getState().byHost[hostId]?.notifyMute[rule] ?? false;
+  },
+
+  detectCompose: async (hostId, dir) => {
+    const res = await sshRpc<{ files: string[] }>("docker_compose_detect", { dir }, hostId);
+    return res.files ?? [];
+  },
+
+  refreshCompose: async (hostId, project, files, projectDir) => {
+    patch(set, hostId, (h) => ({
+      ...h,
+      compose: {
+        ...h.compose,
+        [project]: {
+          name: project,
+          files,
+          projectDir: projectDir ?? "",
+          containers: h.compose[project]?.containers ?? [],
+          loading: true,
+          error: null,
+          updatedAt: h.compose[project]?.updatedAt ?? null,
+        },
+      },
+    }));
+    try {
+      const items = await sshRpc<{ ID?: string; Id?: string; Name?: string }[]>(
+        "docker_compose_ps",
+        { files, ...(projectDir ? { projectDir } : {}) },
+        hostId,
+      );
+      patch(set, hostId, (h) => ({
+        ...h,
+        compose: {
+          ...h.compose,
+          [project]: {
+            name: project,
+            files,
+            projectDir: projectDir ?? "",
+            containers: items.map((c) =>
+              String(c.ID ?? c.Id ?? c.Name ?? ""),
+            ).filter(Boolean),
+            loading: false,
+            error: null,
+            updatedAt: Date.now(),
+          },
+        },
+      }));
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        compose: {
+          ...h.compose,
+          [project]: {
+            name: project,
+            files,
+            projectDir: projectDir ?? "",
+            containers: [],
+            loading: false,
+            error: String(e),
+            updatedAt: null,
+          },
+        },
+      }));
+    }
+  },
+
+  composeAction: async (hostId, project, action, opts) => {
+    const files = useDockerStore.getState().byHost[hostId]?.compose[project]?.files ?? [];
+    if (files.length === 0) return;
+    patch(set, hostId, (h) => ({
+      ...h,
+      compose: {
+        ...h.compose,
+        [project]: { ...(h.compose[project] ?? { name: project, files, projectDir: "", containers: [], updatedAt: null }), loading: true, error: null },
+      },
+    }));
+    try {
+      const method =
+        action === "up" ? "docker_compose_up"
+        : action === "down" ? "docker_compose_down"
+        : action === "restart" ? "docker_compose_restart"
+        : "docker_compose_pull";
+      await sshRpc(method, {
+        files,
+        ...(opts?.build ? { build: true } : {}),
+        ...(opts?.volumes ? { volumes: true } : {}),
+        ...(opts?.services?.length ? { services: opts.services } : {}),
+      }, hostId);
+      await useDockerStore.getState().refreshCompose(hostId, project, files);
+      await useDockerStore.getState().refreshContainers(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        compose: {
+          ...h.compose,
+          [project]: { ...(h.compose[project] ?? { name: project, files, projectDir: "", containers: [], updatedAt: null }), loading: false, error: String(e) },
+        },
+      }));
+    }
   },
 }));
 
