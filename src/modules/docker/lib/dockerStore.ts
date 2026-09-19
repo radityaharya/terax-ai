@@ -656,13 +656,16 @@ export const useDockerStore = create<State>((set) => ({
         // best effort
       }
     }
-    patch(set, hostId, (h) => ({
-      ...h,
-      pulls: {
-        ...h.pulls,
-        [jobId]: { ...(h.pulls[jobId] ?? job!), phase: "error", error: "Cancelled." },
-      },
-    }));
+    patch(set, hostId, (h) => {
+      const cur = h.pulls[jobId] ?? job;
+      return {
+        ...h,
+        pulls: {
+          ...h.pulls,
+          [jobId]: { ...cur, phase: "error" as const, error: "Cancelled." },
+        },
+      };
+    });
   },
 
   dismissPull: (hostId, jobId) => {

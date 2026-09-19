@@ -17,19 +17,24 @@ export function PullDialog({ hostId, jobId, onClose }: Props) {
   const pollPull = useDockerStore((s) => s.pollPull);
   const cancelPull = useDockerStore((s) => s.cancelPull);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const phase = job?.phase;
+  const output = job?.output;
+  const eventCount = job?.events.length ?? 0;
 
   useEffect(() => {
-    if (!job || job.phase === "done" || job.phase === "error") return;
+    if (!job || phase === "done" || phase === "error") return;
     const t = setInterval(() => {
       void pollPull(hostId, jobId);
     }, 1000);
     return () => clearInterval(t);
-  }, [hostId, jobId, job?.phase, pollPull]);
+    // `job` identity changes every poll; depend on the stable phase only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostId, jobId, phase, pollPull]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [job?.output, job?.events.length]);
+  }, [output, eventCount]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -157,5 +162,10 @@ function layerSummary(events: PullProgressEvent[]): LayerRow[] {
     if (!byId.has(ev.id)) order.push(ev.id);
     byId.set(ev.id, { id: ev.id, status: ev.status, detail: ev.detail });
   }
-  return order.map((id) => byId.get(id)!).filter(Boolean);
+  const out: LayerRow[] = [];
+  for (const id of order) {
+    const row = byId.get(id);
+    if (row) out.push(row);
+  }
+  return out;
 }
