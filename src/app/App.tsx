@@ -186,6 +186,7 @@ export default function App() {
     openGitDiffTab,
     openCommitHistoryTab,
     openCommitFileDiffTab,
+    openDockerLogsTab,
     closeTab,
     closeTabs,
     updateTab,
@@ -204,6 +205,10 @@ export default function App() {
   // (e.g. cdInNewTab) read the latest pane state instead of a stale closure.
   const tabsRef = useRef(tabs);
   const activeIdRef = useRef(activeId);
+  // Wired into DockerPanel so container rows can open logs tabs without
+  // prop-drilling through the sidebar ternary.
+  const openDockerLogsTabRef = useRef(openDockerLogsTab);
+  openDockerLogsTabRef.current = openDockerLogsTab;
 
   const activeTerminalTab = useMemo(() => {
     const t = tabs.find((x) => x.id === activeId);
@@ -1670,6 +1675,7 @@ export default function App() {
                                 (h: SshHost) => h.id === activeTabHostId,
                               )?.alias ?? activeTabHostId
                           }
+                          openLogsTabRef={openDockerLogsTabRef}
                         />
                       ) : sidebarView === "explorer" ? (
                         <FileExplorer

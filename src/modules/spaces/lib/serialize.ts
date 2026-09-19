@@ -4,6 +4,7 @@ import {
   type SplitDir,
 } from "@/modules/terminal/lib/panes";
 import type {
+  DockerLogsTab,
   EditorTab,
   MarkdownTab,
   PreviewTab,
@@ -34,7 +35,14 @@ export type SerializedTab =
     }
   | { kind: "editor"; path: string; env?: string }
   | { kind: "preview"; url: string; env?: string }
-  | { kind: "markdown"; path: string; env?: string };
+  | { kind: "markdown"; path: string; env?: string }
+  | {
+      kind: "docker-logs";
+      targetKind: "container" | "service";
+      targetId: string;
+      title?: string;
+      env?: string;
+    };
 
 /** Serialize only when non-local — keeps old payloads small and readable. */
 function serializeEnv(env: WorkspaceEnv | undefined): { env?: string } {
@@ -84,6 +92,7 @@ export function isSerializableTab(tab: Tab): boolean {
     case "editor":
     case "preview":
     case "markdown":
+    case "docker-logs":
       return true;
     default:
       return false;
@@ -107,6 +116,14 @@ function serializeTab(tab: Tab): SerializedTab | null {
       return { kind: "preview", url: tab.url, ...serializeEnv(tab.env) };
     case "markdown":
       return { kind: "markdown", path: tab.path, ...serializeEnv(tab.env) };
+    case "docker-logs":
+      return {
+        kind: "docker-logs",
+        targetKind: tab.targetKind,
+        targetId: tab.targetId,
+        title: tab.title,
+        ...serializeEnv(tab.env),
+      };
     default:
       return null;
   }
@@ -222,6 +239,17 @@ function hydrateTab(
         path: s.path,
         ...hydrateEnv(s.env),
       } satisfies MarkdownTab;
+    case "docker-logs":
+      return {
+        id: allocId(),
+        kind: "docker-logs",
+        spaceId,
+        cold: true,
+        title: s.title ?? `${s.targetId} logs`,
+        targetKind: s.targetKind,
+        targetId: s.targetId,
+        ...hydrateEnv(s.env),
+      } satisfies DockerLogsTab;
     default:
       return null;
   }

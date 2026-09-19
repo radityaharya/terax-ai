@@ -22,6 +22,7 @@ export {
   type GitDiffTab,
   type GitHistoryTab,
   type GitCommitFileDiffTab,
+  type DockerLogsTab,
   type AiDiffStatus,
   type OpenFileTabOptions,
   type TabPatch,

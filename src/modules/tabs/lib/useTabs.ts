@@ -140,6 +140,16 @@ export type GitCommitFileDiffTab = TabBase & {
   originalPath: string | null;
 };
 
+export type DockerLogsTab = TabBase & {
+  id: number;
+  kind: "docker-logs";
+  title: string;
+  /** "container" (follow) or "service" (one-shot snapshot). */
+  targetKind: "container" | "service";
+  /** Container or service name/id. */
+  targetId: string;
+};
+
 export type Tab =
   | TerminalTab
   | EditorTab
@@ -148,7 +158,8 @@ export type Tab =
   | AiDiffTab
   | GitDiffTab
   | GitHistoryTab
-  | GitCommitFileDiffTab;
+  | GitCommitFileDiffTab
+  | DockerLogsTab;
 
 export type TabPatch = Partial<{
   title: string;
@@ -1188,6 +1199,47 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [inheritEnv],
   );
 
+  const openDockerLogsTab = useCallback(
+    (input: {
+      targetKind: "container" | "service";
+      targetId: string;
+      title?: string;
+      env?: WorkspaceEnv;
+    }) => {
+      const curr = tabsRef.current;
+      const existing = curr.find(
+        (t) =>
+          t.kind === "docker-logs" &&
+          t.targetKind === input.targetKind &&
+          t.targetId === input.targetId,
+      );
+      if (existing) {
+        setActiveId(existing.id);
+        return existing.id;
+      }
+      const title = input.title ?? `${input.targetId} logs`;
+      const id = nextIdRef.current++;
+      const tabEnv = input.env ?? inheritEnv();
+      const nextTabs = [
+        ...curr,
+        {
+          id,
+          kind: "docker-logs",
+          spaceId: activeSpaceIdRef.current,
+          title,
+          targetKind: input.targetKind,
+          targetId: input.targetId,
+          ...(tabEnv !== undefined && { env: tabEnv }),
+        } satisfies DockerLogsTab,
+      ];
+      tabsRef.current = nextTabs;
+      setTabs(nextTabs);
+      setActiveId(id);
+      return id;
+    },
+    [inheritEnv],
+  );
+
   const openCommitFileDiffTab = useCallback(
     (input: {
       repoRoot: string;
@@ -1554,6 +1606,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     openGitDiffTab,
     openCommitHistoryTab,
     openCommitFileDiffTab,
+    openDockerLogsTab,
     setAiDiffStatus,
     closeAiDiffTab,
     closeTab,

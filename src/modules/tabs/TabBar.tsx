@@ -35,6 +35,7 @@ import {
   CheckmarkCircle01Icon,
   Clock01Icon,
   ComputerTerminal02Icon,
+  File02Icon,
   GitCompareIcon,
   Globe02Icon,
   IncognitoIcon,
@@ -727,6 +728,16 @@ export function TabIcon({ tab }: { tab: Tab }) {
     return (
       <HugeiconsIcon
         icon={Clock01Icon}
+        size={14}
+        strokeWidth={2}
+        className="shrink-0"
+      />
+    );
+  }
+  if (tab.kind === "docker-logs") {
+    return (
+      <HugeiconsIcon
+        icon={File02Icon}
         size={14}
         strokeWidth={2}
         className="shrink-0"

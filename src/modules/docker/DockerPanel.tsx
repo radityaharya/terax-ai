@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import {
   RotateClockwiseIcon,
+  ArrowUpRight01Icon,
   Cancel01Icon,
   Delete02Icon,
   File02Icon,
@@ -27,10 +28,17 @@ import type {
   DockerResourceKind,
 } from "./lib/types";
 
+type OpenLogsTabFn = (input: {
+  targetKind: "container" | "service";
+  targetId: string;
+  title?: string;
+}) => number;
+
 type Props = {
   /** Active tab's host id (null = local/WSL: v1 shows an empty state). */
   hostId: string | null;
   hostAlias?: string | null;
+  openLogsTabRef?: React.MutableRefObject<OpenLogsTabFn | null>;
 };
 
 const SEGMENTS: { id: DockerResourceKind; label: string }[] = [
@@ -40,7 +48,7 @@ const SEGMENTS: { id: DockerResourceKind; label: string }[] = [
   { id: "networks", label: "Networks" },
 ];
 
-export function DockerPanel({ hostId, hostAlias }: Props) {
+export function DockerPanel({ hostId, hostAlias, openLogsTabRef }: Props) {
   const [segment, setSegment] = useState<DockerResourceKind>("containers");
   const [filter, setFilter] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
@@ -60,6 +68,9 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
     title: string;
   } | null>(null);
   const startPull = useDockerStore((s) => s.startPull);
+  const openLogsTab = (targetKind: "container" | "service", targetId: string, title: string) => {
+    openLogsTabRef?.current?.({ targetKind, targetId, title });
+  };
 
   const openPull = (reference: string) => {
     const ref = reference.trim();
@@ -314,6 +325,7 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
                           title: containerName(c),
                         })
                       }
+                      onLogsTab={() => openLogsTab("container", id, `${containerName(c)} logs`)}
                       stats={
                         statsOn && sample
                           ? { cpuPerc: sample.cpuPerc, memUsage: sample.memUsage }
@@ -527,12 +539,6 @@ function ImagesList({
                 >
                   <HugeiconsIcon icon={Refresh01Icon} size={13} strokeWidth={1.75} />
                 </RowButton>
-                <RowButton
-                  label={`Remove ${ref}`}
-                  onClick={() => setConfirmRemove(id)}
-                >
-                  <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
-                </RowButton>
               </span>
             )}
           </div>
@@ -624,6 +630,7 @@ function ContainerRow({
   onCancelRemove,
   onInspect,
   onLogs,
+  onLogsTab,
   stats,
 }: {
   container: DockerContainer;
@@ -633,6 +640,7 @@ function ContainerRow({
   onCancelRemove: () => void;
   onInspect: () => void;
   onLogs: () => void;
+  onLogsTab: () => void;
   stats?: { cpuPerc: string; memUsage: string } | null;
 }) {
   const id = containerId(container);
@@ -727,6 +735,9 @@ function ContainerRow({
           )}
           <RowButton label={`Logs for ${name}`} onClick={onLogs}>
             <HugeiconsIcon icon={File02Icon} size={13} strokeWidth={1.75} />
+          </RowButton>
+          <RowButton label={`Open logs for ${name} in a tab`} onClick={onLogsTab}>
+            <HugeiconsIcon icon={ArrowUpRight01Icon} size={13} strokeWidth={1.75} />
           </RowButton>
           <RowButton label={`Remove ${name}`} onClick={() => onAction("remove")}>
             <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />

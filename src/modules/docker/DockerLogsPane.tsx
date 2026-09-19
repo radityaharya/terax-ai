@@ -11,13 +11,15 @@ type Props = {
   id: string;
   title: string;
   onClose: () => void;
+  /** Render inline (tab surface) instead of as a floating drawer. */
+  inline?: boolean;
 };
 
 const TAIL_CHOICES = [100, 500, 1000, 5000];
 
 /** Live `docker logs -f` follow: virtualization-friendly row cap,
  *  pause-on-scroll, regex filter/highlight, timestamps/tail/since, export. */
-export function DockerLogsPane({ hostId, kind, id, title, onClose }: Props) {
+export function DockerLogsPane({ hostId, kind, id, title, onClose, inline }: Props) {
   const followId = `${kind}:${id}`;
   const follow = useDockerStore((s) => s.byHost[hostId]?.logFollows[followId] ?? null);
   const startLogFollow = useDockerStore((s) => s.startLogFollow);
@@ -35,12 +37,15 @@ export function DockerLogsPane({ hostId, kind, id, title, onClose }: Props) {
   const phase = follow?.phase;
 
   useEffect(() => {
+    // Tab surfaces own their follow lifecycle (see DockerLogsTabPane);
+    // the pane only starts one when rendered standalone (drawer).
+    if (inline) return;
     const fid = `${kind}:${id}`;
     startLogFollow(hostId, kind, id);
     return () => {
       void stopLogFollow(hostId, fid);
     };
-  }, [hostId, kind, id, startLogFollow, stopLogFollow]);
+  }, [hostId, kind, id, inline, startLogFollow, stopLogFollow]);
 
   useEffect(() => {
     if (phase !== "following" && phase !== "starting") return;
@@ -118,9 +123,14 @@ export function DockerLogsPane({ hostId, kind, id, title, onClose }: Props) {
   const opts = follow?.options;
 
   return (
+    // biome-ignore lint/a11y/useAriaPropsSupportedByRole: drawer uses dialog role; inline tab surface carries the tab label
     <div
-      className="absolute inset-y-0 right-0 z-20 flex w-[26rem] max-w-[90%] flex-col border-l border-border/60 bg-background shadow-xl"
-      role="dialog"
+      className={
+        inline
+          ? "flex h-full w-full flex-col bg-background"
+          : "absolute inset-y-0 right-0 z-20 flex w-[26rem] max-w-[90%] flex-col border-l border-border/60 bg-background shadow-xl"
+      }
+      role={inline ? undefined : "dialog"}
       aria-label={`Logs: ${title}`}
     >
       <div className="flex shrink-0 items-center gap-1.5 border-b border-border/60 px-2.5 py-2">
@@ -136,15 +146,17 @@ export function DockerLogsPane({ hostId, kind, id, title, onClose }: Props) {
         >
           <HugeiconsIcon icon={CopyIcon} size={13} strokeWidth={1.75} />
         </button>
-        <button
-          type="button"
-          onClick={onClose}
-          title="Close logs"
-          aria-label="Close logs"
-          className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={1.75} />
-        </button>
+        {inline ? null : (
+          <button
+            type="button"
+            onClick={onClose}
+            title="Close logs"
+            aria-label="Close logs"
+            className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={1.75} />
+          </button>
+        )}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border/60 px-2.5 py-1.5">
         <button
