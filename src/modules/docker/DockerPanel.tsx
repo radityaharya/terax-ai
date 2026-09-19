@@ -3,6 +3,7 @@ import {
   RotateClockwiseIcon,
   ArrowUpRight01Icon,
   Cancel01Icon,
+  ComputerTerminal02Icon,
   Delete02Icon,
   File02Icon,
   HardDriveIcon,
@@ -14,6 +15,7 @@ import {
 import { CleanupHub } from "./components/CleanupHub";
 import { DetailsDrawer } from "./components/DetailsDrawer";
 import { DockerLogsPane } from "./DockerLogsPane";
+import { ExecDialog } from "./dialogs/ExecDialog";
 import { PullDialog } from "./dialogs/PullDialog";
 import { RegistryDialog } from "./dialogs/RegistryDialog";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -34,11 +36,20 @@ type OpenLogsTabFn = (input: {
   title?: string;
 }) => number;
 
+type OpenExecTabFn = (input: {
+  hostId: string;
+  container: string;
+  containerName?: string;
+  shell: string;
+  attach?: boolean;
+}) => number;
+
 type Props = {
   /** Active tab's host id (null = local/WSL: v1 shows an empty state). */
   hostId: string | null;
   hostAlias?: string | null;
   openLogsTabRef?: React.MutableRefObject<OpenLogsTabFn | null>;
+  openExecTabRef?: React.MutableRefObject<OpenExecTabFn | null>;
 };
 
 const SEGMENTS: { id: DockerResourceKind; label: string }[] = [
@@ -48,7 +59,11 @@ const SEGMENTS: { id: DockerResourceKind; label: string }[] = [
   { id: "networks", label: "Networks" },
 ];
 
-export function DockerPanel({ hostId, hostAlias, openLogsTabRef }: Props) {
+export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef }: Props) {
+  const [execTarget, setExecTarget] = useState<{
+    container: string;
+    containerName: string;
+  } | null>(null);
   const [segment, setSegment] = useState<DockerResourceKind>("containers");
   const [filter, setFilter] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
@@ -70,6 +85,11 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef }: Props) {
   const startPull = useDockerStore((s) => s.startPull);
   const openLogsTab = (targetKind: "container" | "service", targetId: string, title: string) => {
     openLogsTabRef?.current?.({ targetKind, targetId, title });
+  };
+  const openExec = (container: string, containerName: string, shell: string, attach: boolean) => {
+    if (!hostId) return;
+    openExecTabRef?.current?.({ hostId, container, containerName, shell, attach });
+    setExecTarget(null);
   };
 
   const openPull = (reference: string) => {
@@ -195,6 +215,15 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef }: Props) {
       ) : null}
       {registryOpen ? (
         <RegistryDialog hostId={hostId} onClose={() => setRegistryOpen(false)} />
+      ) : null}
+      {execTarget ? (
+        <ExecDialog
+          hostId={hostId}
+          container={execTarget.container}
+          containerName={execTarget.containerName}
+          onExec={(shell, attach) => openExec(execTarget.container, execTarget.containerName, shell, attach)}
+          onClose={() => setExecTarget(null)}
+        />
       ) : null}
       <PanelTitle
         title="Docker"
@@ -326,6 +355,7 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef }: Props) {
                         })
                       }
                       onLogsTab={() => openLogsTab("container", id, `${containerName(c)} logs`)}
+                      onExec={() => setExecTarget({ container: id, containerName: containerName(c) })}
                       stats={
                         statsOn && sample
                           ? { cpuPerc: sample.cpuPerc, memUsage: sample.memUsage }
@@ -631,6 +661,7 @@ function ContainerRow({
   onInspect,
   onLogs,
   onLogsTab,
+  onExec,
   stats,
 }: {
   container: DockerContainer;
@@ -641,6 +672,7 @@ function ContainerRow({
   onInspect: () => void;
   onLogs: () => void;
   onLogsTab: () => void;
+  onExec: () => void;
   stats?: { cpuPerc: string; memUsage: string } | null;
 }) {
   const id = containerId(container);
@@ -739,6 +771,11 @@ function ContainerRow({
           <RowButton label={`Open logs for ${name} in a tab`} onClick={onLogsTab}>
             <HugeiconsIcon icon={ArrowUpRight01Icon} size={13} strokeWidth={1.75} />
           </RowButton>
+          {running ? (
+            <RowButton label={`Exec shell in ${name}`} onClick={onExec}>
+              <HugeiconsIcon icon={ComputerTerminal02Icon} size={13} strokeWidth={1.75} />
+            </RowButton>
+          ) : null}
           <RowButton label={`Remove ${name}`} onClick={() => onAction("remove")}>
             <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
           </RowButton>

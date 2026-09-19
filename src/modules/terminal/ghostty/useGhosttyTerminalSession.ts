@@ -17,7 +17,7 @@ import { useTerminalFont } from "@/modules/terminal/lib/useTerminalFont";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { openPty, type PtySession } from "../lib/pty-bridge";
+import { openPty, type DockerExecTarget, type PtySession } from "../lib/pty-bridge";
 import { writeTerminalClipboard } from "../lib/terminalClipboard";
 import { LatestClipboardWrite } from "@/modules/terminal/lib/LatestClipboardWrite";
 import { GhosttySemanticEventRouter } from "./core/GhosttySemanticEventRouter";
@@ -65,6 +65,8 @@ type GhosttySession = {
   initialCwd: string | undefined;
   /** Env captured at spawn so the shell opens on the owning tab's host. */
   env: WorkspaceEnv | undefined;
+  /** `docker exec -it` target captured at spawn. */
+  dockerExec: DockerExecTarget | undefined;
   lastCwd: string | null;
   model: GhosttyTerminalModelApi | null;
   surface: GhosttySurface | null;
@@ -114,6 +116,8 @@ type Options = {
   initialCwd?: string;
   /** Owning tab's env — the shell spawns on this host, not the active tab's. */
   env?: WorkspaceEnv;
+  /** `docker exec -it` target (overrides the shell spawn). */
+  dockerExec?: DockerExecTarget;
   blocks?: boolean;
   onExit?: (code: number) => void;
   onCwd?: (cwd: string) => void;
@@ -128,6 +132,7 @@ export function useGhosttyTerminalSession({
   focused,
   initialCwd,
   env,
+  dockerExec,
   blocks = false,
   onSearchReady,
   onExit,
@@ -157,6 +162,8 @@ export function useGhosttyTerminalSession({
   const initialCwdRef = useRef(initialCwd);
   const envRef = useRef(env);
   envRef.current = env;
+  const dockerExecRef = useRef(dockerExec);
+  dockerExecRef.current = dockerExec;
 
   useEffect(() => {
     const session = ensureSession(
@@ -165,6 +172,7 @@ export function useGhosttyTerminalSession({
       initialCwdRef.current,
       fontRef.current,
       envRef.current,
+      dockerExecRef.current,
     );
     if (blocks) ensureGhosttyBlocks(leafId);
     const node = container.current;
@@ -205,6 +213,7 @@ export function useGhosttyTerminalSession({
       initialCwdRef.current,
       undefined,
       envRef.current,
+      dockerExecRef.current,
     );
     session.visible = visible;
     session.focused = focused;
@@ -525,6 +534,7 @@ function ensureSession(
   initialCwd?: string,
   font?: TerminalFontSpec,
   env?: WorkspaceEnv,
+  dockerExec?: DockerExecTarget,
 ): GhosttySession {
   const existing = sessions.get(leafId);
   if (existing) {
@@ -534,6 +544,7 @@ function ensureSession(
       );
     }
     if (env !== undefined) existing.env = env;
+    if (dockerExec !== undefined) existing.dockerExec = dockerExec;
     return existing;
   }
   const ptyResize = new PtyResizeScheduler((cols, rows) => {
@@ -550,6 +561,7 @@ function ensureSession(
     backend,
     initialCwd,
     env,
+    dockerExec,
     lastCwd: null,
     model: null,
     surface: null,
@@ -833,6 +845,7 @@ async function initializeSessionGeneration(
       shell: preferences.terminalShell || undefined,
       paneId: session.leafId,
       env: session.env,
+      dockerExec: session.dockerExec,
     },
   );
   if (session.disposed || generation !== session.generation) {

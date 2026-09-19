@@ -51,6 +51,14 @@ export function tabEnv(tab: Tab): WorkspaceEnv {
   return tab.env ?? LOCAL_WORKSPACE;
 }
 
+/** `docker exec -it` spawn target for an exec tab. Single-pane by design. */
+export type DockerExecAttach = {
+  hostId: string;
+  container: string;
+  shell: string;
+  attach: boolean;
+};
+
 export type TerminalTab = TabBase & {
   id: number;
   kind: "terminal";
@@ -63,6 +71,8 @@ export type TerminalTab = TabBase & {
   private?: boolean;
   /** User-set label that overrides the cwd-derived name. Survives cd. */
   customTitle?: string;
+  /** docker exec/attach tab identity. Splits are disabled for exec tabs. */
+  dockerExec?: DockerExecAttach;
 };
 
 export type EditorTab = TabBase & {
@@ -867,6 +877,63 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     ).__teraxNewBlockTab = newBlockTab;
   }, [newBlockTab]);
 
+  /**
+   * Opens a `docker exec -it` terminal tab on a host. The tab pins its
+   * env to the host and carries the exec target; splits are disabled for
+   * exec tabs (single-pane by design). Reuses an existing tab for the
+   * same container instead of piling up duplicates.
+   */
+  const newDockerExecTab = useCallback(
+    (input: {
+      hostId: string;
+      container: string;
+      containerName?: string;
+      shell: string;
+      attach?: boolean;
+    }) => {
+      const env: WorkspaceEnv = { kind: "ssh", hostId: input.hostId };
+      const attach = input.attach ?? false;
+      const curr = tabsRef.current;
+      const existing = curr.find(
+        (t) =>
+          t.kind === "terminal" &&
+          t.dockerExec?.hostId === input.hostId &&
+          t.dockerExec?.container === input.container &&
+          t.dockerExec?.attach === attach,
+      );
+      if (existing) {
+        setActiveId(existing.id);
+        return existing.id;
+      }
+      const tabId = nextIdRef.current++;
+      const leafId = nextIdRef.current++;
+      const name = input.containerName || input.container.slice(0, 12);
+      const title = attach ? `${name} ⤷` : `${name}@exec`;
+      setTabs((t) => [
+        ...t,
+        {
+          id: tabId,
+          kind: "terminal",
+          spaceId: activeSpaceIdRef.current,
+          title,
+          customTitle: title,
+          paneTree: { kind: "leaf", id: leafId },
+          activeLeafId: leafId,
+          env,
+          dockerExec: {
+            hostId: input.hostId,
+            container: input.container,
+            shell: input.shell,
+            attach,
+          },
+        },
+      ]);
+      setActiveId(tabId);
+      return tabId;
+    },
+    [],
+  );
+
   const newAgentGroupTab = useCallback(
     (
       cwd: string | undefined,
@@ -1457,13 +1524,15 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [],
   );
 
-  /** Split the active leaf of `tabId` along `dir`. Returns the new leaf id. */
+  /** Split the active leaf of `tabId` along `dir`. Returns the new leaf id.
+   *  Exec tabs (dockerExec) are single-pane by design and refuse splits. */
   const splitActivePane = useCallback(
     (tabId: number, dir: SplitDir): number | null => {
       let newLeafId: number | null = null;
       setTabs((curr) =>
         curr.map((t) => {
           if (t.id !== tabId || t.kind !== "terminal" || t.blocks) return t;
+          if (t.dockerExec) return t;
           if (leafIds(t.paneTree).length >= MAX_PANES_PER_TAB) return t;
           const splitId = nextIdRef.current++;
           const leafId = nextIdRef.current++;
@@ -1597,6 +1666,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newAgentTab,
     newAgentGroupTab,
     newPrivateTab,
+    newDockerExecTab,
     openFileTab,
     pinTab,
     newPreviewTab,

@@ -33,6 +33,13 @@ export type PtySession = {
   close: () => Promise<void>;
 };
 
+export type DockerExecTarget = {
+  hostId: string;
+  container: string;
+  shell: string;
+  attach?: boolean;
+};
+
 export type OpenPtyOptions = {
   cwd?: string;
   blocks?: boolean;
@@ -44,6 +51,8 @@ export type OpenPtyOptions = {
    * explicitly so background tabs spawn on their own host.
    */
   env?: WorkspaceEnv;
+  /** `docker exec -it` spawn target (validated server-side). */
+  dockerExec?: DockerExecTarget;
 };
 
 /**
@@ -142,7 +151,7 @@ export async function openPty(
     }
   };
 
-  const { cwd, blocks, shell, paneId, env: spawnEnv } = opts;
+  const { cwd, blocks, shell, paneId, env: spawnEnv, dockerExec } = opts;
   try {
     await ensureAgentActivityListener();
     id = await invoke<number>("pty_open", {
@@ -153,6 +162,14 @@ export async function openPty(
       blocks: blocks ?? false,
       shell: shell ?? null,
       paneId: paneId ?? null,
+      dockerExec: dockerExec
+        ? {
+            hostId: dockerExec.hostId,
+            container: dockerExec.container,
+            shell: dockerExec.shell,
+            attach: dockerExec.attach ?? false,
+          }
+        : null,
       onData,
       onExit,
     });

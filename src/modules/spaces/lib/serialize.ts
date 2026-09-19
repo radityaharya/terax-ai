@@ -32,6 +32,12 @@ export type SerializedTab =
       blocks?: boolean;
       customTitle?: string;
       env?: string;
+      dockerExec?: {
+        hostId: string;
+        container: string;
+        shell: string;
+        attach: boolean;
+      };
     }
   | { kind: "editor"; path: string; env?: string }
   | { kind: "preview"; url: string; env?: string }
@@ -109,6 +115,14 @@ function serializeTab(tab: Tab): SerializedTab | null {
         ...(tab.blocks && { blocks: true }),
         ...(tab.customTitle !== undefined && { customTitle: tab.customTitle }),
         ...serializeEnv(tab.env),
+        ...(tab.dockerExec !== undefined && {
+          dockerExec: {
+            hostId: tab.dockerExec.hostId,
+            container: tab.dockerExec.container,
+            shell: tab.dockerExec.shell,
+            attach: tab.dockerExec.attach,
+          },
+        }),
       };
     case "editor":
       return { kind: "editor", path: tab.path, ...serializeEnv(tab.env) };
@@ -190,9 +204,25 @@ function hydrateTab(
   switch (s.kind) {
     case "terminal": {
       const { tree, activeLeafId, firstLeafCwd } = hydrateTree(s.tree, allocId);
+      const dockerExec = (
+        s as {
+          dockerExec?: {
+            hostId: string;
+            container: string;
+            shell: string;
+            attach: boolean;
+          };
+        }
+      ).dockerExec;
       const title =
         s.customTitle ??
-        (firstLeafCwd ? basename(firstLeafCwd) : s.blocks ? "blocks" : "shell");
+        (dockerExec
+          ? `${dockerExec.container.slice(0, 12)}@exec`
+          : firstLeafCwd
+            ? basename(firstLeafCwd)
+            : s.blocks
+              ? "blocks"
+              : "shell");
       return {
         id: allocId(),
         kind: "terminal",
@@ -205,6 +235,7 @@ function hydrateTab(
         ...(s.blocks && { blocks: true }),
         ...(s.customTitle !== undefined && { customTitle: s.customTitle }),
         ...hydrateEnv(s.env),
+        ...(dockerExec !== undefined && { dockerExec }),
       } satisfies TerminalTab;
     }
     case "editor":

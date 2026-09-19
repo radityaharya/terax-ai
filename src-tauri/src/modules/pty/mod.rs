@@ -41,6 +41,17 @@ impl PtyState {
     }
 }
 
+/// `docker exec -it` spawn target, threaded through pty_open when the
+/// caller passes `dockerExec`. Validated server-side in build_docker_exec.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerExecRequest {
+    pub host_id: String,
+    pub container: String,
+    pub shell: String,
+    pub attach: Option<bool>,
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn pty_open(
@@ -55,11 +66,20 @@ pub async fn pty_open(
     blocks: Option<bool>,
     shell: Option<String>,
     pane_id: Option<u32>,
+    docker_exec: Option<DockerExecRequest>,
     on_data: Channel<Response>,
     on_exit: Channel<i32>,
 ) -> Result<u32, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
     let blocks = blocks.unwrap_or(false);
+    // Docker exec targets resolve the host from the spec itself; the tab's
+    // workspace env must already be that host (enforced by the caller).
+    let docker_exec_spec = docker_exec.map(|d| shell_init::DockerExecSpec {
+        host_id: d.host_id,
+        container: d.container,
+        shell: d.shell,
+        attach: d.attach.unwrap_or(false),
+    });
     // SSH cwds are remote paths: validated host-side, never canonicalized
     // locally. Pass the raw string through; build_ssh applies it remotely.
     let cwd = if workspace.is_ssh() {
@@ -106,6 +126,7 @@ pub async fn pty_open(
             shell,
             control_env,
             ssh_integration,
+            docker_exec_spec,
             on_data,
             on_exit,
         )

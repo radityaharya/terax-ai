@@ -35,6 +35,7 @@ import {
   CheckmarkCircle01Icon,
   Clock01Icon,
   ComputerTerminal02Icon,
+  ContainerTruckIcon,
   File02Icon,
   GitCompareIcon,
   Globe02Icon,
@@ -711,6 +712,16 @@ export function TabIcon({ tab }: { tab: Tab }) {
         size={14}
         strokeWidth={2}
         className="shrink-0"
+      />
+    );
+  }
+  if (tab.kind === "terminal" && tab.dockerExec) {
+    return (
+      <HugeiconsIcon
+        icon={ContainerTruckIcon}
+        size={14}
+        strokeWidth={2}
+        className="shrink-0 text-primary"
       />
     );
   }

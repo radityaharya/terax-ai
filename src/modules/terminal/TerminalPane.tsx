@@ -1,6 +1,7 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import type { WorkspaceEnv } from "@/modules/workspace";
+import type { DockerExecTarget } from "./lib/pty-bridge";
 import { useTheme } from "@/modules/theme";
 import {
   forwardRef,
@@ -37,6 +38,8 @@ export type TerminalPaneProps = {
   initialCwd?: string;
   /** Owning tab's env — spawns the shell on this host. */
   env?: WorkspaceEnv;
+  /** `docker exec -it` target (overrides the shell spawn). */
+  dockerExec?: DockerExecTarget;
   /** Enable command-block decorations (OSC 133) for this terminal. */
   blocks?: boolean;
   onSearchReady?: (leafId: number, addon: TerminalSearchController) => void;
@@ -62,6 +65,7 @@ const GhosttyTerminalPane = memo(
       focused = true,
       initialCwd,
       env,
+      dockerExec,
       blocks = false,
       onSearchReady,
       onExit,
@@ -84,6 +88,7 @@ const GhosttyTerminalPane = memo(
       focused,
       initialCwd,
       env,
+      dockerExec,
       blocks,
       onSearchReady: (search) => onSearchReady?.(leafId, search),
       onExit: (code) => onExit?.(leafId, code),
