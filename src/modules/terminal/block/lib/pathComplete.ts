@@ -1,4 +1,5 @@
 import { currentWorkspaceEnv } from "@/modules/workspace";
+import { sshHostId, sshRpc } from "@/modules/ai/lib/native";
 import {
   type Completion,
   startCompletion,
@@ -40,11 +41,16 @@ export async function pathCompletions(
 
   let entries: DirEntry[];
   try {
-    entries = await invoke<DirEntry[]>("fs_read_dir", {
-      path: dir,
-      showHidden: base.startsWith("."),
-      workspace: currentWorkspaceEnv(),
-    });
+    entries = sshHostId()
+      ? await sshRpc<DirEntry[]>("fs_read_dir", {
+          path: dir,
+          showHidden: base.startsWith("."),
+        })
+      : await invoke<DirEntry[]>("fs_read_dir", {
+          path: dir,
+          showHidden: base.startsWith("."),
+          workspace: currentWorkspaceEnv(),
+        });
   } catch {
     return null;
   }

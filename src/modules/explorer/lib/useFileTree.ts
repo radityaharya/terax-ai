@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { sshHostId, sshRpc } from "@/modules/ai/lib/native";
 import {
   currentWorkspaceEnv,
   useWorkspaceEnvStore,
@@ -178,12 +179,18 @@ export function useFileTree(rootPath: string | null, options?: Options) {
       setNodes((s) => ({ ...s, [path]: { status: "loading" } }));
     }
     try {
-      const entries = await invoke<DirEntry[]>("fs_read_dir", {
-        path,
-        showHidden: showHiddenRef.current,
-        gitDecorations: gitDecorationsRef.current,
-        workspace: currentWorkspaceEnv(),
-      });
+      const entries = sshHostId()
+        ? await sshRpc<DirEntry[]>("fs_read_dir", {
+            path,
+            showHidden: showHiddenRef.current,
+            gitDecorations: gitDecorationsRef.current,
+          })
+        : await invoke<DirEntry[]>("fs_read_dir", {
+            path,
+            showHidden: showHiddenRef.current,
+            gitDecorations: gitDecorationsRef.current,
+            workspace: currentWorkspaceEnv(),
+          });
 
       const prev = nodesRef.current[path];
       if (prev?.status === "loaded" && sameDirListing(prev.entries, entries)) {

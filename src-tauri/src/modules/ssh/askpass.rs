@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::PathBuf;
 
 use super::errors::SshError;
@@ -73,6 +72,7 @@ pub fn create_grant(secret: &str) -> Result<AskpassGrant, SshError> {
 fn write_private(path: &PathBuf, bytes: &[u8]) -> Result<(), SshError> {
     #[cfg(unix)]
     {
+        use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let mut f = std::fs::OpenOptions::new()
             .write(true)

@@ -334,6 +334,8 @@ pub fn run() {
             ssh::commands::ssh_home_for,
             ssh::commands::ssh_login_shell_for,
             ssh::commands::ssh_probe_auth,
+            ssh::commands::ssh_rpc,
+            ssh::commands::ssh_disconnect,
             control::control_frontend_ready,
             control::control_respond,
             get_launch_dir,

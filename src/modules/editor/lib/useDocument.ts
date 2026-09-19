@@ -1,6 +1,7 @@
 import { notifyDocumentSaved } from "@/modules/lsp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { currentWorkspaceEnv } from "@/modules/workspace";
+import { sshHostId, sshRpc } from "@/modules/ai/lib/native";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -60,12 +61,15 @@ export function useDocument({ path, onDirtyChange }: Options) {
 
   const writeToDisk = useCallback(async () => {
     const content = bufferRef.current;
-    const mtime = await invoke<number>("fs_write_file", {
-      path,
-      content: restoreEol(content, eolRef.current),
-      workspace: currentWorkspaceEnv(),
-      source: "editor",
-    });
+    const restored = restoreEol(content, eolRef.current);
+    const mtime = sshHostId()
+      ? await sshRpc<number>("fs_write_file", { path, content: restored })
+      : await invoke<number>("fs_write_file", {
+          path,
+          content: restored,
+          workspace: currentWorkspaceEnv(),
+          source: "editor",
+        });
     diskMtimeRef.current = mtime;
     savedRef.current = content;
     // Edits typed while the write was in flight must stay dirty.
@@ -78,10 +82,12 @@ export function useDocument({ path, onDirtyChange }: Options) {
   const saveNow = useCallback(async (): Promise<boolean> => {
     const known = diskMtimeRef.current;
     if (known !== null) {
-      const stat = await invoke<FileStat>("fs_stat", {
-        path,
-        workspace: currentWorkspaceEnv(),
-      }).catch(() => null);
+      const stat = sshHostId()
+        ? await sshRpc<FileStat>("fs_stat", { path }).catch(() => null)
+        : await invoke<FileStat>("fs_stat", {
+            path,
+            workspace: currentWorkspaceEnv(),
+          }).catch(() => null);
       if (stat && stat.mtime !== known) {
         const name = path.split(/[\\/]/).pop() ?? path;
         toast.warning("File changed on disk", {
@@ -129,11 +135,13 @@ export function useDocument({ path, onDirtyChange }: Options) {
 
   const readFromDisk = useCallback(
     (force: boolean) =>
-      invoke<ReadResult>("fs_read_file", {
-        path,
-        workspace: currentWorkspaceEnv(),
-        force,
-      }),
+      sshHostId()
+        ? sshRpc<ReadResult>("fs_read_file", { path, force })
+        : invoke<ReadResult>("fs_read_file", {
+            path,
+            workspace: currentWorkspaceEnv(),
+            force,
+          }),
     [path],
   );
 

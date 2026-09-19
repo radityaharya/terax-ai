@@ -1,6 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 
+export function sshHostId(): string | null {
+  const env = currentWorkspaceEnv();
+  return env.kind === "ssh" ? env.hostId : null;
+}
+
+export function sshRpc<T>(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<T> {
+  const hostId = sshHostId();
+  if (!hostId) throw new Error("not an SSH workspace");
+  return invoke<T>("ssh_rpc", { hostId, method, params });
+}
+
 export type ReadResult =
   | { kind: "text"; content: string; size: number }
   | { kind: "binary"; size: number }
@@ -143,17 +157,24 @@ export const native = {
       path,
       workspace: currentWorkspaceEnv(),
     }),
-  readFile: (path: string) =>
-    invoke<ReadResult>("fs_read_file", {
+  readFile: (path: string) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<ReadResult>("fs_read_file", { path, force: false });
+    return invoke<ReadResult>("fs_read_file", {
       path,
       workspace: currentWorkspaceEnv(),
-    }),
-  writeFile: (path: string, content: string) =>
-    invoke<void>("fs_write_file", {
+    });
+  },
+  writeFile: (path: string, content: string) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<number>("fs_write_file", { path, content });
+    return invoke<void>("fs_write_file", {
       path,
       content,
       workspace: currentWorkspaceEnv(),
-    }),
+    });
+  },
   canonicalize: (path: string) =>
     invoke<string>("fs_canonicalize", {
       path,
@@ -165,27 +186,45 @@ export const native = {
     invoke<void>("fs_create_dir", { path, workspace: currentWorkspaceEnv() }),
   // AI tooling never sees dot-prefixed entries regardless of the user's
   // explorer preference — keeps .git / .env / .ssh out of agent context.
-  readDir: (path: string) =>
-    invoke<DirEntry[]>("fs_read_dir", {
+  readDir: (path: string) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<DirEntry[]>("fs_read_dir", {
+        path,
+        showHidden: false,
+        gitDecorations: false,
+      });
+    return invoke<DirEntry[]>("fs_read_dir", {
       path,
       showHidden: false,
       workspace: currentWorkspaceEnv(),
-    }),
+    });
+  },
   grep: (params: {
     pattern: string;
     root: string;
     glob?: string[];
     caseInsensitive?: boolean;
     maxResults?: number;
-  }) =>
-    invoke<GrepResponse>("fs_grep", {
+  }) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<GrepResponse>("fs_grep", {
+        pattern: params.pattern,
+        root: params.root,
+        glob: params.glob ?? [],
+        caseInsensitive: params.caseInsensitive ?? false,
+        maxResults: params.maxResults ?? 200,
+      });
+    return invoke<GrepResponse>("fs_grep", {
       pattern: params.pattern,
       root: params.root,
       glob: params.glob ?? null,
       caseInsensitive: params.caseInsensitive ?? null,
       maxResults: params.maxResults ?? null,
       workspace: currentWorkspaceEnv(),
-    }),
+    });
+  },
   glob: (params: { pattern: string; root: string; maxResults?: number }) =>
     invoke<GlobResponse>("fs_glob", {
       pattern: params.pattern,
@@ -197,13 +236,21 @@ export const native = {
     command: string,
     cwd?: string | null,
     timeoutSecs?: number,
-  ) =>
-    invoke<CommandOutput>("shell_run_command", {
+  ) => {
+    const hostId = sshHostId();
+    if (hostId)
+      return sshRpc<CommandOutput>("shell_run", {
+        command,
+        cwd: cwd ?? "",
+        timeoutSecs: timeoutSecs ?? 30,
+      });
+    return invoke<CommandOutput>("shell_run_command", {
       command,
       cwd: cwd ?? null,
       timeoutSecs: timeoutSecs ?? null,
       workspace: currentWorkspaceEnv(),
-    }),
+    });
+  },
 
   shellSessionOpen: (cwd?: string | null) =>
     invoke<number>("shell_session_open", {
@@ -263,16 +310,22 @@ export const native = {
       cwd,
       workspace: currentWorkspaceEnv(),
     }),
-  gitPanelSnapshot: (cwd: string) =>
-    invoke<GitPanelSnapshot>("git_panel_snapshot", {
+  gitPanelSnapshot: (cwd: string) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<GitPanelSnapshot>("git_panel_snapshot", { cwd });
+    return invoke<GitPanelSnapshot>("git_panel_snapshot", {
       cwd,
       workspace: currentWorkspaceEnv(),
-    }),
-  gitStatus: (repoRoot: string) =>
-    invoke<GitStatusSnapshot>("git_status", {
+    });
+  },
+  gitStatus: (repoRoot: string) => {
+    const hostId = sshHostId();
+    if (hostId) return sshRpc<GitStatusSnapshot>("git_status", { repoRoot });
+    return invoke<GitStatusSnapshot>("git_status", {
       repoRoot,
       workspace: currentWorkspaceEnv(),
-    }),
+    });
+  },
   gitDiff: (repoRoot: string, path: string | null, staged: boolean) =>
     invoke<GitDiffResult>("git_diff", {
       repoRoot,

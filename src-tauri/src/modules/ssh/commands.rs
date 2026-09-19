@@ -216,6 +216,7 @@ impl ProbeOutcome {
 pub struct SshShared {
     pub masters: std::sync::Arc<MasterRegistry>,
     pub probes: std::sync::Arc<ProbeCache>,
+    pub rpc: std::sync::Arc<super::rpc::SshRpcManager>,
 }
 
 impl Default for SshShared {
@@ -223,8 +224,98 @@ impl Default for SshShared {
         Self {
             masters: std::sync::Arc::new(MasterRegistry::default()),
             probes: std::sync::Arc::new(ProbeCache::default()),
+            rpc: std::sync::Arc::new(super::rpc::SshRpcManager::default()),
         }
     }
+}
+
+/// Version reported by the bundled agent binary. The remote must match or
+/// the RPC channel is refused: mixed versions corrupt the method contract.
+pub const REMOTE_AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn bundled_remote_bin() -> Option<std::path::PathBuf> {
+    // Dev + release both stage the agent under src-tauri/binaries/.
+    let candidates = [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+    ];
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries");
+    candidates
+        .iter()
+        .map(|t| dir.join(format!("terax-remote-{t}")))
+        .find(|p| p.is_file())
+}
+
+/// Uploads the bundled agent to `~/.cache/terax/terax-remote` when missing
+/// or version-mismatched. Returns the remote path to execute.
+pub fn ensure_remote_agent(host: &SshHost) -> Result<String, String> {
+    let local = bundled_remote_bin()
+        .ok_or_else(|| "remote agent binary not built yet (run pnpm build:remote)".to_string())?;
+    let remote_path = "~/.cache/terax/terax-remote";
+    // Version check first: reuse the installed agent when it matches.
+    let probe = super::session::run_ssh_capture_version(host, &format!("{remote_path} --version"))?;
+    if probe.trim().ends_with(REMOTE_AGENT_VERSION) {
+        return Ok(remote_path.to_string());
+    }
+    super::session::upload_file(host, &local, remote_path)?;
+    Ok(remote_path.to_string())
+}
+
+#[tauri::command]
+pub async fn ssh_rpc(
+    state: tauri::State<'_, SshShared>,
+    host_id: String,
+    method: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    super::hosts::validate_host_id(&host_id)?;
+    let host = host_store()
+        .get(&host_id)
+        .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
+    let allowed = [
+        "fs_read_dir",
+        "fs_read_file",
+        "fs_write_file",
+        "fs_stat",
+        "fs_search",
+        "fs_grep",
+        "git_panel_snapshot",
+        "git_status",
+        "shell_run",
+        "ping",
+        "capabilities",
+    ];
+    if !allowed.contains(&method.as_str()) {
+        return Err(format!("remote method not allowed: {method}"));
+    }
+    let remote_bin = ensure_remote_agent(&host)?;
+    let remote_root = host
+        .remote_root
+        .clone()
+        .filter(|r| !r.is_empty())
+        .or_else(|| super::session::ssh_home(&host).map_err(|e| e.to_string()).ok())
+        .ok_or_else(|| "could not resolve remote root".to_string())?;
+    let params = params.as_object().cloned().unwrap_or_default();
+    let params = serde_json::Value::Object(params);
+    state
+        .rpc
+        .request(&host_id, &method, params, &remote_bin, &remote_root)
+        .map_err(|e| {
+            state.rpc.drop_connection(&host_id);
+            e
+        })
+}
+
+#[tauri::command]
+pub async fn ssh_disconnect(
+    state: tauri::State<'_, SshShared>,
+    host_id: String,
+) -> Result<(), String> {
+    super::hosts::validate_host_id(&host_id)?;
+    state.rpc.drop_connection(&host_id);
+    Ok(())
 }
 
 pub fn classify_for_ui(stderr: &str) -> String {

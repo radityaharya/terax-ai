@@ -14,6 +14,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
+import { sshHostId, sshRpc } from "@/modules/ai/lib/native";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import {
   forwardRef,
@@ -114,13 +115,20 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
     let alive = true;
     const handle = setTimeout(async () => {
       try {
-        const res = await invoke<SearchResult>("fs_search", {
-          root: rootPath,
-          query: q,
-          limit: 200,
-          showHidden,
-          workspace: currentWorkspaceEnv(),
-        });
+        const res = sshHostId()
+          ? await sshRpc<SearchResult>("fs_search", {
+              root: rootPath,
+              query: q,
+              limit: 200,
+              showHidden,
+            })
+          : await invoke<SearchResult>("fs_search", {
+              root: rootPath,
+              query: q,
+              limit: 200,
+              showHidden,
+              workspace: currentWorkspaceEnv(),
+            });
         if (alive) {
           setResults(res.hits);
           setTruncated(res.truncated);

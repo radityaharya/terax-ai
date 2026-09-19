@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PROTOCOL_VERSION: u16 = 1;
+/// Protocol version spoken by terax-remote agents. Additive over v1: the
+/// local control server stays v1, remote agents advertise v2 capabilities.
+pub const REMOTE_PROTOCOL_VERSION: u16 = 2;
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 pub const METHOD_PING: &str = "ping";
 pub const METHOD_CAPABILITIES: &str = "capabilities";
@@ -13,6 +16,30 @@ pub const METHODS: &[&str] = &[
     METHOD_CAPABILITIES,
     METHOD_IDENTIFY,
     METHOD_OPEN,
+];
+
+pub const REMOTE_METHOD_FS_READ_DIR: &str = "fs_read_dir";
+pub const REMOTE_METHOD_FS_READ_FILE: &str = "fs_read_file";
+pub const REMOTE_METHOD_FS_WRITE_FILE: &str = "fs_write_file";
+pub const REMOTE_METHOD_FS_STAT: &str = "fs_stat";
+pub const REMOTE_METHOD_FS_SEARCH: &str = "fs_search";
+pub const REMOTE_METHOD_FS_GREP: &str = "fs_grep";
+pub const REMOTE_METHOD_GIT_PANEL_SNAPSHOT: &str = "git_panel_snapshot";
+pub const REMOTE_METHOD_GIT_STATUS: &str = "git_status";
+pub const REMOTE_METHOD_SHELL_RUN: &str = "shell_run";
+
+pub const REMOTE_METHODS: &[&str] = &[
+    METHOD_PING,
+    METHOD_CAPABILITIES,
+    REMOTE_METHOD_FS_READ_DIR,
+    REMOTE_METHOD_FS_READ_FILE,
+    REMOTE_METHOD_FS_WRITE_FILE,
+    REMOTE_METHOD_FS_STAT,
+    REMOTE_METHOD_FS_SEARCH,
+    REMOTE_METHOD_FS_GREP,
+    REMOTE_METHOD_GIT_PANEL_SNAPSHOT,
+    REMOTE_METHOD_GIT_STATUS,
+    REMOTE_METHOD_SHELL_RUN,
 ];
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]

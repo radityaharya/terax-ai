@@ -120,6 +120,49 @@ fn wait_with_timeout(
     }
 }
 
+/// Runs a remote command over the multiplexed channel and returns stdout.
+/// Used for agent management (version probe). Always BatchMode.
+pub fn run_ssh_capture_version(host: &SshHost, remote_cmd: &str) -> Result<String, String> {
+    let parts: Vec<String> = vec![remote_cmd.to_string()];
+    match run_ssh_capture(host, true, &parts, DEFAULT_TIMEOUT) {
+        Ok((0, stdout, _)) => Ok(stdout.trim().to_string()),
+        Ok((_, _, _)) => Ok(String::new()),
+        Err(_) => Ok(String::new()),
+    }
+}
+
+/// Uploads a local file to the remote via stdin redirect:
+/// `ssh host 'mkdir -p ~/.cache/terax && cat > <remote> && chmod +x <remote>'`.
+/// No scp dependency; works everywhere system ssh works.
+pub fn upload_file(host: &SshHost, local: &std::path::Path, remote: &str) -> Result<(), String> {
+    let bytes = std::fs::read(local).map_err(|e| format!("read local agent: {e}"))?;
+    let script = format!("mkdir -p ~/.cache/terax && cat > {remote} && chmod +x {remote}");
+    let mut cmd = Command::new(ssh_binary());
+    for arg in base_args(host, true) {
+        cmd.arg(arg);
+    }
+    cmd.arg(target(host));
+    cmd.arg(script);
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    hide_console(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("spawn ssh upload: {e}"))?;
+    let mut stdin = child.stdin.take().ok_or("no upload stdin")?;
+    use std::io::Write;
+    stdin.write_all(&bytes).map_err(|e| format!("upload write: {e}"))?;
+    drop(stdin);
+    let out = child.wait_with_output().map_err(|e| format!("upload wait: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "agent upload failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
 /// Non-interactive probe: `true` on the remote. Success means keys/agent
 /// work with no prompts. Failure is classified so the UI can offer the
 /// right next step (key file, password, or 2FA terminal).
