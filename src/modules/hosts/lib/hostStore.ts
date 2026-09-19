@@ -79,6 +79,9 @@ export async function saveHost(input: SshHostInput): Promise<SshHost> {
 
 export async function deleteHost(id: string): Promise<void> {
   await invoke("ssh_delete_host", { id });
+  // Keep-alive model: drop the RPC channel too, or the daemon holds a dead
+  // host's ssh process forever.
+  await invoke("ssh_disconnect", { hostId: id }).catch(() => {});
   useHostStore.setState((s) => ({
     hosts: s.hosts.filter((h) => h.id !== id),
   }));

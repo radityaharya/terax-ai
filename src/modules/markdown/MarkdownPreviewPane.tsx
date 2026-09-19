@@ -1,7 +1,7 @@
 import { MarkdownCode } from "@/components/ai-elements/markdown-code";
 import { cn } from "@/lib/utils";
-import { sshHostId, sshRpc } from "@/modules/ai/lib/native";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import { hostIdForEnv, sshRpc } from "@/modules/ai/lib/native";
+import { currentWorkspaceEnv, type WorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { Streamdown } from "streamdown";
@@ -22,20 +22,23 @@ type Status =
 
 type Props = {
   path: string;
+  /** Owning tab's env — background previews read their own host. */
+  env?: WorkspaceEnv;
   visible: boolean;
   onSetView: (mode: "rendered" | "raw") => void;
 };
 
 const components = { a: MarkdownLink, code: MarkdownCode };
 
-export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
+export function MarkdownPreviewPane({ path, env, visible, onSetView }: Props) {
   const [status, setStatus] = useState<Status>({ kind: "loading" });
+  const hostId = hostIdForEnv(env);
 
   useEffect(() => {
     let cancelled = false;
     setStatus({ kind: "loading" });
-    (sshHostId()
-      ? sshRpc<ReadResult>("fs_read_file", { path, force: false })
+    (hostId
+      ? sshRpc<ReadResult>("fs_read_file", { path, force: false }, hostId)
       : invoke<ReadResult>("fs_read_file", {
           path,
           workspace: currentWorkspaceEnv(),
@@ -56,7 +59,7 @@ export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [path]);
+  }, [path, hostId]);
 
   return (
     <div

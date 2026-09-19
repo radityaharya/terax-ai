@@ -16,7 +16,8 @@ import {
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { vim } from "@replit/codemirror-vim";
-import { sshHostId, sshRpc } from "@/modules/ai/lib/native";
+import { hostIdForEnv, sshRpc } from "@/modules/ai/lib/native";
+import type { WorkspaceEnv } from "@/modules/workspace";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 type BytesResult =
@@ -43,14 +44,22 @@ function mimeForImageExt(ext: string): string {
   }
 }
 
-function RemoteImage({ path, ext }: { path: string; ext: string }) {
+function RemoteImage({
+  path,
+  ext,
+  hostId,
+}: {
+  path: string;
+  ext: string;
+  hostId: string;
+}) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     setUrl(null);
     setError(null);
-    void sshRpc<BytesResult>("fs_read_bytes", { path })
+    void sshRpc<BytesResult>("fs_read_bytes", { path }, hostId)
       .then((res) => {
         if (cancelled) return;
         if (res.kind === "bytes") {
@@ -65,7 +74,7 @@ function RemoteImage({ path, ext }: { path: string; ext: string }) {
     return () => {
       cancelled = true;
     };
-  }, [path, ext]);
+  }, [path, ext, hostId]);
   if (error) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
@@ -167,6 +176,8 @@ export type EditorPaneHandle = {
 
 type Props = {
   path: string;
+  /** Owning tab's env — reads/writes go to this host even in background. */
+  env?: WorkspaceEnv;
   overrideLanguage?: string | null;
   onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
@@ -187,11 +198,13 @@ function formatBytes(n: number): string {
 // skip re-rendering entirely when App re-renders (terminal events, tab churn).
 export const EditorPane = memo(
   forwardRef<EditorPaneHandle, Props>(function EditorPane(props, ref) {
-    const { path, overrideLanguage, onDirtyChange, onSaved, onClose } = props;
+    const { path, env, overrideLanguage, onDirtyChange, onSaved, onClose } =
+      props;
 
     const { doc, onChange, save, reload, adoptDiskText, openAnyway } =
       useDocument({
         path,
+        env,
         onDirtyChange,
       });
     const reloadRef = useRef(reload);
@@ -662,11 +675,12 @@ export const EditorPane = memo(
         // Remote files have no local path: images fetch bytes over the
         // agent and render as data URLs. Other media stays local-only
         // until the agent streams ranges.
-        if (sshHostId() && isImage) {
-          return <RemoteImage path={path} ext={ext} />;
+        const remoteHost = hostIdForEnv(env);
+        if (remoteHost && isImage) {
+          return <RemoteImage path={path} ext={ext} hostId={remoteHost} />;
         }
         const assetUrl = convertFileSrc(path);
-        if (sshHostId() && !isImage) {
+        if (remoteHost && !isImage) {
           return (
             <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
               <div className="text-sm text-foreground">Remote preview</div>

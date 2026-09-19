@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { useWorkspaceEnvStore } from "@/modules/workspace";
 import {
+  Cancel01Icon,
   Delete02Icon,
   PencilEdit02Icon,
   PlusSignIcon,
@@ -17,6 +18,7 @@ import {
   useHostStore,
   type ConnectionStatus,
 } from "./lib/hostStore";
+import { disconnectHost } from "./lib/idleDisconnect";
 import type { ImportedHost, SshHost } from "./lib/types";
 
 type Props = {
@@ -128,6 +130,7 @@ export function HostsPanel({ onConnect, onEdit, onShowHostKey, onShowAuth }: Pro
               active={host.id === activeHostId}
               confirmingDelete={confirmDelete === host.id}
               onClick={() => void handleRowClick(host)}
+              onDisconnect={() => disconnectHost(host.id)}
               onEdit={() => onEdit(host)}
               onDelete={() => setConfirmDelete(host.id)}
               onConfirmDelete={() => {
@@ -210,6 +213,7 @@ function HostRow({
   onDelete,
   onConfirmDelete,
   onCancelDelete,
+  onDisconnect,
 }: {
   host: SshHost;
   status: ConnectionStatus | undefined;
@@ -220,6 +224,7 @@ function HostRow({
   onDelete: () => void;
   onConfirmDelete: () => void;
   onCancelDelete: () => void;
+  onDisconnect: () => void;
 }) {
   const dot = statusDot(status);
   const target = `${host.user}@${host.hostname}${host.port === 22 ? "" : `:${host.port}`}`;
@@ -292,6 +297,15 @@ function HostRow({
         </span>
       ) : (
         <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+          {status?.state === "online" && (
+            <RowButton label="Disconnect host" onClick={onDisconnect}>
+              <HugeiconsIcon
+                icon={Cancel01Icon}
+                size={13}
+                strokeWidth={1.75}
+              />
+            </RowButton>
+          )}
           <RowButton label="Edit host" onClick={onEdit}>
             <HugeiconsIcon icon={PencilEdit02Icon} size={13} strokeWidth={1.75} />
           </RowButton>

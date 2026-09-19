@@ -37,18 +37,20 @@ import {
   useApplyEditorFontSize,
   useEditorFileSync,
 } from "@/modules/editor";
-import { FileExplorer, type FileExplorerHandle } from "@/modules/explorer";
+import {
+  activePin,
+  FileExplorer,
+  type FileExplorerHandle,
+  useExplorerPinStore,
+} from "@/modules/explorer";
 import type { GitHistorySearchHandle } from "@/modules/git-history";
 import {
   HostEditorDialog,
   HostKeyDialog,
   HostsPanel,
   SshAuthDialog,
-  bindHostSpace,
-  markHostActive,
   probeHost,
   useHostStore,
-  type SshAuthChoice,
   type SshHost,
 } from "@/modules/hosts";
 import {
@@ -79,7 +81,6 @@ import {
   useSourceControlContext,
 } from "@/modules/source-control";
 import {
-  persistSpacesList,
   SpaceSwitcher,
   useSpacePersistence,
   useSpaces,
@@ -89,6 +90,7 @@ import { StatusBar } from "@/modules/statusbar";
 import {
   TabSwitcherHud,
   type CloseTabsPlan,
+  tabEnv,
   useTabSwitcher,
   useTabs,
   useWindowTitle,
@@ -165,6 +167,7 @@ export default function App() {
     markBooted,
     setActiveSpaceForNewTabs,
     newTab,
+    newTabWithEnv,
     newBlockTab,
     newAgentTab,
     newAgentGroupTab,
@@ -296,18 +299,11 @@ export default function App() {
     const prev = prevSpaceRef.current;
     prevSpaceRef.current = activeSpaceId;
     if (prev === null || prev === activeSpaceId) return;
-    const meta = useSpaces
-      .getState()
-      .spaces.find((s) => s.id === activeSpaceId);
-    if (meta) void adoptWorkspaceEnv(meta.env);
-    // Idle-disconnect background SSH hosts; cancel for the active one.
-    markHostActive(
-      meta && meta.env.kind === "ssh" ? meta.env.hostId : null,
-    );
     const inSpace = tabsRef.current.filter((t) => t.spaceId === activeSpaceId);
     if (inSpace.length === 0) return;
     // Keep the active tab if it already belongs to the newly active space (a
     // cross-space jump set it explicitly); else fall to the space's last tab.
+    // The active-tab effect below mirrors the tab's env to global.
     if (inSpace.some((t) => t.id === activeId)) return;
     setActiveId(inSpace[inSpace.length - 1].id);
   }, [
@@ -316,8 +312,17 @@ export default function App() {
     spacesHydrated,
     setActiveSpaceForNewTabs,
     setActiveId,
-    adoptWorkspaceEnv,
   ]);
+
+  // Per-tab hosts: the global workspace env mirrors the ACTIVE TAB's env.
+  // Switching tabs between hosts swaps explorer/git/terminal routing without
+  // touching other tabs; background tabs keep their own env + live sessions.
+  useEffect(() => {
+    if (!spacesHydrated || !booted) return;
+    const tab = tabsRef.current.find((t) => t.id === activeId);
+    if (!tab) return;
+    void adoptWorkspaceEnv(tabEnv(tab));
+  }, [activeId, tabs, spacesHydrated, booted, adoptWorkspaceEnv]);
 
   const [switcherOpen, setSwitcherOpen] = useState(false);
 
@@ -384,7 +389,22 @@ export default function App() {
     activeSpace?.root ?? null,
   );
 
-  useWindowTitle(activeTab, explorerRoot);
+  // Hybrid follow + pin: by default the explorer follows the active tab;
+  // pinning locks it to a directory until unpinned or the host changes.
+  const explorerPin = useExplorerPinStore((s) => s.pin);
+  const toggleExplorerPin = useExplorerPinStore((s) => s.togglePin);
+  const activeTabHostId =
+    activeTab && tabEnv(activeTab).kind === "ssh"
+      ? (tabEnv(activeTab) as { hostId: string }).hostId
+      : null;
+  const pinnedExplorerRoot = activePin(explorerPin, activeTabHostId);
+  const explorerPinned = pinnedExplorerRoot !== null;
+  const handleToggleExplorerPin = useCallback(() => {
+    const target = pinnedExplorerRoot ?? explorerRoot;
+    if (target) toggleExplorerPin(target, activeTabHostId);
+  }, [pinnedExplorerRoot, explorerRoot, toggleExplorerPin, activeTabHostId]);
+
+  useWindowTitle(activeTab, pinnedExplorerRoot ?? explorerRoot);
 
   useEffect(() => {
     setActiveSearchAddon(
@@ -841,7 +861,9 @@ export default function App() {
       activeTab,
       tabs,
       activeTerminalLeafCwd,
-      explorerRoot,
+      // Pinned explorer locks the git context too — badge, panel and target
+      // all operate on the pin while it is set.
+      explorerRoot: pinnedExplorerRoot ?? explorerRoot,
       launchCwd,
       launchCwdResolved,
       home,
@@ -1228,64 +1250,37 @@ export default function App() {
     message: string;
   } | null>(null);
 
-  // Jump to a host: reuse its bound space (tabs persist per host), or create
-  // one bound to this host. Adopting the env swaps explorer/git/terminal to
-  // the remote; the agent transport serves fs calls once connected. Returns
-  // true when a new space was created (its first tab is already open).
+  // Per-tab hosts (Tabby-style): connecting opens a NEW terminal tab on the
+  // host in the current space. Existing tabs keep their own env + sessions;
+  // the active-tab effect mirrors the new tab's env to global, which swings
+  // explorer/git/terminal routing to the remote. Returns true when a tab was
+  // opened (callers use this to skip redundant focus work).
   const handleConnectHost = useCallback(
     async (host: SshHost): Promise<boolean> => {
-      markHostActive(host.id);
-      const { spaces, create, setActive } = useSpaces.getState();
-      const bound = host.boundSpaceId
-        ? spaces.find((s) => s.id === host.boundSpaceId)
-        : spaces.find(
-            (s) =>
-              s.env.kind === "ssh" &&
-              s.env.hostId === host.id,
-          );
-      if (bound) {
-        if (bound.id !== activeSpaceIdRef.current) setActive(bound.id);
-        const home = await adoptWorkspaceEnv(bound.env);
-        // Backfill spaces created before home probing worked: a null root
-        // leaves the explorer and status bar with "no directory".
-        if (home && !bound.root) {
-          const spaces = useSpaces.getState().spaces.map((s) =>
-            s.id === bound.id ? { ...s, root: home, updatedAt: Date.now() } : s,
-          );
-          useSpaces.setState({ spaces });
-          void persistSpacesList(spaces);
-        }
+      const env: WorkspaceEnv = { kind: "ssh", hostId: host.id };
+      // Reuse an existing tab on this host when there is one in this space:
+      // clicking a connected host jumps to it instead of piling up tabs.
+      const spaceId = activeSpaceIdRef.current;
+      const existing = tabsRef.current.find(
+        (t) =>
+          t.spaceId === spaceId &&
+          tabEnv(t).kind === "ssh" &&
+          (tabEnv(t) as { hostId: string }).hostId === host.id,
+      );
+      if (existing) {
+        setActiveId(existing.id);
         return false;
       }
-      const env: WorkspaceEnv = { kind: "ssh", hostId: host.id };
       let home: string | null = null;
       try {
         home = await invoke<string>("ssh_home_for", { id: host.id });
       } catch {
         home = null;
       }
-      const meta = create({
-        name: host.alias,
-        root: home,
-        env,
-      });
-      setActiveSpaceForNewTabs(meta.id);
-      void bindHostSpace(host.id, meta.id);
-      clearWorkspaceState();
-      setWorkspaceEnv(env);
-      // resetWorkspace opens the space's first tab at the remote home;
-      // passing undefined would inherit the previous local cwd instead.
-      resetWorkspace(home ?? undefined);
-      setActive(meta.id);
+      newTabWithEnv(env, home ?? undefined, host.alias);
       return true;
     },
-    [
-      adoptWorkspaceEnv,
-      clearWorkspaceState,
-      resetWorkspace,
-      setActiveSpaceForNewTabs,
-      setWorkspaceEnv,
-    ],
+    [newTabWithEnv, setActiveId],
   );
 
   const handleDeleteSpace = useCallback(
@@ -1363,7 +1358,7 @@ export default function App() {
             tabs,
             activeId,
             searchTarget,
-            explorerRoot,
+            explorerRoot: pinnedExplorerRoot ?? explorerRoot,
             home,
             openNewTab,
             openNewBlock: openNewBlockTab,
@@ -1397,6 +1392,7 @@ export default function App() {
       activeId,
       searchTarget,
       explorerRoot,
+      pinnedExplorerRoot,
       home,
       openNewTab,
       openNewBlockTab,
@@ -1577,6 +1573,18 @@ export default function App() {
                         <FileExplorer
                           ref={explorerRef}
                           rootPath={explorerRoot}
+                          pinnedRoot={pinnedExplorerRoot}
+                          hostLabel={
+                            workspaceEnv.kind === "ssh"
+                              ? (useHostStore
+                                  .getState()
+                                  .hosts.find(
+                                    (h: SshHost) => h.id === activeTabHostId,
+                                  )?.alias ?? activeTabHostId)
+                              : null
+                          }
+                          pinned={explorerPinned}
+                          onTogglePin={handleToggleExplorerPin}
                           gitStatus={
                             explorerGitDecorations ? sourceControl.status : null
                           }
@@ -1768,26 +1776,13 @@ export default function App() {
               onOpenChange={(open) => {
                 if (!open) setSshAuthPrompt(null);
               }}
-              onChoice={(_choice: SshAuthChoice) => {
-                // Complete auth natively in a terminal tab: connect the
-                // host env first so the new tab spawns ssh. A fresh space
-                // already opened its first tab; only bound spaces with no
-                // fresh tab need one, opened at the remote home.
+              onChoice={() => {
+                // Complete auth natively in a terminal tab: handleConnectHost
+                // opens (or jumps to) a tab on the host; the spawn itself
+                // drives the interactive auth over the new channel.
                 const pending = sshAuthPrompt;
                 setSshAuthPrompt(null);
-                if (pending) {
-                  void handleConnectHost(pending.host).then((created) => {
-                    if (!created) {
-                      // Open the auth terminal at the remote home, never
-                      // the inherited local cwd.
-                      const status =
-                        useHostStore.getState().connections[pending.host.id];
-                      const home =
-                        status?.state === "online" ? status.home : null;
-                      newTab(home ?? undefined);
-                    }
-                  });
-                }
+                if (pending) void handleConnectHost(pending.host);
               }}
             />
           )}

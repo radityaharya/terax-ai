@@ -7,6 +7,7 @@ import type { TerminalSearchController } from "@/modules/terminal/search/Termina
 import { Fragment, useCallback, useEffect, useRef } from "react";
 import { useTerminalDropStore } from "./lib/dropStore";
 import { firstLeafSlotId, type PaneNode } from "./lib/panes";
+import type { WorkspaceEnv } from "@/modules/workspace";
 import {
   beginTerminalResizeInteraction,
   endTerminalResizeInteraction,
@@ -25,6 +26,8 @@ type Props = {
   tabVisible: boolean;
   activeLeafId: number;
   blocks: boolean;
+  /** Owning tab's env — every leaf spawns on this host. */
+  env?: WorkspaceEnv;
   onFocusLeaf: (leafId: number) => void;
   getBundle: (leafId: number) => LeafBundle;
 };
@@ -32,7 +35,8 @@ type Props = {
 export function PaneTreeView(props: Props) {
   const { node } = props;
   if (node.kind === "leaf") {
-    const { tabVisible, activeLeafId, blocks, onFocusLeaf, getBundle } = props;
+    const { tabVisible, activeLeafId, blocks, env, onFocusLeaf, getBundle } =
+      props;
     const focused = node.id === activeLeafId;
     const b = getBundle(node.id);
     return (
@@ -53,6 +57,7 @@ export function PaneTreeView(props: Props) {
           visible={tabVisible}
           focused={focused}
           initialCwd={node.cwd}
+          env={env}
           blocks={blocks}
           ref={b.setRef}
           onSearchReady={b.onSearchReady}

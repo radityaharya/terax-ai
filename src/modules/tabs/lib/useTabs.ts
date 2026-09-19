@@ -4,6 +4,10 @@ import {
   createAgentPanePlan,
 } from "@/modules/agents/lib/launcher";
 import {
+  LOCAL_WORKSPACE,
+  type WorkspaceEnv,
+} from "@/modules/workspace";
+import {
   findLeafCwd,
   hasLeaf,
   leafIds,
@@ -34,7 +38,18 @@ type TabBase = {
   spaceId: string;
   /** Restored from disk, not yet activated: rendered as a placeholder, not mounted. */
   cold?: boolean;
+  /**
+   * Execution environment for this tab. Splits inherit; new tabs inherit
+   * the active tab's env. Optional for backward compat with persisted
+   * tabs and tests — absent means local. Use `tabEnv()` to resolve.
+   */
+  env?: WorkspaceEnv;
 };
+
+/** Resolve a tab's env, defaulting to local for tabs created before env existed. */
+export function tabEnv(tab: Tab): WorkspaceEnv {
+  return tab.env ?? LOCAL_WORKSPACE;
+}
 
 export type TerminalTab = TabBase & {
   id: number;
@@ -157,6 +172,8 @@ export type GitDiffOpenInput = {
 export type OpenFileTabOptions = {
   spaceId?: string;
   activate?: boolean;
+  /** Env stamped on the new tab. Defaults to the active tab's env (inherit). */
+  env?: WorkspaceEnv;
 };
 
 export type CloseTabsPlan = {
@@ -176,6 +193,7 @@ export function planMarkdownTabOpen(
   path: string,
   spaceId: string,
   allocId: () => number,
+  env?: WorkspaceEnv,
 ): { tabs: Tab[]; tabId: number } {
   const pathKey = path.replace(/\\/g, "/");
   const existing = tabs.find(
@@ -196,6 +214,7 @@ export function planMarkdownTabOpen(
         spaceId,
         title: basename(path),
         path,
+        ...(env !== undefined && { env }),
       },
     ],
     tabId,
@@ -208,7 +227,9 @@ export function planFileTabOpen(
   pin: boolean,
   spaceId: string,
   allocId: () => number,
+  env?: WorkspaceEnv,
 ): { tabs: Tab[]; tabId: number } {
+  const envPatch = env !== undefined ? { env } : {};
   if (pin) {
     const existing = tabs.find(
       (tab) =>
@@ -237,6 +258,7 @@ export function planFileTabOpen(
           path,
           dirty: false,
           preview: false,
+          ...envPatch,
         },
       ],
       tabId,
@@ -273,6 +295,7 @@ export function planFileTabOpen(
     path,
     dirty: false,
     preview: true,
+    ...envPatch,
   };
   if (previewIndex === -1) return { tabs: [...tabs, tab], tabId };
 
@@ -422,6 +445,7 @@ export function planGitDiffOpen(
   spaceId: string,
   pin: boolean,
   allocId: () => number,
+  env?: WorkspaceEnv,
 ): { tabs: Tab[]; targetId: number } {
   const title = input.title ?? `${basename(input.path)} (${input.mode})`;
   const originalPath = input.originalPath ?? null;
@@ -464,6 +488,7 @@ export function planGitDiffOpen(
     mode: input.mode,
     originalPath,
     preview: !pin,
+    ...(env !== undefined && { env }),
   } satisfies GitDiffTab;
 
   if (pin) return { tabs: [...tabs, tab], targetId: id };
@@ -486,6 +511,7 @@ export function planCommitHistoryOpen(
   input: { repoRoot: string; branch?: string | null },
   spaceId: string,
   allocId: () => number,
+  env?: WorkspaceEnv,
 ): { tabs: Tab[]; targetId: number } {
   const existing = tabs.find(
     (tab) =>
@@ -514,6 +540,7 @@ export function planCommitHistoryOpen(
         spaceId,
         title,
         repoRoot: input.repoRoot,
+        ...(env !== undefined && { env }),
       } satisfies GitHistoryTab,
     ],
     targetId: id,
@@ -525,6 +552,7 @@ function coldTerminalTab(
   leafId: number,
   spaceId: string,
   cwd?: string,
+  env?: WorkspaceEnv,
 ): TerminalTab {
   return {
     id: tabId,
@@ -535,6 +563,7 @@ function coldTerminalTab(
     cwd,
     paneTree: { kind: "leaf", id: leafId, cwd },
     activeLeafId: leafId,
+    ...(env !== undefined && { env }),
   };
 }
 
@@ -617,6 +646,18 @@ export function useTabs(initial?: Partial<TerminalTab>) {
 
   const markBooted = useCallback(() => setBooted(true), []);
 
+  // New tabs inherit the active tab's env (Tabby-style): opening a tab while
+  // focused on an SSH tab gives you that same host. Explicit `env` params
+  // override this (host connect, file open from another context).
+  const inheritEnv = useCallback(
+    (explicit?: WorkspaceEnv): WorkspaceEnv | undefined => {
+      if (explicit !== undefined) return explicit;
+      const active = tabsRef.current.find((t) => t.id === activeIdRef.current);
+      return active?.env;
+    },
+    [],
+  );
+
   const setActiveSpaceForNewTabs = useCallback((spaceId: string) => {
     activeSpaceIdRef.current = spaceId;
   }, []);
@@ -631,24 +672,28 @@ export function useTabs(initial?: Partial<TerminalTab>) {
 
   // Appends a cold terminal tab to a space without stealing focus, so the
   // overview can populate a space in place; it spawns when first opened.
-  const newTabInSpace = useCallback((spaceId: string, cwd?: string) => {
-    const tabId = nextIdRef.current++;
-    const leafId = nextIdRef.current++;
-    setTabs((curr) => [
-      ...curr,
-      {
-        id: tabId,
-        kind: "terminal",
-        spaceId,
-        cold: true,
-        title: cwd ? basename(cwd) : "shell",
-        cwd,
-        paneTree: { kind: "leaf", id: leafId, cwd },
-        activeLeafId: leafId,
-      },
-    ]);
-    return tabId;
-  }, []);
+  const newTabInSpace = useCallback(
+    (spaceId: string, cwd?: string, env?: WorkspaceEnv) => {
+      const tabId = nextIdRef.current++;
+      const leafId = nextIdRef.current++;
+      setTabs((curr) => [
+        ...curr,
+        {
+          id: tabId,
+          kind: "terminal",
+          spaceId,
+          cold: true,
+          title: cwd ? basename(cwd) : "shell",
+          cwd,
+          paneTree: { kind: "leaf", id: leafId, cwd },
+          activeLeafId: leafId,
+          ...(env !== undefined && { env }),
+        },
+      ]);
+      return tabId;
+    },
+    [],
+  );
 
   // Reassigns a tab to another space. Returns true when the moved tab was active
   // and emptied its source space, so the caller should follow it into the target.
@@ -728,44 +773,81 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [],
   );
 
-  const newTab = useCallback((cwd?: string) => {
-    const tabId = nextIdRef.current++;
-    const leafId = nextIdRef.current++;
-    setTabs((t) => [
-      ...t,
-      {
-        id: tabId,
-        kind: "terminal",
-        spaceId: activeSpaceIdRef.current,
-        title: "shell",
-        cwd,
-        paneTree: { kind: "leaf", id: leafId, cwd },
-        activeLeafId: leafId,
-      },
-    ]);
-    setActiveId(tabId);
-    return tabId;
-  }, []);
+  const newTab = useCallback(
+    (cwd?: string, env?: WorkspaceEnv) => {
+      const tabEnv = inheritEnv(env);
+      const tabId = nextIdRef.current++;
+      const leafId = nextIdRef.current++;
+      setTabs((t) => [
+        ...t,
+        {
+          id: tabId,
+          kind: "terminal",
+          spaceId: activeSpaceIdRef.current,
+          title: "shell",
+          cwd,
+          paneTree: { kind: "leaf", id: leafId, cwd },
+          activeLeafId: leafId,
+          ...(tabEnv !== undefined && { env: tabEnv }),
+        },
+      ]);
+      setActiveId(tabId);
+      return tabId;
+    },
+    [inheritEnv],
+  );
 
-  const newBlockTab = useCallback((cwd?: string) => {
-    const tabId = nextIdRef.current++;
-    const leafId = nextIdRef.current++;
-    setTabs((t) => [
-      ...t,
-      {
-        id: tabId,
-        kind: "terminal",
-        spaceId: activeSpaceIdRef.current,
-        title: "blocks",
-        cwd,
-        paneTree: { kind: "leaf", id: leafId, cwd },
-        activeLeafId: leafId,
-        blocks: true,
-      },
-    ]);
-    setActiveId(tabId);
-    return tabId;
-  }, []);
+  /**
+   * Opens a terminal tab pinned to an explicit env (host connect, new-tab
+   * host picker). Unlike newTab it never inherits — the caller chose.
+   */
+  const newTabWithEnv = useCallback(
+    (env: WorkspaceEnv, cwd?: string, title?: string) => {
+      const tabId = nextIdRef.current++;
+      const leafId = nextIdRef.current++;
+      setTabs((t) => [
+        ...t,
+        {
+          id: tabId,
+          kind: "terminal",
+          spaceId: activeSpaceIdRef.current,
+          title: title ?? "shell",
+          cwd,
+          paneTree: { kind: "leaf", id: leafId, cwd },
+          activeLeafId: leafId,
+          env,
+        },
+      ]);
+      setActiveId(tabId);
+      return tabId;
+    },
+    [],
+  );
+
+  const newBlockTab = useCallback(
+    (cwd?: string, env?: WorkspaceEnv) => {
+      const tabEnv = inheritEnv(env);
+      const tabId = nextIdRef.current++;
+      const leafId = nextIdRef.current++;
+      setTabs((t) => [
+        ...t,
+        {
+          id: tabId,
+          kind: "terminal",
+          spaceId: activeSpaceIdRef.current,
+          title: "blocks",
+          cwd,
+          paneTree: { kind: "leaf", id: leafId, cwd },
+          activeLeafId: leafId,
+          blocks: true,
+          ...(tabEnv !== undefined && { env: tabEnv }),
+        },
+      ]);
+      setActiveId(tabId);
+      return tabId;
+    },
+    [inheritEnv],
+  );
 
   useEffect(() => {
     if (!import.meta.env?.DEV || typeof window === "undefined") return;
@@ -775,7 +857,13 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   }, [newBlockTab]);
 
   const newAgentGroupTab = useCallback(
-    (cwd: string | undefined, title: string, instances: AgentInstanceCount) => {
+    (
+      cwd: string | undefined,
+      title: string,
+      instances: AgentInstanceCount,
+      env?: WorkspaceEnv,
+    ) => {
+      const tabEnv = inheritEnv(env);
       const tabId = nextIdRef.current++;
       const { paneTree, leafIds: agentLeafIds } = createAgentPanePlan(
         instances,
@@ -793,12 +881,13 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           cwd,
           paneTree,
           activeLeafId: agentLeafIds[0],
+          ...(tabEnv !== undefined && { env: tabEnv }),
         },
       ]);
       setActiveId(tabId);
       return { tabId, leafIds: agentLeafIds };
     },
-    [],
+    [inheritEnv],
   );
 
   const newAgentTab = useCallback(
@@ -809,25 +898,30 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [newAgentGroupTab],
   );
 
-  const newPrivateTab = useCallback((cwd?: string) => {
-    const tabId = nextIdRef.current++;
-    const leafId = nextIdRef.current++;
-    setTabs((t) => [
-      ...t,
-      {
-        id: tabId,
-        kind: "terminal",
-        spaceId: activeSpaceIdRef.current,
-        title: "private",
-        cwd,
-        paneTree: { kind: "leaf", id: leafId, cwd },
-        activeLeafId: leafId,
-        private: true,
-      },
-    ]);
-    setActiveId(tabId);
-    return tabId;
-  }, []);
+  const newPrivateTab = useCallback(
+    (cwd?: string, env?: WorkspaceEnv) => {
+      const tabEnv = inheritEnv(env);
+      const tabId = nextIdRef.current++;
+      const leafId = nextIdRef.current++;
+      setTabs((t) => [
+        ...t,
+        {
+          id: tabId,
+          kind: "terminal",
+          spaceId: activeSpaceIdRef.current,
+          title: "private",
+          cwd,
+          paneTree: { kind: "leaf", id: leafId, cwd },
+          activeLeafId: leafId,
+          private: true,
+          ...(tabEnv !== undefined && { env: tabEnv }),
+        },
+      ]);
+      setActiveId(tabId);
+      return tabId;
+    },
+    [inheritEnv],
+  );
 
   /**
    * Opens a file in an editor tab.
@@ -849,13 +943,14 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         pin,
         targetSpaceId,
         () => nextIdRef.current++,
+        options.env ?? inheritEnv(),
       );
       tabsRef.current = plan.tabs;
       setTabs(plan.tabs);
       if (activate) setActiveId(plan.tabId);
       return plan.tabId;
     },
-    [],
+    [inheritEnv],
   );
 
   /**
@@ -881,7 +976,9 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       proposedContent: string;
       approvalId: string;
       isNewFile: boolean;
+      env?: WorkspaceEnv;
     }) => {
+      const tabEnv = inheritEnv(input.env);
       let targetId: number | null = null;
       setTabs((curr) => {
         const existing = curr.find(
@@ -907,13 +1004,14 @@ export function useTabs(initial?: Partial<TerminalTab>) {
             approvalId: input.approvalId,
             status: "pending",
             isNewFile: input.isNewFile,
+            ...(tabEnv !== undefined && { env: tabEnv }),
           },
         ];
       });
       if (targetId !== null) setActiveId(targetId);
       return targetId as number | null;
     },
-    [],
+    [inheritEnv],
   );
 
   const setAiDiffStatus = useCallback(
@@ -949,41 +1047,50 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     });
   }, []);
 
-  const newPreviewTab = useCallback((url: string) => {
-    const id = nextIdRef.current++;
-    setTabs((t) => [
-      ...t,
-      {
-        id,
-        kind: "preview",
-        spaceId: activeSpaceIdRef.current,
-        title: titleFromUrl(url),
-        url,
-      },
-    ]);
-    setActiveId(id);
-    return id;
-  }, []);
+  const newPreviewTab = useCallback(
+    (url: string, env?: WorkspaceEnv) => {
+      const tabEnv = inheritEnv(env);
+      const id = nextIdRef.current++;
+      setTabs((t) => [
+        ...t,
+        {
+          id,
+          kind: "preview",
+          spaceId: activeSpaceIdRef.current,
+          title: titleFromUrl(url),
+          url,
+          ...(tabEnv !== undefined && { env: tabEnv }),
+        },
+      ]);
+      setActiveId(id);
+      return id;
+    },
+    [inheritEnv],
+  );
 
   // Mirrors tabsRef like openFileTab instead of using a functional update: a
   // batch that opens a markdown file before a regular one (multi-file "Open
   // With") would otherwise have the queued markdown update clobbered by
   // openFileTab's setTabs(plan.tabs), which is built from the stale ref.
-  const newMarkdownTab = useCallback((path: string) => {
-    const curr = tabsRef.current;
-    const plan = planMarkdownTabOpen(
-      curr,
-      path,
-      activeSpaceIdRef.current,
-      () => nextIdRef.current++,
-    );
-    if (plan.tabs !== curr) {
-      tabsRef.current = plan.tabs;
-      setTabs(plan.tabs);
-    }
-    setActiveId(plan.tabId);
-    return plan.tabId;
-  }, []);
+  const newMarkdownTab = useCallback(
+    (path: string, env?: WorkspaceEnv) => {
+      const curr = tabsRef.current;
+      const plan = planMarkdownTabOpen(
+        curr,
+        path,
+        activeSpaceIdRef.current,
+        () => nextIdRef.current++,
+        env ?? inheritEnv(),
+      );
+      if (plan.tabs !== curr) {
+        tabsRef.current = plan.tabs;
+        setTabs(plan.tabs);
+      }
+      setActiveId(plan.tabId);
+      return plan.tabId;
+    },
+    [inheritEnv],
+  );
 
   const setOverrideLanguage = useCallback((id: number, lang: string | null) => {
     setTabs((curr) =>
@@ -1036,31 +1143,16 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [],
   );
 
-  const openGitDiffTab = useCallback((input: GitDiffOpenInput, pin = false) => {
-    const curr = tabsRef.current;
-    const plan = planGitDiffOpen(
-      curr,
-      input,
-      activeSpaceIdRef.current,
-      pin,
-      () => nextIdRef.current++,
-    );
-    if (plan.tabs !== curr) {
-      tabsRef.current = plan.tabs;
-      setTabs(plan.tabs);
-    }
-    setActiveId(plan.targetId);
-    return plan.targetId;
-  }, []);
-
-  const openCommitHistoryTab = useCallback(
-    (input: { repoRoot: string; branch?: string | null }) => {
+  const openGitDiffTab = useCallback(
+    (input: GitDiffOpenInput & { env?: WorkspaceEnv }, pin = false) => {
       const curr = tabsRef.current;
-      const plan = planCommitHistoryOpen(
+      const plan = planGitDiffOpen(
         curr,
         input,
         activeSpaceIdRef.current,
+        pin,
         () => nextIdRef.current++,
+        input.env ?? inheritEnv(),
       );
       if (plan.tabs !== curr) {
         tabsRef.current = plan.tabs;
@@ -1069,7 +1161,31 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       setActiveId(plan.targetId);
       return plan.targetId;
     },
-    [],
+    [inheritEnv],
+  );
+
+  const openCommitHistoryTab = useCallback(
+    (input: {
+      repoRoot: string;
+      branch?: string | null;
+      env?: WorkspaceEnv;
+    }) => {
+      const curr = tabsRef.current;
+      const plan = planCommitHistoryOpen(
+        curr,
+        input,
+        activeSpaceIdRef.current,
+        () => nextIdRef.current++,
+        input.env ?? inheritEnv(),
+      );
+      if (plan.tabs !== curr) {
+        tabsRef.current = plan.tabs;
+        setTabs(plan.tabs);
+      }
+      setActiveId(plan.targetId);
+      return plan.targetId;
+    },
+    [inheritEnv],
   );
 
   const openCommitFileDiffTab = useCallback(
@@ -1080,6 +1196,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       subject: string;
       path: string;
       originalPath: string | null;
+      env?: WorkspaceEnv;
     }) => {
       const curr = tabsRef.current;
       const existing = curr.find(
@@ -1107,6 +1224,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         return existing.id;
       }
       const id = nextIdRef.current++;
+      const tabEnv = input.env ?? inheritEnv();
       const nextTabs = [
         ...curr,
         {
@@ -1120,6 +1238,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           subject: input.subject,
           path: input.path,
           originalPath: input.originalPath,
+          ...(tabEnv !== undefined && { env: tabEnv }),
         } satisfies GitCommitFileDiffTab,
       ];
       tabsRef.current = nextTabs;
@@ -1127,7 +1246,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       setActiveId(id);
       return id;
     },
-    [],
+    [inheritEnv],
   );
 
   const closeTab = useCallback((id: number) => {
@@ -1376,7 +1495,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     return closedTab;
   }, []);
 
-  const resetWorkspace = useCallback((cwd?: string) => {
+  const resetWorkspace = useCallback((cwd?: string, env?: WorkspaceEnv) => {
     const tabId = nextIdRef.current++;
     const leafId = nextIdRef.current++;
     let toDispose: number[] = [];
@@ -1393,6 +1512,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           cwd,
           paneTree: { kind: "leaf", id: leafId, cwd },
           activeLeafId: leafId,
+          ...(env !== undefined && { env }),
         },
       ];
     });
@@ -1420,6 +1540,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     setActiveSpaceForNewTabs,
     setOverrideLanguage,
     newTab,
+    newTabWithEnv,
     newBlockTab,
     newAgentTab,
     newAgentGroupTab,

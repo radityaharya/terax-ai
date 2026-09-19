@@ -304,6 +304,14 @@ export function createCommandItems(
       run: ctx.openHostsPanel,
     },
     {
+      id: "ssh.newTabHere",
+      title: "SSH: New tab on this host",
+      group: "SSH",
+      keywords: ["ssh", "remote", "host", "tab", "same", "here"],
+      icon: TerminalIcon,
+      run: ctx.openNewTab,
+    },
+    {
       id: "ai.askSelection",
       title: "Ask AI about selection",
       group: "AI",

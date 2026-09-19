@@ -12,8 +12,9 @@ binary, the same way git and WSL shell out today.
 - **Interactive PTY**: `pty_open` with `WorkspaceEnv::Ssh` builds
   `ssh -t -o StrictHostKeyChecking=yes user@host <remote shell>` inside
   `portable-pty` (`pty/shell_init.rs: build_ssh`). Passwords and 2FA
-  complete natively in the PTY. No shell integration yet: tabs run bare
-  (no OSC 7/133) until the agent installs integration scripts.
+  complete natively in the PTY. The agent installs shell integration
+  scripts (zsh via `ZDOTDIR`, bash via `--rcfile`, fish via `conf.d`)
+  on first spawn, enabling OSC 7/133 + command blocks remotely.
 - **RPC side-channel**: `SshRpcManager` (`ssh/rpc.rs`) holds one stdio
   `ssh -T host terax-remote serve --root <dir> --token <hex>` child per
   host. Requests are newline-delimited JSON (protocol v2, additive over the
@@ -63,12 +64,19 @@ only, loopback by construction since it runs as the ssh child.
 
 - Hosts is the third sidebar rail tab (`Files / Git / Hosts`), with
   status dots, search filter, managed + imported sections, and hover
-  actions. Clicking a host probes (host-key, then auth) and jumps to its
-  bound space, creating and binding one on first connect.
-- Spaces auto-bind one space per host; tabs persist per host and restore
-  on jump. One active host at a time (single global `WorkspaceEnv`).
-  Background hosts stay connected until a 10-minute idle timeout drops
-  the RPC channel; PTY tabs stay open with reconnect.
+  actions. Clicking a host probes (host-key, then auth) and opens a new
+  terminal tab on it in the current space (or jumps to the existing tab).
+- Per-tab hosts (Tabby-style): every tab carries its own `env`
+  (`TabBase.env`, inherited from the active tab; splits inherit). The
+  global `WorkspaceEnv` mirrors the active tab, so explorer/git/terminal
+  routing follows tab switches. PTY spawn passes the owning tab's env,
+  so background tabs stay on their own host. Editor/markdown/image
+  readers stamp the tab's host explicitly.
+- Background hosts stay connected forever (no idle reap; `ssh_disconnect`
+  fires only on host delete or explicit disconnect from the panel).
+- Explorer follows the active terminal by default (OSC 7 → `setLeafCwd`
+  → `explorerRoot`/git context); the pin button locks it to a directory.
+  Pins are per-host: jumping hosts ignores a pin from another host.
 - Remote OSC 7 paths never enter the local workspace registry
   (`handleTerminalCwd` skips SSH; `authorize_*` rejects SSH). The local
   registry only ever holds local paths.

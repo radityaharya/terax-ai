@@ -9,10 +9,22 @@ export function sshHostId(): string | null {
 export function sshRpc<T>(
   method: string,
   params: Record<string, unknown>,
+  hostId?: string | null,
 ): Promise<T> {
-  const hostId = sshHostId();
-  if (!hostId) throw new Error("not an SSH workspace");
-  return invoke<T>("ssh_rpc", { hostId, method, params });
+  const id = hostId ?? sshHostId();
+  if (!id) throw new Error("not an SSH workspace");
+  return invoke<T>("ssh_rpc", { hostId: id, method, params });
+}
+
+/**
+ * Resolve the host a path/tab belongs to. Tabs stamp their env at open, so
+ * background editor tabs read their OWN host, not the active tab's. Reads
+ * currentWorkspaceEnv() live so callers that pass nothing still follow the
+ * active tab (mirrored to global by App).
+ */
+export function hostIdForEnv(env?: import("@/modules/workspace").WorkspaceEnv): string | null {
+  const e = env ?? currentWorkspaceEnv();
+  return e.kind === "ssh" ? e.hostId : null;
 }
 
 export type ReadResult =

@@ -1,7 +1,7 @@
 import { notifyDocumentSaved } from "@/modules/lsp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { currentWorkspaceEnv } from "@/modules/workspace";
-import { sshHostId, sshRpc } from "@/modules/ai/lib/native";
+import { currentWorkspaceEnv, type WorkspaceEnv } from "@/modules/workspace";
+import { hostIdForEnv, sshRpc } from "@/modules/ai/lib/native";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -26,10 +26,16 @@ export type DocumentState =
 
 type Options = {
   path: string;
+  /** Owning tab's env — background tabs read their own host. */
+  env?: WorkspaceEnv;
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function useDocument({ path, onDirtyChange }: Options) {
+export function useDocument({ path, env, onDirtyChange }: Options) {
+  // Snapshot the host for this document's lifetime. The tab's env is fixed
+  // at open; using it live would let an unrelated tab switch corrupt an
+  // in-flight read/write to the wrong host.
+  const hostId = hostIdForEnv(env);
   const [doc, setDoc] = useState<DocumentState>({ status: "loading" });
   const [dirty, setDirty] = useState(false);
 
@@ -62,8 +68,12 @@ export function useDocument({ path, onDirtyChange }: Options) {
   const writeToDisk = useCallback(async () => {
     const content = bufferRef.current;
     const restored = restoreEol(content, eolRef.current);
-    const mtime = sshHostId()
-      ? await sshRpc<number>("fs_write_file", { path, content: restored })
+    const mtime = hostId
+      ? await sshRpc<number>(
+          "fs_write_file",
+          { path, content: restored },
+          hostId,
+        )
       : await invoke<number>("fs_write_file", {
           path,
           content: restored,
@@ -75,15 +85,15 @@ export function useDocument({ path, onDirtyChange }: Options) {
     // Edits typed while the write was in flight must stay dirty.
     setDirty(bufferRef.current !== content);
     notifyDocumentSaved(path);
-  }, [path]);
+  }, [path, hostId]);
 
   // False when the write was withheld because the file changed on disk
   // since load; overwriting is an explicit user action from the toast.
   const saveNow = useCallback(async (): Promise<boolean> => {
     const known = diskMtimeRef.current;
     if (known !== null) {
-      const stat = sshHostId()
-        ? await sshRpc<FileStat>("fs_stat", { path }).catch(() => null)
+      const stat = hostId
+        ? await sshRpc<FileStat>("fs_stat", { path }, hostId).catch(() => null)
         : await invoke<FileStat>("fs_stat", {
             path,
             workspace: currentWorkspaceEnv(),
@@ -135,14 +145,14 @@ export function useDocument({ path, onDirtyChange }: Options) {
 
   const readFromDisk = useCallback(
     (force: boolean) =>
-      sshHostId()
-        ? sshRpc<ReadResult>("fs_read_file", { path, force })
+      hostId
+        ? sshRpc<ReadResult>("fs_read_file", { path, force }, hostId)
         : invoke<ReadResult>("fs_read_file", {
             path,
             workspace: currentWorkspaceEnv(),
             force,
           }),
-    [path],
+    [path, hostId],
   );
 
   // Load on path change.

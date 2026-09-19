@@ -10,21 +10,44 @@ import type {
   Tab,
   TerminalTab,
 } from "@/modules/tabs/lib/useTabs";
+import {
+  workspaceScopeKey,
+  parseWorkspaceScopeKey,
+  type WorkspaceEnv,
+} from "@/modules/workspace";
 
 export type SerializedNode =
   | { kind: "leaf"; cwd?: string; active?: boolean }
   | { kind: "split"; dir: SplitDir; children: SerializedNode[] };
 
+/**
+ * Per-tab env persists as a workspace scope key ("local" | "wsl:<distro>" |
+ * "ssh:<hostId>"). Absent (old sessions) means local.
+ */
 export type SerializedTab =
   | {
       kind: "terminal";
       tree: SerializedNode;
       blocks?: boolean;
       customTitle?: string;
+      env?: string;
     }
-  | { kind: "editor"; path: string }
-  | { kind: "preview"; url: string }
-  | { kind: "markdown"; path: string };
+  | { kind: "editor"; path: string; env?: string }
+  | { kind: "preview"; url: string; env?: string }
+  | { kind: "markdown"; path: string; env?: string };
+
+/** Serialize only when non-local — keeps old payloads small and readable. */
+function serializeEnv(env: WorkspaceEnv | undefined): { env?: string } {
+  if (!env || env.kind === "local") return {};
+  return { env: workspaceScopeKey(env) };
+}
+
+function hydrateEnv(key: string | undefined): { env?: WorkspaceEnv } {
+  if (!key) return {};
+  const env = parseWorkspaceScopeKey(key);
+  if (env.kind === "local") return {};
+  return { env };
+}
 
 function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
@@ -76,13 +99,14 @@ function serializeTab(tab: Tab): SerializedTab | null {
         tree: serializeNode(tab.paneTree, tab.activeLeafId),
         ...(tab.blocks && { blocks: true }),
         ...(tab.customTitle !== undefined && { customTitle: tab.customTitle }),
+        ...serializeEnv(tab.env),
       };
     case "editor":
-      return { kind: "editor", path: tab.path };
+      return { kind: "editor", path: tab.path, ...serializeEnv(tab.env) };
     case "preview":
-      return { kind: "preview", url: tab.url };
+      return { kind: "preview", url: tab.url, ...serializeEnv(tab.env) };
     case "markdown":
-      return { kind: "markdown", path: tab.path };
+      return { kind: "markdown", path: tab.path, ...serializeEnv(tab.env) };
     default:
       return null;
   }
@@ -163,6 +187,7 @@ function hydrateTab(
         activeLeafId,
         ...(s.blocks && { blocks: true }),
         ...(s.customTitle !== undefined && { customTitle: s.customTitle }),
+        ...hydrateEnv(s.env),
       } satisfies TerminalTab;
     }
     case "editor":
@@ -175,6 +200,7 @@ function hydrateTab(
         path: s.path,
         dirty: false,
         preview: false,
+        ...hydrateEnv(s.env),
       } satisfies EditorTab;
     case "preview":
       return {
@@ -184,6 +210,7 @@ function hydrateTab(
         cold: true,
         title: titleFromUrl(s.url),
         url: s.url,
+        ...hydrateEnv(s.env),
       } satisfies PreviewTab;
     case "markdown":
       return {
@@ -193,6 +220,7 @@ function hydrateTab(
         cold: true,
         title: basename(s.path),
         path: s.path,
+        ...hydrateEnv(s.env),
       } satisfies MarkdownTab;
     default:
       return null;
