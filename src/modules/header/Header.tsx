@@ -36,6 +36,7 @@ type Props = {
   onNewEditor: () => void;
   onNewGitGraph: () => void;
   onNewSshHost?: (host: SshHost) => void;
+  onNewDockerExec?: (host: SshHost) => void;
   onLaunchAgents: (request: AgentLaunchRequest) => void;
   onClose: (id: number) => void;
   /** Chrome-style: close every tab to the right of the given tab. */
@@ -72,6 +73,7 @@ export function Header({
   onNewEditor,
   onNewGitGraph,
   onNewSshHost,
+  onNewDockerExec,
   onLaunchAgents,
   onClose,
   onCloseTabsToRight,
@@ -182,6 +184,7 @@ export function Header({
           onNewEditor={onNewEditor}
           onNewGitGraph={onNewGitGraph}
           onNewSshHost={onNewSshHost}
+          onNewDockerExec={onNewDockerExec}
           onLaunchAgents={onLaunchAgents}
           onClose={onClose}
           onCloseTabsToRight={onCloseTabsToRight}

@@ -350,6 +350,29 @@ export const native = {
     if (hostId) return sshRpc<void>("shell_bg_kill", { handle });
     return invoke<void>("shell_bg_kill", { handle });
   },
+  docker: {
+    capabilities: () => sshRpc<{
+      installed: boolean;
+      clientVersion: string;
+      serverVersion: string;
+      daemonRunning: boolean;
+      permissionDenied: boolean;
+      composeV2: boolean;
+      composeV1: boolean;
+      swarmState: string;
+      rootless: boolean;
+      context: string;
+    }>("docker_capabilities", {}),
+    ps: (all = true) => sshRpc<unknown[]>("docker_ps", { all }),
+    images: () => sshRpc<unknown[]>("docker_images", {}),
+    inspect: (kind: "container" | "image" | "volume" | "network" | "service", id: string) =>
+      sshRpc<unknown>("docker_inspect", { kind, id }),
+    logs: (container: string, tail = 200) =>
+      sshRpc<{ output: string }>("docker_service_logs", { service: container, tail }),
+    lifecycle: (action: "start" | "stop" | "restart" | "kill" | "rm", ids: string[]) =>
+      sshRpc<string>(`docker_${action === "rm" ? "rm" : action}`, { ids }),
+    pull: (reference: string) => sshRpc<string>("docker_pull", { reference }),
+  },
   shellBgList: () =>
     invoke<
       {

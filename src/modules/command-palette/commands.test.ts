@@ -48,6 +48,7 @@ function baseContext(
     openKeyboardShortcuts: noop,
     openSpacesOverview: noop,
     openHostsPanel: noop,
+    openDockerPanel: noop,
     newSpace: noop,
     switchSpace: noop,
     ...over,
@@ -101,5 +102,12 @@ describe("createCommandItems", () => {
       "spaces.switch.sp1",
     );
     expect(reason).toBe("Current space");
+  });
+
+  it("exposes the docker panel command", () => {
+    const items = createCommandItems(baseContext({}));
+    const item = items.find((i) => i.id === "docker.openPanel");
+    expect(item).toBeDefined();
+    expect(item?.group).toBe("Docker");
   });
 });

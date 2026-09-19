@@ -1476,6 +1476,7 @@ export default function App() {
             openNewPreview: () => openPreviewTab(""),
             openGitGraph: openGitGraphFromContext,
             openHostsPanel: () => openSidebarView("hosts"),
+            openDockerPanel: () => openSidebarView("docker"),
             toggleSourceControl,
             closeActiveTabOrPane: handleCloseTabOrPane,
             splitPaneRight: () => splitActivePaneInActiveTab("row"),
@@ -1618,6 +1619,13 @@ export default function App() {
               onNewEditor={() => setNewEditorOpen(true)}
               onNewGitGraph={openGitGraphFromContext}
               onNewSshHost={(host) => void handleConnectHostRefForMenu(host)}
+              onNewDockerExec={(host) => {
+                // Jump to the Docker panel on that host; the row's exec
+                // button picks the container. Keeps one menu, one flow.
+                void handleConnectHostRefForMenu(host).then(() =>
+                  openSidebarView("docker"),
+                );
+              }}
               onLaunchAgents={launchAgentGroup}
               onClose={handleClose}
               onCloseTabsToRight={handleCloseTabsToRight}
