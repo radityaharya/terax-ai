@@ -52,10 +52,30 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
   );
   const refreshAll = useDockerStore((s) => s.refreshAll);
   const containerAction = useDockerStore((s) => s.containerAction);
+  const refreshStats = useDockerStore((s) => s.refreshStats);
+  const [statsOn, setStatsOn] = useState(false);
 
   useEffect(() => {
     if (hostId) void refreshAll(hostId);
   }, [hostId, refreshAll]);
+
+  // Stats poll while the containers segment is visible and toggled on.
+  // 5s cadence; only running containers are sampled.
+  const runningIds = useMemo(() => {
+    if (!statsOn) return [];
+    return (hostState?.containers.items ?? [])
+      .filter((c) => containerState(c) === "running")
+      .map((c) => containerId(c));
+  }, [statsOn, hostState?.containers.items]);
+
+  useEffect(() => {
+    if (!hostId || runningIds.length === 0) return;
+    void refreshStats(hostId, runningIds);
+    const t = setInterval(() => {
+      void refreshStats(hostId, runningIds);
+    }, 5000);
+    return () => clearInterval(t);
+  }, [hostId, runningIds, refreshStats]);
 
   const daemon = hostState?.daemon ?? { status: "unknown" as const };
   const containers = hostState?.containers;
@@ -154,13 +174,29 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
               </button>
             ))}
           </div>
-          <div className="shrink-0 px-2 pb-1.5">
+          <div className="flex shrink-0 items-center gap-1.5 px-2 pb-1.5">
             <input
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               placeholder={`Filter ${segment}`}
-              className="h-7 w-full rounded-md border border-border/60 bg-background px-2 text-xs outline-none placeholder:text-muted-foreground/60 focus:border-primary/50"
+              className="h-7 min-w-0 flex-1 rounded-md border border-border/60 bg-background px-2 text-xs outline-none placeholder:text-muted-foreground/60 focus:border-primary/50"
             />
+            {segment === "containers" ? (
+              <button
+                type="button"
+                onClick={() => setStatsOn((v) => !v)}
+                aria-pressed={statsOn}
+                title={statsOn ? "Hide live stats" : "Show live CPU/memory stats"}
+                className={cn(
+                  "h-7 shrink-0 rounded-md px-2 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40",
+                  statsOn
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Stats
+              </button>
+            ) : null}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
             {segment === "containers" ? (
@@ -176,6 +212,7 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
                 filteredContainers.map((c) => {
                   const id = containerId(c);
                   const busyAction = busy[id];
+                  const sample = hostState?.stats[id];
                   return (
                     <ContainerRow
                       key={id}
@@ -190,6 +227,11 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
                           id,
                           title: containerName(c),
                         })
+                      }
+                      stats={
+                        statsOn && sample
+                          ? { cpuPerc: sample.cpuPerc, memUsage: sample.memUsage }
+                          : null
                       }
                     />
                   );
@@ -255,6 +297,7 @@ function ContainerRow({
   onAction,
   onCancelRemove,
   onInspect,
+  stats,
 }: {
   container: DockerContainer;
   busy: ContainerAction | undefined;
@@ -262,12 +305,17 @@ function ContainerRow({
   onAction: (a: ContainerAction) => void;
   onCancelRemove: () => void;
   onInspect: () => void;
+  stats?: { cpuPerc: string; memUsage: string } | null;
 }) {
   const id = containerId(container);
   const name = containerName(container);
   const state = containerState(container);
   const running = state === "running";
   const detail = String(container.Status ?? container.Image ?? "");
+  const statsLine =
+    stats && (stats.cpuPerc || stats.memUsage)
+      ? `CPU ${stats.cpuPerc || "—"} · MEM ${stats.memUsage || "—"}`
+      : null;
   return (
     // biome-ignore lint/a11y/useSemanticElements: row hosts nested buttons, cannot be a <button>
     <div
@@ -301,6 +349,11 @@ function ContainerRow({
         <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
           {confirmingRemove ? `Remove ${name}?` : detail}
         </span>
+        {statsLine && !confirmingRemove ? (
+          <span className="truncate text-[10px] tabular-nums leading-tight text-primary/80">
+            {statsLine}
+          </span>
+        ) : null}
       </span>
       {confirmingRemove ? (
         <span className="flex shrink-0 items-center gap-1">
