@@ -74,6 +74,10 @@ type HostDockerState = {
   pulls: Record<string, PullJob>;
   /** Live log follows keyed by `container:<id>` or `service:<id>`. */
   logFollows: Record<string, LogFollowState>;
+  /** `docker events` stream (one per host). */
+  eventsFeed: EventsFeedState | null;
+  /** Muted notification rule kinds per host. */
+  notifyMute: Record<string, boolean>;
 };
 
 export type ImageUpdateState =
@@ -117,6 +121,37 @@ export type LogFollowState = {
   options: LogViewOptions;
 };
 
+export type DockerEvent = {
+  Type?: string;
+  Action?: string;
+  Actor?: { ID?: string; Attributes?: Record<string, string> };
+  time?: number;
+  timeNano?: number;
+  [key: string]: unknown;
+};
+
+export type EventsFeedState = {
+  /** Agent bg handle for `docker events --format json`. */
+  handle: number | null;
+  phase: "starting" | "streaming" | "done" | "error";
+  events: DockerEvent[];
+  offset: number;
+  dropped: number;
+  error: string | null;
+};
+
+export type NotifyRule =
+  | { kind: "died"; enabled: boolean }
+  | { kind: "unhealthy"; enabled: boolean }
+  | { kind: "oom"; enabled: boolean }
+  | { kind: "update"; enabled: boolean }
+  | { kind: "underReplicated"; enabled: boolean };
+
+export type NotifyMute = {
+  /** hostId -> muted rule kinds. Absent = all rules on. */
+  byHost: Record<string, string[]>;
+};
+
 function emptyHost(): HostDockerState {
   return {
     daemon: { status: "unknown" },
@@ -138,8 +173,12 @@ function emptyHost(): HostDockerState {
     registries: {},
     pulls: {},
     logFollows: {},
+    eventsFeed: null,
+    notifyMute: {},
   };
 }
+
+const ALL_RULES = ["died", "unhealthy", "oom", "update", "underReplicated"];
 
 export type InspectState =
   | { status: "idle" }
@@ -207,6 +246,11 @@ type State = {
     followId: string,
     options: Partial<LogViewOptions>,
   ) => void;
+  startEventsFeed: (hostId: string, filter?: string) => Promise<void>;
+  pollEventsFeed: (hostId: string) => Promise<void>;
+  stopEventsFeed: (hostId: string) => Promise<void>;
+  setRuleMuted: (hostId: string, rule: string, muted: boolean) => void;
+  isRuleMuted: (hostId: string, rule: string) => boolean;
 };
 
 function patch(
@@ -214,7 +258,7 @@ function patch(
   hostId: string,
   f: (h: HostDockerState) => HostDockerState,
 ) {
-  set((s) => ({
+  set((s: State) => ({
     ...s,
     byHost: { ...s.byHost, [hostId]: f(s.byHost[hostId] ?? emptyHost()) },
   }));
@@ -928,9 +972,107 @@ export const useDockerStore = create<State>((set) => ({
       });
     });
   },
+
+  startEventsFeed: async (hostId, filter) => {
+    const cur = useDockerStore.getState().byHost[hostId]?.eventsFeed;
+    if (cur && (cur.phase === "streaming" || cur.phase === "starting")) return;
+    patch(set, hostId, (h) => ({
+      ...h,
+      eventsFeed: { handle: null, phase: "starting", events: [], offset: 0, dropped: 0, error: null },
+    }));
+    try {
+      const info = await sshRpc<{ handle: number }>(
+        "docker_events_spawn",
+        filter ? { filter } : {},
+        hostId,
+      );
+      patch(set, hostId, (h) => ({
+        ...h,
+        eventsFeed: { ...(h.eventsFeed ?? { handle: null, phase: "starting" as const, events: [], offset: 0, dropped: 0, error: null }), handle: info.handle, phase: "streaming" },
+      }));
+      await useDockerStore.getState().pollEventsFeed(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        eventsFeed: { handle: null, phase: "error", events: [], offset: 0, dropped: 0, error: String(e) },
+      }));
+    }
+  },
+
+  pollEventsFeed: async (hostId) => {
+    const feed = useDockerStore.getState().byHost[hostId]?.eventsFeed;
+    if (!feed || feed.handle === null || feed.phase === "done" || feed.phase === "error") return;
+    try {
+      const res = await sshRpc<{
+        bytes: string;
+        next_offset: number;
+        dropped: number;
+        exited: boolean;
+        exit_code: number | null;
+      }>("docker_events_poll", { handle: feed.handle, sinceOffset: feed.offset }, hostId);
+      const fresh: DockerEvent[] = String(res.bytes ?? "")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => {
+          try {
+            return JSON.parse(l) as DockerEvent;
+          } catch {
+            return null;
+          }
+        })
+        .filter((e): e is DockerEvent => e !== null);
+      patch(set, hostId, (h) => {
+        const curFeed = h.eventsFeed ?? feed;
+        return {
+          ...h,
+          eventsFeed: {
+            ...curFeed,
+            events: [...curFeed.events, ...fresh].slice(-500),
+            offset: res.next_offset ?? curFeed.offset,
+            dropped: Math.max(curFeed.dropped, res.dropped ?? 0),
+            phase: res.exited ? "done" : "streaming",
+          },
+        };
+      });
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        eventsFeed: { ...(h.eventsFeed ?? feed), phase: "error", error: String(e) },
+      }));
+    }
+  },
+
+  stopEventsFeed: async (hostId) => {
+    const feed = useDockerStore.getState().byHost[hostId]?.eventsFeed;
+    if (feed?.handle !== null && feed?.handle !== undefined) {
+      try {
+        await sshRpc("docker_events_kill", { handle: feed.handle }, hostId);
+      } catch {
+        // best effort
+      }
+    }
+    patch(set, hostId, (h) => ({ ...h, eventsFeed: null }));
+  },
+
+  setRuleMuted: (hostId, rule, muted) => {
+    patch(set, hostId, (h) => ({
+      ...h,
+      notifyMute: { ...h.notifyMute, [rule]: muted },
+    }));
+  },
+
+  isRuleMuted: (hostId: string, rule: string): boolean => {
+    return useDockerStore.getState().byHost[hostId]?.notifyMute[rule] ?? false;
+  },
 }));
 
 export function hostDocker(hostId: string | null): HostDockerState {
   if (!hostId) return emptyHost();
   return useDockerStore.getState().byHost[hostId] ?? emptyHost();
+}
+
+export function mutedRules(hostId: string): string[] {
+  const mute = useDockerStore.getState().byHost[hostId]?.notifyMute ?? {};
+  return ALL_RULES.filter((r) => mute[r]);
 }

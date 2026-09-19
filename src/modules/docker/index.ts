@@ -1,13 +1,24 @@
 export { DockerPanel } from "./DockerPanel";
 export { DetailsDrawer } from "./components/DetailsDrawer";
 export { CleanupHub } from "./components/CleanupHub";
+export { DockerEventsPane } from "./DockerEventsPane";
 export { DockerLogsPane } from "./DockerLogsPane";
+export { DockerNotifications } from "./DockerNotifications";
+export {
+  evaluateEvent,
+  underReplicatedNotification,
+  updateAvailableNotification,
+  type DockerNotification,
+} from "./lib/notify";
 export {
   useDockerStore,
   hostDocker,
   inspectKey,
+  mutedRules,
   type ContainerAction,
   type DiskUsage,
+  type DockerEvent,
+  type EventsFeedState,
   type InspectState,
   type LogFollowState,
   type LogViewOptions,

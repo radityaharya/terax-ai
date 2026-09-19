@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import {
   RotateClockwiseIcon,
+  Activity01Icon,
   ArrowUpRight01Icon,
   Cancel01Icon,
   ComputerTerminal02Icon,
@@ -14,6 +15,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { CleanupHub } from "./components/CleanupHub";
 import { DetailsDrawer } from "./components/DetailsDrawer";
+import { DockerEventsPane } from "./DockerEventsPane";
 import { DockerLogsPane } from "./DockerLogsPane";
 import { ExecDialog } from "./dialogs/ExecDialog";
 import { PullDialog } from "./dialogs/PullDialog";
@@ -73,6 +75,7 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
     title: string;
   } | null>(null);
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [eventsOpen, setEventsOpen] = useState(false);
   const [pullOpen, setPullOpen] = useState(false);
   const [pullReference, setPullReference] = useState("");
   const [registryOpen, setRegistryOpen] = useState(false);
@@ -183,6 +186,9 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
       {cleanupOpen ? (
         <CleanupHub hostId={hostId} onClose={() => setCleanupOpen(false)} />
       ) : null}
+      {eventsOpen ? (
+        <DockerEventsPane hostId={hostId} onClose={() => setEventsOpen(false)} />
+      ) : null}
       {logsTarget ? (
         <DockerLogsPane
           hostId={hostId}
@@ -233,6 +239,12 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
             <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
               {daemonLabel(daemon)}
             </span>
+            <HeaderButton
+              label="Docker events"
+              onClick={() => setEventsOpen(true)}
+            >
+              <HugeiconsIcon icon={Activity01Icon} size={13} strokeWidth={1.75} />
+            </HeaderButton>
             <HeaderButton
               label="Disk usage & cleanup"
               onClick={() => setCleanupOpen(true)}
