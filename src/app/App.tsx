@@ -40,6 +40,16 @@ import {
 import { FileExplorer, type FileExplorerHandle } from "@/modules/explorer";
 import type { GitHistorySearchHandle } from "@/modules/git-history";
 import {
+  HostEditorDialog,
+  HostKeyDialog,
+  HostsPanel,
+  SshAuthDialog,
+  bindHostSpace,
+  probeHost,
+  type SshAuthChoice,
+  type SshHost,
+} from "@/modules/hosts";
+import {
   Header,
   type SearchInlineHandle,
   type SearchTarget,
@@ -1166,6 +1176,70 @@ export default function App() {
     return meta.id;
   }, [activeCwd, home, workspaceEnv, newTab, setActiveSpaceForNewTabs]);
 
+  const [hostEditor, setHostEditor] = useState<{
+    open: boolean;
+    host: SshHost | null;
+  }>({ open: false, host: null });
+  const [hostKeyPrompt, setHostKeyPrompt] = useState<SshHost | null>(null);
+  const [sshAuthPrompt, setSshAuthPrompt] = useState<{
+    host: SshHost;
+    next: string;
+    message: string;
+  } | null>(null);
+
+  // Jump to a host: reuse its bound space (tabs persist per host), or create
+  // one bound to this host. Adopting the env swaps explorer/git/terminal to
+  // the remote; the agent transport serves fs calls once connected.
+  const handleConnectHost = useCallback(
+    async (host: SshHost) => {
+      const { spaces, create, setActive } = useSpaces.getState();
+      const bound = host.boundSpaceId
+        ? spaces.find((s) => s.id === host.boundSpaceId)
+        : spaces.find(
+            (s) =>
+              s.env.kind === "ssh" &&
+              s.env.hostId === host.id,
+          );
+      if (bound) {
+        if (bound.id !== activeSpaceIdRef.current) setActive(bound.id);
+        await adoptWorkspaceEnv(bound.env);
+        return;
+      }
+      const env: WorkspaceEnv = { kind: "ssh", hostId: host.id };
+      let home: string | null = null;
+      try {
+        home = await invoke<string>("ssh_home_for", { id: host.id });
+      } catch {
+        home = null;
+      }
+      const meta = create({
+        name: host.alias,
+        root: home,
+        env,
+      });
+      setActiveSpaceForNewTabs(meta.id);
+      void bindHostSpace(host.id, meta.id);
+      clearWorkspaceState();
+      setWorkspaceEnv(env);
+      if (home) {
+        try {
+          await native.workspaceAuthorize(home);
+        } catch {
+          // Remote authorize lands with the agent transport; ignore for now.
+        }
+      }
+      resetWorkspace(home ?? undefined);
+      setActive(meta.id);
+    },
+    [
+      adoptWorkspaceEnv,
+      clearWorkspaceState,
+      resetWorkspace,
+      setActiveSpaceForNewTabs,
+      setWorkspaceEnv,
+    ],
+  );
+
   const handleDeleteSpace = useCallback(
     (id: string) => {
       const nextSpaceId = useSpaces.getState().remove(id);
@@ -1439,7 +1513,18 @@ export default function App() {
                       key={sidebarView}
                       className="min-h-0 flex-1 terax-panel-in"
                     >
-                      {sidebarView === "explorer" ? (
+                      {sidebarView === "hosts" ? (
+                        <HostsPanel
+                          onConnect={(host) => void handleConnectHost(host)}
+                          onEdit={(host) =>
+                            setHostEditor({ open: true, host })
+                          }
+                          onShowHostKey={(host) => setHostKeyPrompt(host)}
+                          onShowAuth={(host, next, message) =>
+                            setSshAuthPrompt({ host, next, message })
+                          }
+                        />
+                      ) : sidebarView === "explorer" ? (
                         <FileExplorer
                           ref={explorerRef}
                           rootPath={explorerRoot}
@@ -1594,6 +1679,54 @@ export default function App() {
             rootPath={explorerRoot ?? home}
             onCreated={(path) => openFileTab(path)}
           />
+
+          {hostEditor.open && (
+            <HostEditorDialog
+              host={hostEditor.host}
+              onOpenChange={(open) =>
+                setHostEditor((s) => ({ ...s, open }))
+              }
+              onSaved={(host) => void handleConnectHost(host)}
+            />
+          )}
+          {hostKeyPrompt && (
+            <HostKeyDialog
+              host={hostKeyPrompt}
+              onOpenChange={(open) => {
+                if (!open) setHostKeyPrompt(null);
+              }}
+              onAccept={() => {
+                const host = hostKeyPrompt;
+                setHostKeyPrompt(null);
+                void probeHost(host).then((status) => {
+                  if (status.state === "online")
+                    void handleConnectHost(host);
+                  else if (status.state === "needs-auth")
+                    setSshAuthPrompt({
+                      host,
+                      next: status.next,
+                      message: status.message,
+                    });
+                });
+              }}
+            />
+          )}
+          {sshAuthPrompt && (
+            <SshAuthDialog
+              host={sshAuthPrompt.host}
+              next={sshAuthPrompt.next}
+              message={sshAuthPrompt.message}
+              onOpenChange={(open) => {
+                if (!open) setSshAuthPrompt(null);
+              }}
+              onChoice={(_choice: SshAuthChoice) => {
+                // Phase 2 opens a terminal tab to complete auth; for now
+                // switch to the Hosts view so the user can retry.
+                setSshAuthPrompt(null);
+                openSidebarView("hosts");
+              }}
+            />
+          )}
 
           <UpdaterDialog />
 

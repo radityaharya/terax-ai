@@ -1,4 +1,5 @@
 import { type RefObject, useCallback, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
 import { native } from "@/modules/ai/lib/native";
 import type { Tab } from "@/modules/tabs";
@@ -16,10 +17,8 @@ function sameEnv(a: WorkspaceEnv, b: WorkspaceEnv): boolean {
 }
 
 async function resolveEnvHome(env: WorkspaceEnv): Promise<string> {
-  // SSH remote home resolves via ssh_home in Phase 1. Until then the caller
-  // surfaces the rejection instead of falling back to a local path.
   if (env.kind === "ssh") {
-    throw new Error("SSH workspaces need a connected host (not implemented yet)");
+    return invoke<string>("ssh_home_for", { id: env.hostId });
   }
   return env.kind === "wsl"
     ? getWslHome(env.distro)
@@ -73,15 +72,20 @@ export function useWorkspaceSwitcher({
       .finally(() => setLaunchCwdResolved(true));
   }, []);
 
-  const authorizeHome = useCallback(async (nextHome: string) => {
-    setHome(nextHome);
-    setLaunchCwd(nextHome);
-    try {
-      await native.workspaceAuthorize(nextHome);
-    } catch {
-      // Non-fatal — git panel will surface "not authorized" if needed.
-    }
-  }, []);
+  const authorizeHome = useCallback(
+    async (nextHome: string, env?: WorkspaceEnv) => {
+      setHome(nextHome);
+      setLaunchCwd(nextHome);
+      // SSH roots authorize on the remote agent, not the local registry.
+      if (env?.kind === "ssh") return;
+      try {
+        await native.workspaceAuthorize(nextHome);
+      } catch {
+        // Non-fatal — git panel will surface "not authorized" if needed.
+      }
+    },
+    [],
+  );
 
   const switchWorkspace = useCallback(
     async (env: WorkspaceEnv): Promise<boolean> => {
@@ -106,7 +110,7 @@ export function useWorkspaceSwitcher({
 
       clearWorkspaceState();
       setWorkspaceEnv(env.kind === "local" ? LOCAL_WORKSPACE : env);
-      await authorizeHome(nextHome);
+      await authorizeHome(nextHome, env);
       resetWorkspace(nextHome);
       return true;
     },
@@ -129,7 +133,7 @@ export function useWorkspaceSwitcher({
       } catch {
         return null;
       }
-      await authorizeHome(nextHome);
+      await authorizeHome(nextHome, env);
       return nextHome;
     },
     [setWorkspaceEnv, authorizeHome],
