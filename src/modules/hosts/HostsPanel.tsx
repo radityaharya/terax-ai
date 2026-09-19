@@ -222,10 +222,13 @@ function HostRow({
   onCancelDelete: () => void;
 }) {
   const dot = statusDot(status);
+  const target = `${host.user}@${host.hostname}${host.port === 22 ? "" : `:${host.port}`}`;
   const detail =
     status?.state === "online"
       ? status.home
-      : `${host.user}@${host.hostname}${host.port === 22 ? "" : `:${host.port}`}`;
+      : status?.state === "offline" || status?.state === "needs-auth"
+        ? status.message
+        : target;
   return (
     // biome-ignore lint/a11y/useSemanticElements: row hosts nested buttons, cannot be a <button>
     <div

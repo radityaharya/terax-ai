@@ -59,10 +59,12 @@ fn run_ssh_capture(host: &SshHost, batch: bool, extra: &[String], timeout: Durat
     for arg in base_args(host, batch) {
         cmd.arg(arg);
     }
+    // OpenSSH syntax is `ssh [options] [user@]hostname [command]`: the
+    // target must precede the remote command, never follow it.
+    cmd.arg(target(host));
     for arg in extra {
         cmd.arg(arg);
     }
-    cmd.arg(target(host));
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
