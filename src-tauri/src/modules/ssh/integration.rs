@@ -120,14 +120,23 @@ pub fn ensure_remote_integration(
         return SshIntegration::None;
     }
     let base = format!("{}/.cache/terax/shell-integration", remote_root.trim_end_matches('/'));
-    let write = |rel: &str, content: &str| -> Result<(), String> {
-        rpc.request(
+    // Remote create_dir errors when the dir exists (explorer "new folder"
+    // semantics). For idempotent installs, treat "already exists" as success.
+    let mkdir = |path: String| -> Result<(), String> {
+        match rpc.request(
             host_id,
             "fs_create_dir",
-            json!({ "path": format!("{base}/{}", dir_of(rel)) }),
+            json!({ "path": path }),
             remote_bin,
             remote_root,
-        )?;
+        ) {
+            Ok(_) => Ok(()),
+            Err(e) if e.contains("already exists") => Ok(()),
+            Err(e) => Err(e),
+        }
+    };
+    let write = |rel: &str, content: &str| -> Result<(), String> {
+        mkdir(format!("{base}/{}", dir_of(rel)))?;
         rpc.request(
             host_id,
             "fs_write_file",
@@ -156,13 +165,7 @@ pub fn ensure_remote_integration(
             // Fish reads conf.d from the real home; install there, not cache.
             let home = remote_root.trim_end_matches('/');
             let conf = format!("{home}/.config/fish/conf.d");
-            rpc.request(
-                host_id,
-                "fs_create_dir",
-                json!({ "path": conf }),
-                remote_bin,
-                remote_root,
-            )
+            mkdir(conf.clone())
             .and_then(|_| {
                 rpc.request(
                     host_id,
