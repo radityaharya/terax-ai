@@ -8,6 +8,9 @@ use tempfile::NamedTempFile;
 pub const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
 /// Ceiling for explicit "open anyway".
 pub const FORCE_MAX_READ_BYTES: u64 = 50 * 1024 * 1024;
+/// Cap for raw-bytes preview fetches (images over SSH). Keeps data URLs
+/// and IPC messages bounded; larger files fall back to "too large".
+pub const MAX_PREVIEW_BYTES: u64 = 8 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -117,6 +120,54 @@ fn write_atomic(target: &Path, content: &[u8]) -> std::io::Result<()> {
     tmp.as_file_mut().sync_all()?;
     tmp.persist(target).map_err(|e| e.error)?;
     Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum BytesResult {
+    Bytes { base64: String, size: u64 },
+    TooLarge { size: u64, limit: u64 },
+}
+
+/// Reads raw bytes capped at MAX_PREVIEW_BYTES, base64-encoded for JSON
+/// transport. Powers remote image preview; text decoding stays client-side.
+pub fn read_bytes_sync(p: &Path) -> Result<BytesResult, String> {
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    fn encode(input: &[u8]) -> String {
+        let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+        for chunk in input.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+            let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(B64[((n >> 18) & 63) as usize] as char);
+            out.push(B64[((n >> 12) & 63) as usize] as char);
+            out.push(if chunk.len() > 1 {
+                B64[((n >> 6) & 63) as usize] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                B64[(n & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+    let meta = std::fs::metadata(p).map_err(|e| e.to_string())?;
+    let size = meta.len();
+    if size > MAX_PREVIEW_BYTES {
+        return Ok(BytesResult::TooLarge {
+            size,
+            limit: MAX_PREVIEW_BYTES,
+        });
+    }
+    let bytes = std::fs::read(p).map_err(|e| e.to_string())?;
+    Ok(BytesResult::Bytes {
+        base64: encode(&bytes),
+        size,
+    })
 }
 
 pub fn stat_sync(p: &Path) -> Result<FileStat, String> {

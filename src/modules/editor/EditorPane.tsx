@@ -16,7 +16,88 @@ import {
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { vim } from "@replit/codemirror-vim";
+import { sshHostId, sshRpc } from "@/modules/ai/lib/native";
 import { convertFileSrc } from "@tauri-apps/api/core";
+
+type BytesResult =
+  | { kind: "bytes"; base64: string; size: number }
+  | { kind: "tooLarge"; size: number; limit: number };
+
+function mimeForImageExt(ext: string): string {
+  switch (ext) {
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "png":
+      return "image/png";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    case "svg":
+      return "image/svg+xml";
+    case "ico":
+      return "image/x-icon";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function RemoteImage({ path, ext }: { path: string; ext: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setUrl(null);
+    setError(null);
+    void sshRpc<BytesResult>("fs_read_bytes", { path })
+      .then((res) => {
+        if (cancelled) return;
+        if (res.kind === "bytes") {
+          setUrl(`data:${mimeForImageExt(ext)};base64,${res.base64}`);
+        } else {
+          setError(`Image is ${res.size} bytes; limit ${res.limit}.`);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, ext]);
+  if (error) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
+        <div className="text-sm text-foreground">Could not load image</div>
+        <div className="text-xs text-muted-foreground">{error}</div>
+      </div>
+    );
+  }
+  if (!url) {
+    return (
+      <div className="flex h-full items-center justify-center px-6 text-center text-xs text-muted-foreground">
+        Loading image…
+      </div>
+    );
+  }
+  return (
+    <div className="flex h-full min-h-0 flex-col items-center justify-center bg-background p-4 overflow-auto">
+      <img
+        src={url}
+        loading="lazy"
+        decoding="async"
+        className="max-w-full max-h-full object-contain rounded-md border border-border shadow-sm"
+        style={{
+          backgroundImage:
+            "conic-gradient(var(--muted) 0.25turn, transparent 0.25turn 0.5turn, var(--muted) 0.5turn 0.75turn, transparent 0.75turn)",
+          backgroundSize: "20px 20px",
+        }}
+        alt={path.split("/").pop()}
+      />
+    </div>
+  );
+}
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import {
   forwardRef,
@@ -578,7 +659,24 @@ export const EditorPane = memo(
       const isPdf = ext === "pdf";
 
       if (isImage || isVideo || isAudio || isPdf) {
+        // Remote files have no local path: images fetch bytes over the
+        // agent and render as data URLs. Other media stays local-only
+        // until the agent streams ranges.
+        if (sshHostId() && isImage) {
+          return <RemoteImage path={path} ext={ext} />;
+        }
         const assetUrl = convertFileSrc(path);
+        if (sshHostId() && !isImage) {
+          return (
+            <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
+              <div className="text-sm text-foreground">Remote preview</div>
+              <div className="text-xs text-muted-foreground">
+                {ext.toUpperCase()} preview from SSH hosts is not supported
+                yet. Download the file to view it locally.
+              </div>
+            </div>
+          );
+        }
         return (
           <div className="flex h-full min-h-0 flex-col items-center justify-center bg-background p-4 overflow-auto">
             {isImage && (

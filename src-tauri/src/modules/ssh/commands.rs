@@ -349,6 +349,7 @@ pub async fn ssh_rpc(
     let allowed = [
         "fs_read_dir",
         "fs_read_file",
+        "fs_read_bytes",
         "fs_write_file",
         "fs_stat",
         "fs_search",

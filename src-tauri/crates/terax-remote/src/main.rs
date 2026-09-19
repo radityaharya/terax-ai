@@ -11,7 +11,7 @@ use terax_control_protocol::{
     REMOTE_METHOD_FS_CREATE_DIR, REMOTE_METHOD_FS_CREATE_FILE, REMOTE_METHOD_FS_DELETE,
     REMOTE_METHOD_FS_DELETE_BATCH, REMOTE_METHOD_FS_GREP, REMOTE_METHOD_FS_MOVE,
     REMOTE_METHOD_FS_RENAME,
-    REMOTE_METHOD_FS_READ_DIR, REMOTE_METHOD_FS_READ_FILE, REMOTE_METHOD_FS_SEARCH,
+    REMOTE_METHOD_FS_READ_DIR, REMOTE_METHOD_FS_READ_FILE, REMOTE_METHOD_FS_READ_BYTES, REMOTE_METHOD_FS_SEARCH,
     REMOTE_METHOD_FS_STAT, REMOTE_METHOD_FS_WRITE_FILE, REMOTE_METHOD_GIT_CHECKOUT_BRANCH,
     REMOTE_METHOD_GIT_COMMIT, REMOTE_METHOD_GIT_COMMIT_FILES, REMOTE_METHOD_GIT_COMMIT_FILE_DIFF,
     REMOTE_METHOD_GIT_DIFF, REMOTE_METHOD_GIT_DIFF_CONTENT, REMOTE_METHOD_GIT_DISCARD,
@@ -170,6 +170,16 @@ impl Agent {
                     return denied(request.id);
                 }
                 match terax_core::fs::file::read_file_sync(&path, bool_param(&params, "force")) {
+                    Ok(res) => ControlResponse::success(request.id, json!(res)),
+                    Err(e) => ControlResponse::failure(request.id, "io_error", e),
+                }
+            }
+            REMOTE_METHOD_FS_READ_BYTES => {
+                let path = PathBuf::from(str_param("path"));
+                if !self.authorized(&path) {
+                    return denied(request.id);
+                }
+                match terax_core::fs::file::read_bytes_sync(&path) {
                     Ok(res) => ControlResponse::success(request.id, json!(res)),
                     Err(e) => ControlResponse::failure(request.id, "io_error", e),
                 }

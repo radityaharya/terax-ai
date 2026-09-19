@@ -67,6 +67,24 @@ pub async fn pty_open(
     } else {
         user_spawn_cwd_or_home(&registry, cwd.as_deref(), &workspace)
     };
+    // SSH shell integration installs via the agent RPC channel before the
+    // PTY spawns, so the remote shell emits OSC 7/133 from the first prompt.
+    // Best-effort: failures degrade to a bare shell, never a spawn failure.
+    let ssh_integration =
+        if let WorkspaceEnv::Ssh { host_id } = &workspace {
+            use tauri::Manager;
+            let ssh_state: tauri::State<'_, crate::modules::ssh::SshShared> =
+                app.state();
+            Some(
+                crate::modules::ssh::integration::ensure_remote_integration_for_spawn(
+                    &app,
+                    &ssh_state,
+                    host_id,
+                ),
+            )
+        } else {
+            None
+        };
     // A Windows helper cannot execute inside WSL without explicit path and
     // network translation. Do not inject credentials for a broken command.
     // Same for SSH: the helper runs on the remote in Phase 3, not locally.
@@ -87,6 +105,7 @@ pub async fn pty_open(
             blocks,
             shell,
             control_env,
+            ssh_integration,
             on_data,
             on_exit,
         )
