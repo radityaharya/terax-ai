@@ -1,4 +1,5 @@
 import { currentWorkspaceEnv } from "@/modules/workspace";
+import { sshHostId, sshRpc } from "@/modules/ai/lib/native";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback } from "react";
 import { type AsyncQueryState, useAsyncQuery } from "./useAsyncQuery";
@@ -28,12 +29,20 @@ export function useContentSearch(
   const run = useCallback(
     async (q: string): Promise<ContentHit[]> => {
       if (!root) return [];
-      const res = await invoke<GrepResponse>("fs_grep_interactive", {
-        pattern: q,
-        root,
-        maxResults: LIMIT,
-        workspace: currentWorkspaceEnv(),
-      });
+      // The remote agent serves fs_grep (regex); the literal interactive
+      // variant stays local-only until the agent gains generation tracking.
+      const res = sshHostId()
+        ? await sshRpc<GrepResponse>("fs_grep", {
+            pattern: q,
+            root,
+            maxResults: LIMIT,
+          })
+        : await invoke<GrepResponse>("fs_grep_interactive", {
+            pattern: q,
+            root,
+            maxResults: LIMIT,
+            workspace: currentWorkspaceEnv(),
+          });
       return res.hits;
     },
     [root],

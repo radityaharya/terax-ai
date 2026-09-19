@@ -73,6 +73,9 @@ pub async fn lsp_spawn(
     if workspace.is_wsl() {
         return Err("lsp: WSL workspaces are not supported yet".into());
     }
+    if workspace.is_ssh() {
+        return Err("lsp: SSH workspaces are not supported yet".into());
+    }
     let root = authorize_spawn_cwd(&registry, Some(root.as_str()), &workspace)?
         .ok_or("lsp: workspace root is required")?;
 

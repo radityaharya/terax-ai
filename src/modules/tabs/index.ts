@@ -23,7 +23,9 @@ export {
   type GitHistoryTab,
   type GitCommitFileDiffTab,
   type AiDiffStatus,
+  type OpenFileTabOptions,
   type TabPatch,
+  tabEnv,
 } from "./lib/useTabs";
 export { useWorkspaceCwd } from "./lib/useWorkspaceCwd";
 export { useWindowTitle } from "./lib/useWindowTitle";

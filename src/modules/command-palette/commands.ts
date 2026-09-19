@@ -31,6 +31,7 @@ export const COMMAND_GROUPS = [
   "Search",
   "View",
   "AI",
+  "SSH",
 ] as const;
 
 export type CommandPaletteActionContext = {
@@ -45,6 +46,7 @@ export type CommandPaletteActionContext = {
   openNewEditor: () => void;
   openNewPreview: () => void;
   openGitGraph: () => void;
+  openHostsPanel: () => void;
   toggleSourceControl: () => void;
   closeActiveTabOrPane: () => void;
   splitPaneRight: () => void;
@@ -292,6 +294,22 @@ export function createCommandItems(
       icon: SparklesIcon,
       shortcutId: "ai.toggle",
       run: ctx.toggleAi,
+    },
+    {
+      id: "ssh.connect",
+      title: "SSH: Connect to host...",
+      group: "SSH",
+      keywords: ["ssh", "remote", "host", "server", "connect"],
+      icon: TerminalIcon,
+      run: ctx.openHostsPanel,
+    },
+    {
+      id: "ssh.newTabHere",
+      title: "SSH: New tab on this host",
+      group: "SSH",
+      keywords: ["ssh", "remote", "host", "tab", "same", "here"],
+      icon: TerminalIcon,
+      run: ctx.openNewTab,
     },
     {
       id: "ai.askSelection",

@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { sshHostId, sshRpc } from "@/modules/ai/lib/native";
 import {
   currentWorkspaceEnv,
   useWorkspaceEnvStore,
@@ -178,12 +179,18 @@ export function useFileTree(rootPath: string | null, options?: Options) {
       setNodes((s) => ({ ...s, [path]: { status: "loading" } }));
     }
     try {
-      const entries = await invoke<DirEntry[]>("fs_read_dir", {
-        path,
-        showHidden: showHiddenRef.current,
-        gitDecorations: gitDecorationsRef.current,
-        workspace: currentWorkspaceEnv(),
-      });
+      const entries = sshHostId()
+        ? await sshRpc<DirEntry[]>("fs_read_dir", {
+            path,
+            showHidden: showHiddenRef.current,
+            gitDecorations: gitDecorationsRef.current,
+          })
+        : await invoke<DirEntry[]>("fs_read_dir", {
+            path,
+            showHidden: showHiddenRef.current,
+            gitDecorations: gitDecorationsRef.current,
+            workspace: currentWorkspaceEnv(),
+          });
 
       const prev = nodesRef.current[path];
       if (prev?.status === "loaded" && sameDirListing(prev.entries, entries)) {
@@ -240,6 +247,11 @@ export function useFileTree(rootPath: string | null, options?: Options) {
 
   // Root change → restore the cached expansion for this root, re-scope watches,
   // and persist the outgoing root's expansion on the way out.
+  //
+  // The root itself fetches immediately; previously-expanded descendants
+  // fetch lazily on idle (requestIdleCallback, 1.5s fallback) so switching
+  // hosts/folders shows the top level first instead of waiting on every
+  // recalled subtree — each subtree is a full ssh round trip remotely.
   useEffect(() => {
     if (!rootPath) {
       setNodes({});
@@ -263,11 +275,44 @@ export function useFileTree(rootPath: string | null, options?: Options) {
 
     const toWatch = [rootPath, ...restored];
     void fetchChildren(rootPath);
-    for (const d of restored) void fetchChildren(d);
     for (const p of toWatch) watchedRef.current.add(p);
     watchAdd(toWatch);
 
+    let cancelled = false;
+    const fetchRestored = () => {
+      if (cancelled) return;
+      for (const d of restored) {
+        if (cancelled) return;
+        void fetchChildren(d);
+      }
+    };
+    let idleId: number | null = null;
+    let fallbackId: ReturnType<typeof setTimeout> | null = null;
+    if (restored.length > 0) {
+      const ric =
+        typeof window !== "undefined" &&
+        (window as unknown as {
+          requestIdleCallback?: (
+            cb: () => void,
+            opts?: { timeout: number },
+          ) => number;
+        }).requestIdleCallback;
+      if (ric) {
+        idleId = ric.call(window, fetchRestored, { timeout: 1500 });
+      } else {
+        fallbackId = setTimeout(fetchRestored, 0);
+      }
+    }
+
     return () => {
+      cancelled = true;
+      if (idleId !== null) {
+        const w = window as unknown as {
+          cancelIdleCallback?: (id: number) => void;
+        };
+        w.cancelIdleCallback?.(idleId);
+      }
+      if (fallbackId !== null) clearTimeout(fallbackId);
       rememberExpansion(rootPath, expandedRef.current);
       if (watchedRef.current.size > 0) {
         watchRemove([...watchedRef.current]);
@@ -391,7 +436,8 @@ export function useFileTree(rootPath: string | null, options?: Options) {
       const cmd =
         pendingCreate.kind === "dir" ? "fs_create_dir" : "fs_create_file";
       try {
-        await invoke(cmd, { path, workspace: currentWorkspaceEnv() });
+        if (sshHostId()) await sshRpc<void>(cmd, { path });
+        else await invoke(cmd, { path, workspace: currentWorkspaceEnv() });
         await fetchChildren(pendingCreate.parentPath);
       } catch (e) {
         console.error(`${cmd} failed:`, e);
@@ -421,11 +467,13 @@ export function useFileTree(rootPath: string | null, options?: Options) {
       }
       const to = joinPath(parent, trimmed);
       try {
-        await invoke("fs_rename", {
-          from: renaming,
-          to,
-          workspace,
-        });
+        if (sshHostId()) await sshRpc<void>("fs_rename", { from: renaming, to });
+        else
+          await invoke("fs_rename", {
+            from: renaming,
+            to,
+            workspace,
+          });
         optionsRef.current?.onPathRenamed?.(renaming, to);
         if (scopeKeyRef.current === scopeKey) await fetchChildren(parent);
       } catch (e) {
@@ -440,7 +488,8 @@ export function useFileTree(rootPath: string | null, options?: Options) {
   const deletePath = useCallback(
     async (path: string) => {
       try {
-        await invoke("fs_delete", { path, workspace });
+        if (sshHostId()) await sshRpc<void>("fs_delete", { path });
+        else await invoke("fs_delete", { path, workspace });
         optionsRef.current?.onPathsDeleted?.([path]);
         if (scopeKeyRef.current === scopeKey) {
           await fetchChildren(dirname(path));
@@ -458,10 +507,16 @@ export function useFileTree(rootPath: string | null, options?: Options) {
       const topLevelPaths = excludeNestedSources(paths);
       const run = async () => {
         if (scopeKeyRef.current !== scopeKey) return;
-        const { deleted, failed } = await invoke<DeleteBatchResult>(
-          "fs_delete_batch",
-          { paths: topLevelPaths, root: rootPath ?? "", workspace },
-        );
+        const { deleted, failed } = sshHostId()
+          ? await sshRpc<DeleteBatchResult>("fs_delete_batch", {
+              paths: topLevelPaths,
+              root: rootPath ?? "",
+            })
+          : await invoke<DeleteBatchResult>("fs_delete_batch", {
+              paths: topLevelPaths,
+              root: rootPath ?? "",
+              workspace,
+            });
         if (deleted.length > 0) {
           optionsRef.current?.onPathsDeleted?.(deleted);
         }
@@ -510,13 +565,20 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         const parents = new Set<string>([toDir]);
         const outcome = await executeBatchMove(sources, toDir, {
           move: (item, expectedConflict) =>
-            invoke<FsMoveResult>("fs_move", {
-              from: item.from,
-              to: item.to,
-              root: rootPath ?? "",
-              expectedConflict,
-              workspace,
-            }),
+            sshHostId()
+              ? sshRpc<FsMoveResult>("fs_move", {
+                  from: item.from,
+                  to: item.to,
+                  root: rootPath ?? "",
+                  expectedConflict: expectedConflict ?? "",
+                })
+              : invoke<FsMoveResult>("fs_move", {
+                  from: item.from,
+                  to: item.to,
+                  root: rootPath ?? "",
+                  expectedConflict,
+                  workspace,
+                }),
           resolveConflict: (item) => resolveMoveConflict(item.name),
           canReplace: (item) =>
             optionsRef.current?.canReplacePath?.(item.to) ?? true,

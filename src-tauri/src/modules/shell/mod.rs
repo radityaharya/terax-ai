@@ -286,6 +286,9 @@ pub(crate) fn build_oneshot_command(
     #[cfg_attr(not(windows), allow(unused_variables))] workspace: &WorkspaceEnv,
     #[cfg_attr(not(windows), allow(unused_variables))] cwd: Option<&str>,
 ) -> Result<Command, String> {
+    if workspace.is_ssh() {
+        return Err("ssh workspaces need a connected host agent (not implemented yet)".into());
+    }
     #[cfg(windows)]
     if let WorkspaceEnv::Wsl { distro } = workspace {
         validate_wsl_distro_name(distro)?;

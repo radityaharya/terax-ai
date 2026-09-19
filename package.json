@@ -11,6 +11,7 @@
   "scripts": {
     "build:cli": "node scripts/build-cli.mjs --release",
     "build:cli:dev": "node scripts/build-cli.mjs",
+    "build:remote": "node scripts/build-remote.mjs --release",
     "dev": "vite",
     "dev:inspect": "INSPECT=true vite",
     "build": "tsc && vite build",

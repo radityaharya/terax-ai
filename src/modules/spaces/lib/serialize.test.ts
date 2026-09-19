@@ -72,6 +72,38 @@ describe("serializeTabs", () => {
       expect(node.tree.children[0]).not.toHaveProperty("active");
     }
   });
+
+  it("round-trips per-tab env as scope keys", () => {
+    const tabs: Tab[] = [
+      term({ id: 1, env: { kind: "ssh", hostId: "h1" } }),
+      term({ id: 2, env: { kind: "wsl", distro: "Ubuntu" } }),
+      term({ id: 3 }),
+      {
+        id: 4,
+        kind: "editor",
+        spaceId: "s1",
+        title: "x",
+        path: "/a/x.ts",
+        dirty: false,
+        preview: false,
+        env: { kind: "ssh", hostId: "h2" },
+      } as Tab,
+    ];
+    const out = serializeTabs(tabs);
+    expect(out.map((t) => (t as { env?: string }).env)).toEqual([
+      "ssh:h1",
+      "wsl:Ubuntu",
+      undefined,
+      "ssh:h2",
+    ]);
+    const restored = hydrateTabs(out, "s1", counter(200));
+    expect(restored.map((t) => t.env)).toEqual([
+      { kind: "ssh", hostId: "h1" },
+      { kind: "wsl", distro: "Ubuntu" },
+      undefined,
+      { kind: "ssh", hostId: "h2" },
+    ]);
+  });
 });
 
 describe("hydrateTabs", () => {

@@ -60,10 +60,35 @@ pub async fn pty_open(
 ) -> Result<u32, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
     let blocks = blocks.unwrap_or(false);
-    let cwd = user_spawn_cwd_or_home(&registry, cwd.as_deref(), &workspace);
+    // SSH cwds are remote paths: validated host-side, never canonicalized
+    // locally. Pass the raw string through; build_ssh applies it remotely.
+    let cwd = if workspace.is_ssh() {
+        cwd.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    } else {
+        user_spawn_cwd_or_home(&registry, cwd.as_deref(), &workspace)
+    };
+    // SSH shell integration installs via the agent RPC channel before the
+    // PTY spawns, so the remote shell emits OSC 7/133 from the first prompt.
+    // Best-effort: failures degrade to a bare shell, never a spawn failure.
+    let ssh_integration =
+        if let WorkspaceEnv::Ssh { host_id } = &workspace {
+            use tauri::Manager;
+            let ssh_state: tauri::State<'_, crate::modules::ssh::SshShared> =
+                app.state();
+            Some(
+                crate::modules::ssh::integration::ensure_remote_integration_for_spawn(
+                    &app,
+                    &ssh_state,
+                    host_id,
+                ),
+            )
+        } else {
+            None
+        };
     // A Windows helper cannot execute inside WSL without explicit path and
     // network translation. Do not inject credentials for a broken command.
-    let control_env = if workspace.is_wsl() {
+    // Same for SSH: the helper runs on the remote in Phase 3, not locally.
+    let control_env = if workspace.is_wsl() || workspace.is_ssh() {
         None
     } else {
         pane_id.and_then(|pane_id| control.shell_env(pane_id))
@@ -80,6 +105,7 @@ pub async fn pty_open(
             blocks,
             shell,
             control_env,
+            ssh_integration,
             on_data,
             on_exit,
         )

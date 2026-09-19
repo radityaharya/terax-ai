@@ -26,6 +26,9 @@
  *    (post symlink resolution) via `native.canonicalize` + a second
  *    `checkReadable` pass, since a symlink at an "innocent" path can point
  *    into a protected directory.
+ *  - SSH workspaces run the same checks locally as a pre-filter, and the
+ *    remote agent enforces its own registry + deny-list server-side with
+ *    the remote home. Never trust the local pass alone for remote paths.
  */
 
 const SECRET_BASENAME_PATTERNS: RegExp[] = [

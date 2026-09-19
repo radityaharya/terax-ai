@@ -1,9 +1,4 @@
 import { create } from "zustand";
-import { usePreferencesStore } from "@/modules/settings/preferences";
-import {
-  parseWorkspaceScopeKey,
-  type WorkspaceEnv,
-} from "@/modules/workspace";
 import {
   deleteSpaceData,
   newSpaceId,
@@ -16,7 +11,6 @@ type CreateInput = {
   id?: string;
   name: string;
   root: string | null;
-  env?: WorkspaceEnv;
 };
 
 type State = {
@@ -33,7 +27,6 @@ type State = {
   ) => void;
   create: (input: CreateInput) => SpaceMeta;
   rename: (id: string, name: string) => void;
-  setEnv: (id: string, env: WorkspaceEnv) => void;
   setColor: (id: string, color: number | undefined) => void;
   reorder: (orderedIds: string[]) => void;
   remove: (id: string) => string | null;
@@ -47,7 +40,14 @@ export const useSpaces = create<State>((set, get) => ({
   initialActiveIndex: {},
 
   hydrate: (spaces, activeId, initialActiveIndex = {}) => {
-    set({ spaces, activeId, initialActiveIndex, hydrated: true });
+    // Strip legacy per-space env: tabs own env now. Old payloads load
+    // fine; the field is simply dropped.
+    const cleaned = spaces.map((s) => {
+      const { env: _legacy, ...rest } = s as SpaceMeta & { env?: unknown };
+      void _legacy;
+      return rest;
+    });
+    set({ spaces: cleaned, activeId, initialActiveIndex, hydrated: true });
   },
 
   create: (input) => {
@@ -56,11 +56,6 @@ export const useSpaces = create<State>((set, get) => ({
       id: input.id ?? newSpaceId(),
       name: input.name,
       root: input.root,
-      env:
-        input.env ??
-        parseWorkspaceScopeKey(
-          usePreferencesStore.getState().defaultWorkspaceEnv,
-        ),
       createdAt: now,
       updatedAt: now,
     };
@@ -73,14 +68,6 @@ export const useSpaces = create<State>((set, get) => ({
   rename: (id, name) => {
     const spaces = get().spaces.map((s) =>
       s.id === id ? { ...s, name, updatedAt: Date.now() } : s,
-    );
-    set({ spaces });
-    void saveSpacesList(spaces);
-  },
-
-  setEnv: (id, env) => {
-    const spaces = get().spaces.map((s) =>
-      s.id === id ? { ...s, env, updatedAt: Date.now() } : s,
     );
     set({ spaces });
     void saveSpacesList(spaces);

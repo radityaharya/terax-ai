@@ -2,7 +2,7 @@ import {
   clearAgentActivity,
   ensureAgentActivityListener,
 } from "@/modules/terminal/lib/agentActivity";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import { currentWorkspaceEnv, type WorkspaceEnv } from "@/modules/workspace";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import {
@@ -33,6 +33,23 @@ export type PtySession = {
   close: () => Promise<void>;
 };
 
+export type OpenPtyOptions = {
+  cwd?: string;
+  blocks?: boolean;
+  shell?: string;
+  paneId?: number;
+  /**
+   * Execution env for the spawned shell. Defaults to the global workspace
+   * env (the active tab's env, mirrored by App). Pass the owning tab's env
+   * explicitly so background tabs spawn on their own host.
+   */
+  env?: WorkspaceEnv;
+};
+
+/**
+ * Positional args kept for tests: openPty(cols, rows, handlers, cwd?, blocks?,
+ * shell?, paneId?, env?). New call sites should prefer the options object.
+ */
 export async function openPty(
   cols: number,
   rows: number,
@@ -41,7 +58,34 @@ export async function openPty(
   blocks?: boolean,
   shell?: string,
   paneId?: number,
+  env?: WorkspaceEnv,
+): Promise<PtySession>;
+export async function openPty(
+  cols: number,
+  rows: number,
+  handlers: PtyHandlers,
+  options?: OpenPtyOptions,
+): Promise<PtySession>;
+export async function openPty(
+  cols: number,
+  rows: number,
+  handlers: PtyHandlers,
+  cwdOrOptions?: string | OpenPtyOptions,
+  blocksArg?: boolean,
+  shellArg?: string,
+  paneIdArg?: number,
+  envArg?: WorkspaceEnv,
 ): Promise<PtySession> {
+  const opts: OpenPtyOptions =
+    typeof cwdOrOptions === "object" && cwdOrOptions !== null
+      ? cwdOrOptions
+      : {
+          cwd: cwdOrOptions,
+          blocks: blocksArg,
+          shell: shellArg,
+          paneId: paneIdArg,
+          env: envArg,
+        };
   // Raw bytes preserve split UTF-8 and escape sequences across IPC.
   const onData = new Channel<ArrayBuffer>();
   const onExit = new Channel<number>();
@@ -98,13 +142,14 @@ export async function openPty(
     }
   };
 
+  const { cwd, blocks, shell, paneId, env: spawnEnv } = opts;
   try {
     await ensureAgentActivityListener();
     id = await invoke<number>("pty_open", {
       cols,
       rows,
       cwd: cwd ?? null,
-      workspace: currentWorkspaceEnv(),
+      workspace: spawnEnv ?? currentWorkspaceEnv(),
       blocks: blocks ?? false,
       shell: shell ?? null,
       paneId: paneId ?? null,

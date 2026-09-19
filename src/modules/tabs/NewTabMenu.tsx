@@ -3,6 +3,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -13,6 +14,7 @@ import {
 import { fmtShortcut, MOD_KEY, SHIFT_KEY } from "@/lib/platform";
 import { AgentLauncherPanel } from "@/modules/agents/components/AgentLauncherPanel";
 import type { AgentLaunchRequest } from "@/modules/agents/lib/launcher";
+import { refreshHosts, useHostStore, type SshHost } from "@/modules/hosts";
 import {
   AiBrowserIcon,
   ArrowRight01Icon,
@@ -22,9 +24,10 @@ import {
   IncognitoIcon,
   PencilEdit02Icon,
   PlusSignIcon,
+  ServerStack03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Props = {
   onNew: () => void;
@@ -33,6 +36,7 @@ type Props = {
   onNewPreview: () => void;
   onNewEditor: () => void;
   onNewGitGraph: () => void;
+  onNewSshHost?: (host: SshHost) => void;
   onLaunchAgents: (request: AgentLaunchRequest) => void;
 };
 
@@ -43,8 +47,14 @@ export function NewTabMenu({
   onNewPreview,
   onNewEditor,
   onNewGitGraph,
+  onNewSshHost,
   onLaunchAgents,
 }: Props) {
+  const hosts = useHostStore((s) => s.hosts);
+  useEffect(() => {
+    if (hosts.length === 0) void refreshHosts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [menuOpen, setMenuOpen] = useState(false);
   const [launcherOpen, setLauncherOpen] = useState(false);
   const openLauncherAfterMenuClose = useRef(false);
@@ -170,6 +180,26 @@ export function NewTabMenu({
                 />
                 <span className="flex-1">Git Graph</span>
               </DropdownMenuItem>
+              {onNewSshHost && hosts.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  {hosts.map((host) => (
+                    <DropdownMenuItem
+                      key={host.id}
+                      onSelect={() => onNewSshHost(host)}
+                    >
+                      <HugeiconsIcon
+                        icon={ServerStack03Icon}
+                        size={14}
+                        strokeWidth={1.75}
+                      />
+                      <span className="flex-1 truncate">
+                        SSH: {host.alias}
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </span>

@@ -60,6 +60,25 @@ Auto-send after approval uses `lastAssistantMessageIsCompleteWithApprovalRespons
 
 Local LLM endpoints are explicitly allowed because the user opted in by pointing Terax at them, but they are still classified and logged.
 
+## SSH remote workspaces
+
+SSH hosts add a remote trust boundary (`docs/architecture/ssh-remote.md`).
+The short version:
+
+- Transport is system `ssh`; the desktop links no SSH/crypto crates.
+- Host keys: `StrictHostKeyChecking=yes` always, TOFU dialog on unknown,
+  hard block on mismatch.
+- Host passwords and key passphrases live in the keychain as
+  `ssh:<host-id>`; the host store holds connection details only.
+- Interactive auth (password/2FA) happens in a user-visible PTY or the
+  explicit auth sheet, via a one-shot 0700 askpass helper. The RPC
+  channel always runs `BatchMode=yes` and never prompts.
+- The remote agent (`terax-remote`) authorizes every path against its
+  own registry seeded from the connection root, and enforces the
+  deny-list server-side with the remote home. Local `security.ts`
+  checks are a pre-filter only.
+- Remote OSC 7 paths never enter the local workspace registry.
+
 ## Secret storage
 
 API keys are stored via `secrets_*` commands (`src-tauri/src/modules/secrets.rs`):

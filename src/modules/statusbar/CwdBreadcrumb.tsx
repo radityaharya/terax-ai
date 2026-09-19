@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { sshHostId, sshRpc } from "@/modules/ai/lib/native";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import {
   ArrowDown01Icon,
@@ -180,11 +181,21 @@ function CurrentSegmentDropdown({
   const load = useCallback(async () => {
     setError(null);
     try {
-      const dirs = await invoke<string[]>("list_subdirs", {
-        path,
-        showHidden,
-        workspace: currentWorkspaceEnv(),
-      });
+      // The agent has no list_subdirs: read the dir and keep directories.
+      const dirs = sshHostId()
+        ? (
+            await sshRpc<{ name: string; kind: string }[]>("fs_read_dir", {
+              path,
+              showHidden,
+            })
+          )
+            .filter((e) => e.kind === "dir")
+            .map((e) => e.name)
+        : await invoke<string[]>("list_subdirs", {
+            path,
+            showHidden,
+            workspace: currentWorkspaceEnv(),
+          });
       setChildren(dirs);
     } catch (e) {
       setError(String(e));

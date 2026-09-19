@@ -1,12 +1,15 @@
 import { LazyStore } from "@tauri-apps/plugin-store";
-import type { WorkspaceEnv } from "@/modules/workspace";
 import type { SerializedTab } from "./serialize";
 
+/**
+ * Spaces are pure tab groups. They carry no env: every tab owns its own
+ * env (`TabBase.env`), and the restored ACTIVE TAB's env becomes global at
+ * boot. A stale `env` may exist in old persisted payloads — ignored.
+ */
 export type SpaceMeta = {
   id: string;
   name: string;
   root: string | null;
-  env: WorkspaceEnv;
   /** Opt-in accent, index into SPACE_COLORS. Undefined = theme primary. */
   color?: number;
   createdAt: number;

@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PROTOCOL_VERSION: u16 = 1;
+/// Protocol version spoken by terax-remote agents. Additive over v1: the
+/// local control server stays v1, remote agents advertise v2 capabilities.
+pub const REMOTE_PROTOCOL_VERSION: u16 = 2;
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 pub const METHOD_PING: &str = "ping";
 pub const METHOD_CAPABILITIES: &str = "capabilities";
@@ -13,6 +16,92 @@ pub const METHODS: &[&str] = &[
     METHOD_CAPABILITIES,
     METHOD_IDENTIFY,
     METHOD_OPEN,
+];
+
+pub const REMOTE_METHOD_FS_READ_DIR: &str = "fs_read_dir";
+pub const REMOTE_METHOD_FS_READ_FILE: &str = "fs_read_file";
+pub const REMOTE_METHOD_FS_READ_BYTES: &str = "fs_read_bytes";
+pub const REMOTE_METHOD_FS_WRITE_FILE: &str = "fs_write_file";
+pub const REMOTE_METHOD_FS_STAT: &str = "fs_stat";
+pub const REMOTE_METHOD_FS_SEARCH: &str = "fs_search";
+pub const REMOTE_METHOD_FS_GREP: &str = "fs_grep";
+pub const REMOTE_METHOD_FS_CREATE_FILE: &str = "fs_create_file";
+pub const REMOTE_METHOD_FS_CREATE_DIR: &str = "fs_create_dir";
+pub const REMOTE_METHOD_FS_RENAME: &str = "fs_rename";
+pub const REMOTE_METHOD_FS_DELETE: &str = "fs_delete";
+pub const REMOTE_METHOD_FS_DELETE_BATCH: &str = "fs_delete_batch";
+pub const REMOTE_METHOD_FS_MOVE: &str = "fs_move";
+pub const REMOTE_METHOD_FS_COPY: &str = "fs_copy";
+pub const REMOTE_METHOD_GIT_PANEL_SNAPSHOT: &str = "git_panel_snapshot";
+pub const REMOTE_METHOD_GIT_STATUS: &str = "git_status";
+pub const REMOTE_METHOD_GIT_RESOLVE_REPO: &str = "git_resolve_repo";
+pub const REMOTE_METHOD_GIT_DIFF: &str = "git_diff";
+pub const REMOTE_METHOD_GIT_DIFF_CONTENT: &str = "git_diff_content";
+pub const REMOTE_METHOD_GIT_STAGE: &str = "git_stage";
+pub const REMOTE_METHOD_GIT_UNSTAGE: &str = "git_unstage";
+pub const REMOTE_METHOD_GIT_DISCARD: &str = "git_discard";
+pub const REMOTE_METHOD_GIT_COMMIT: &str = "git_commit";
+pub const REMOTE_METHOD_GIT_LOG: &str = "git_log";
+pub const REMOTE_METHOD_GIT_SHOW_COMMIT: &str = "git_show_commit";
+pub const REMOTE_METHOD_GIT_COMMIT_FILES: &str = "git_commit_files";
+pub const REMOTE_METHOD_GIT_COMMIT_FILE_DIFF: &str = "git_commit_file_diff";
+pub const REMOTE_METHOD_GIT_REMOTE_URL: &str = "git_remote_url";
+pub const REMOTE_METHOD_GIT_FETCH: &str = "git_fetch";
+pub const REMOTE_METHOD_GIT_PULL_FF_ONLY: &str = "git_pull_ff_only";
+pub const REMOTE_METHOD_GIT_PUSH: &str = "git_push";
+pub const REMOTE_METHOD_GIT_LIST_BRANCHES: &str = "git_list_branches";
+pub const REMOTE_METHOD_GIT_CHECKOUT_BRANCH: &str = "git_checkout_branch";
+pub const REMOTE_METHOD_SHELL_RUN: &str = "shell_run";
+pub const REMOTE_METHOD_SHELL_SESSION_OPEN: &str = "shell_session_open";
+pub const REMOTE_METHOD_SHELL_SESSION_RUN: &str = "shell_session_run";
+pub const REMOTE_METHOD_SHELL_SESSION_CLOSE: &str = "shell_session_close";
+pub const REMOTE_METHOD_SHELL_BG_SPAWN: &str = "shell_bg_spawn";
+pub const REMOTE_METHOD_SHELL_BG_LOGS: &str = "shell_bg_logs";
+pub const REMOTE_METHOD_SHELL_BG_KILL: &str = "shell_bg_kill";
+
+pub const REMOTE_METHODS: &[&str] = &[
+    METHOD_PING,
+    METHOD_CAPABILITIES,
+    REMOTE_METHOD_FS_READ_DIR,
+    REMOTE_METHOD_FS_READ_FILE,
+    REMOTE_METHOD_FS_READ_BYTES,
+    REMOTE_METHOD_FS_WRITE_FILE,
+    REMOTE_METHOD_FS_STAT,
+    REMOTE_METHOD_FS_SEARCH,
+    REMOTE_METHOD_FS_GREP,
+    REMOTE_METHOD_FS_CREATE_FILE,
+    REMOTE_METHOD_FS_CREATE_DIR,
+    REMOTE_METHOD_FS_RENAME,
+    REMOTE_METHOD_FS_DELETE,
+    REMOTE_METHOD_FS_DELETE_BATCH,
+    REMOTE_METHOD_FS_MOVE,
+    REMOTE_METHOD_FS_COPY,
+    REMOTE_METHOD_GIT_PANEL_SNAPSHOT,
+    REMOTE_METHOD_GIT_STATUS,
+    REMOTE_METHOD_GIT_RESOLVE_REPO,
+    REMOTE_METHOD_GIT_DIFF,
+    REMOTE_METHOD_GIT_DIFF_CONTENT,
+    REMOTE_METHOD_GIT_STAGE,
+    REMOTE_METHOD_GIT_UNSTAGE,
+    REMOTE_METHOD_GIT_DISCARD,
+    REMOTE_METHOD_GIT_COMMIT,
+    REMOTE_METHOD_GIT_LOG,
+    REMOTE_METHOD_GIT_SHOW_COMMIT,
+    REMOTE_METHOD_GIT_COMMIT_FILES,
+    REMOTE_METHOD_GIT_COMMIT_FILE_DIFF,
+    REMOTE_METHOD_GIT_REMOTE_URL,
+    REMOTE_METHOD_GIT_FETCH,
+    REMOTE_METHOD_GIT_PULL_FF_ONLY,
+    REMOTE_METHOD_GIT_PUSH,
+    REMOTE_METHOD_GIT_LIST_BRANCHES,
+    REMOTE_METHOD_GIT_CHECKOUT_BRANCH,
+    REMOTE_METHOD_SHELL_RUN,
+    REMOTE_METHOD_SHELL_SESSION_OPEN,
+    REMOTE_METHOD_SHELL_SESSION_RUN,
+    REMOTE_METHOD_SHELL_SESSION_CLOSE,
+    REMOTE_METHOD_SHELL_BG_SPAWN,
+    REMOTE_METHOD_SHELL_BG_LOGS,
+    REMOTE_METHOD_SHELL_BG_KILL,
 ];
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]

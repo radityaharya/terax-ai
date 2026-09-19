@@ -1,5 +1,6 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
+import type { WorkspaceEnv } from "@/modules/workspace";
 import { useTheme } from "@/modules/theme";
 import {
   forwardRef,
@@ -34,6 +35,8 @@ export type TerminalPaneProps = {
   /** This leaf is the active pane within its tab and receives auto-focus. */
   focused?: boolean;
   initialCwd?: string;
+  /** Owning tab's env — spawns the shell on this host. */
+  env?: WorkspaceEnv;
   /** Enable command-block decorations (OSC 133) for this terminal. */
   blocks?: boolean;
   onSearchReady?: (leafId: number, addon: TerminalSearchController) => void;
@@ -58,6 +61,7 @@ const GhosttyTerminalPane = memo(
       visible,
       focused = true,
       initialCwd,
+      env,
       blocks = false,
       onSearchReady,
       onExit,
@@ -79,6 +83,7 @@ const GhosttyTerminalPane = memo(
       visible,
       focused,
       initialCwd,
+      env,
       blocks,
       onSearchReady: (search) => onSearchReady?.(leafId, search),
       onExit: (code) => onExit?.(leafId, code),

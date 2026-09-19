@@ -40,6 +40,7 @@ import {
   IncognitoIcon,
   Message02Icon,
   PencilEdit02Icon,
+  ServerStack03Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -53,6 +54,7 @@ import {
 } from "react";
 import { labelFor } from "./lib/tabLabel";
 import type { EditorTab, Tab } from "./lib/useTabs";
+import type { SshHost } from "@/modules/hosts/lib/types";
 import { NewTabMenu } from "./NewTabMenu";
 
 type Props = {
@@ -65,6 +67,7 @@ type Props = {
   onNewPreview: () => void;
   onNewEditor: () => void;
   onNewGitGraph: () => void;
+  onNewSshHost?: (host: SshHost) => void;
   onLaunchAgents: (request: AgentLaunchRequest) => void;
   onClose: (id: number) => void;
   /** Chrome-style: close every tab to the right of the given tab. */
@@ -91,6 +94,7 @@ export function TabBar({
   onNewPreview,
   onNewEditor,
   onNewGitGraph,
+  onNewSshHost,
   onLaunchAgents,
   onClose,
   onCloseTabsToRight,
@@ -466,10 +470,14 @@ export function TabBar({
                       <TabIcon tab={t} />
                     )}
                     {/* Preview tabs use italic to signal the transient state,
-                        matching the visual convention from VSCode. */}
+                        matching the visual convention from VSCode. SSH tabs
+                        show the host so mixed strips stay scannable. */}
                     <span className={cn("truncate", isPreview && "italic")}>
                       {labelFor(t)}
                     </span>
+                    {t.env?.kind === "ssh" && (
+                      <TabHostChip hostId={t.env.hostId} />
+                    )}
                     {t.kind === "editor" && t.dirty ? (
                       <span
                         aria-label="Unsaved changes"
@@ -593,6 +601,7 @@ export function TabBar({
           onNewPreview={onNewPreview}
           onNewEditor={onNewEditor}
           onNewGitGraph={onNewGitGraph}
+          onNewSshHost={onNewSshHost}
           onLaunchAgents={onLaunchAgents}
         />
       </div>
@@ -621,6 +630,36 @@ function useTabAgentStatus(tab: Tab) {
     if (id !== null) ptyIds.push(id);
   }
   return tabAgentStatus(phases, agents, ptyIds);
+}
+
+/**
+ * Host chip on SSH tabs (alias preferred, falls back to short host id).
+ * Reads the store without subscribing so tab strips don't re-render on
+ * every host-list change; the alias is stable for the tab's lifetime.
+ */
+function TabHostChip({ hostId }: { hostId: string }) {
+  const [alias, setAlias] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void import("@/modules/hosts/lib/hostStore").then((m) => {
+      if (cancelled) return;
+      const host = m.useHostStore
+        .getState()
+        .hosts.find((h) => h.id === hostId);
+      if (!cancelled) setAlias(host?.alias ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hostId]);
+  return (
+    <span
+      title={alias ? `${alias} (${hostId})` : hostId}
+      className="max-w-24 shrink-0 truncate rounded bg-primary/15 px-1 py-px text-[10px] font-medium leading-tight text-primary"
+    >
+      {alias ?? hostId.slice(0, 8)}
+    </span>
+  );
 }
 
 export function TabIcon({ tab }: { tab: Tab }) {
@@ -720,6 +759,17 @@ export function TabIcon({ tab }: { tab: Tab }) {
   ) {
     return (
       <AgentIcon agent={agentStatus.agent} size={14} className="shrink-0" />
+    );
+  }
+  // SSH tabs get a server glyph so hosts stand out in a mixed strip.
+  if (tab.env?.kind === "ssh") {
+    return (
+      <HugeiconsIcon
+        icon={ServerStack03Icon}
+        size={14}
+        strokeWidth={2}
+        className="shrink-0 text-primary"
+      />
     );
   }
   return (

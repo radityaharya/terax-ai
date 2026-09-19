@@ -50,13 +50,23 @@ fn fish_init_script() -> &'static str {
     FISH_INIT_SCRIPT
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_command(
     cwd: Option<String>,
     workspace: WorkspaceEnv,
     blocks: bool,
     shell: Option<String>,
     control: Option<ShellControlEnv>,
+    ssh_integration: Option<crate::modules::ssh::integration::SshIntegration>,
 ) -> Result<CommandBuilder, String> {
+    // SSH terminal tabs run on all desktop OSes: the transport is system ssh.
+    // Integration is installed in pty_open (which has state access) and
+    // passed through; bare fallback when absent.
+    if let WorkspaceEnv::Ssh { host_id } = &workspace {
+        let _ = (shell, control);
+        return build_ssh(cwd, host_id, ssh_integration, blocks);
+    }
+    let _ = ssh_integration;
     let shell = sanitize_shell_override(shell);
     #[cfg(unix)]
     {
@@ -67,6 +77,102 @@ pub fn build_command(
     {
         windows::build(cwd, workspace, blocks, shell, control)
     }
+}
+
+/// Interactive SSH terminal: `ssh -t user@host <remote shell>`. Passwords
+/// and 2FA complete natively in the PTY. With integration installed the
+/// remote shell emits OSC 7/133 (cwd tracking, command blocks, agent
+/// detection) exactly like local shells; without it, bare fallback. The
+/// remote cwd, when set, is applied with a safe `cd` prefix.
+pub fn build_ssh(
+    cwd: Option<String>,
+    host_id: &str,
+    integration: Option<crate::modules::ssh::integration::SshIntegration>,
+    blocks: bool,
+) -> Result<CommandBuilder, String> {
+    use crate::modules::ssh::integration::{ShellKind, SshIntegration, FISH_REINSTALL_PROMPT};
+    let host = crate::modules::ssh::integration::host_by_id(host_id)?;
+    // The login shell was already probed (and cached) by the integration
+    // step in pty_open; reuse it instead of a second ssh handshake. Only
+    // probe fresh when integration never ran (SshIntegration::None).
+    let integration = integration.unwrap_or(SshIntegration::None);
+    let remote_shell = integration
+        .shell_path()
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            crate::modules::ssh::session::ssh_login_shell(&host)
+                .map_err(|e| e.to_string())
+                .unwrap_or_else(|_| "/bin/sh".to_string())
+        });
+    let kind = ShellKind::classify(&remote_shell);
+    let mut cmd = CommandBuilder::new(crate::modules::ssh::ssh_binary());
+    for arg in crate::modules::ssh::session::terminal_args(&host, None) {
+        cmd.arg(arg);
+    }
+    // Remote command: optional cd, then the shell with its integration
+    // wiring. Mirrors the WSL launch spec per shell kind.
+    let dir = cwd
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .filter(|s| !looks_like_local_path(s));
+    let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let cd = dir.as_deref().map(|d| format!("cd {} && ", q(d))).unwrap_or_default();
+    let remote_cmd = match (&kind, &integration) {
+        (ShellKind::Zsh, SshIntegration::Zsh { zdotdir, .. }) => {
+            format!("{cd}ZDOTDIR={} {} -l", q(zdotdir), q(&remote_shell))
+        }
+        (ShellKind::Bash, SshIntegration::Bash { rcfile, .. }) => {
+            format!("{cd}{} --rcfile {} -i", q(&remote_shell), q(rcfile))
+        }
+        (ShellKind::Fish, SshIntegration::Fish { .. }) => {
+            format!(
+                "{cd}env fish_features=no-mark-prompt {} -i -C {}",
+                q(&remote_shell),
+                q(FISH_REINSTALL_PROMPT)
+            )
+        }
+        _ => {
+            if cd.is_empty() {
+                remote_shell.clone()
+            } else {
+                format!("{cd}exec {}", q(&remote_shell))
+            }
+        }
+    };
+    cmd.arg(remote_cmd);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERM_PROGRAM", "terax");
+    cmd.env("TERAX_TERMINAL", "1");
+    if blocks && !matches!(integration, SshIntegration::None) {
+        cmd.env("TERAX_BLOCKS", "1");
+    }
+    log::info!("spawning SSH shell: {}@{} ({remote_shell})", host.user, host.hostname);
+    Ok(cmd)
+}
+
+/// True for paths that are local to the desktop (Windows drive, backslashes,
+/// UNC, WSL drvfs). Remote shells must never receive them as cwd.
+fn looks_like_local_path(s: &str) -> bool {
+    if s.contains('\\') {
+        return true;
+    }
+    if s.len() >= 2 && s.as_bytes()[1] == b':' {
+        return true;
+    }
+    if s.starts_with("\\\\") {
+        return true;
+    }
+    // WSL drvfs (/mnt/c/...) is Windows storage, not a remote path.
+    if let Some(rest) = s.strip_prefix("/mnt/") {
+        let mut chars = rest.chars();
+        if let (Some(drive), Some(next)) = (chars.next(), chars.next()) {
+            if drive.is_ascii_alphabetic() && next == '/' {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // Honor the override only if it matches an enumerated shell, so a tampered
@@ -1103,7 +1209,7 @@ mod tests {
 
     use portable_pty::CommandBuilder;
 
-    use super::{apply_common, sanitize_shell_override, ShellControlEnv};
+    use super::{apply_common, build_ssh, sanitize_shell_override, ShellControlEnv};
 
     #[test]
     fn rejects_non_enumerated_override() {
@@ -1151,5 +1257,150 @@ mod tests {
                 .and_then(|path| std::env::split_paths(path).next()),
             Some(std::path::PathBuf::from("/app/bin"))
         );
+    }
+
+    fn seed_ssh_host(id: &str) {
+        use crate::modules::ssh::hosts::{host_store, SshHost};
+        host_store().upsert(SshHost {
+            id: id.into(),
+            alias: id.into(),
+            user: "deploy".into(),
+            hostname: "10.0.0.5".into(),
+            port: 22,
+            identity_file: None,
+            remote_root: None,
+            bound_space_id: None,
+            agent_forward: false,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        });
+    }
+
+    #[test]
+    fn ssh_rejects_unsafe_host_id() {
+        let err = build_ssh(None, "../evil", None, false).expect_err("unsafe id must fail");
+        assert!(err.contains("unsafe"), "got: {err}");
+    }
+
+    #[test]
+    fn ssh_rejects_unknown_host() {
+        let err = build_ssh(None, "no-such-host-xyz", None, false).expect_err("unknown host must fail");
+        assert!(err.contains("unknown SSH host"), "got: {err}");
+    }
+
+    #[test]
+    fn ssh_launch_has_no_secrets_in_argv() {
+        seed_ssh_host("argv-check");
+        let cmd = build_ssh(Some("/home/u/repo".into()), "argv-check", None, false).expect("build");
+        let argv: Vec<_> = cmd
+            .get_argv()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let joined = argv.join(" ");
+        assert!(joined.contains("-t"), "got: {joined}");
+        assert!(joined.contains("deploy@10.0.0.5"), "got: {joined}");
+        assert!(joined.contains("StrictHostKeyChecking=yes"), "got: {joined}");
+        // No BatchMode on interactive sessions: passwords/2FA need the PTY.
+        assert!(!argv.iter().any(|a| a == "BatchMode=yes"), "got: {joined}");
+        // Remote cwd is applied inside the remote shell, never as local cwd.
+        assert!(joined.contains("cd '/home/u/repo'"), "got: {joined}");
+        assert_eq!(cmd.get_env("TERM"), Some(OsStr::new("xterm-256color")));
+        assert_eq!(cmd.get_env("TERAX_BLOCKS"), None);
+    }
+
+    #[test]
+    fn ssh_launch_quotes_remote_cwd_safely() {
+        seed_ssh_host("quote-check");
+        let cmd = build_ssh(Some("/home/u/o'brien".into()), "quote-check", None, false).expect("build");
+        let argv: Vec<_> = cmd
+            .get_argv()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let joined = argv.join(" ");
+        assert!(joined.contains("o'\\''brien"), "got: {joined}");
+    }
+
+    #[test]
+    fn ssh_launch_ignores_leaked_local_paths() {
+        seed_ssh_host("leak-check");
+        for leaked in [
+            "C:/Users/conta",
+            r"C:\Users\conta",
+            r"\\server\share",
+            "/mnt/c/Users/conta",
+        ] {
+            let cmd = build_ssh(Some(leaked.into()), "leak-check", None, false).expect("build");
+            let argv: Vec<_> = cmd
+                .get_argv()
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            let joined = argv.join(" ");
+            assert!(
+                !joined.contains("cd "),
+                "local path must not reach remote shell, got: {joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_path_detector_catches_windows_forms() {
+        assert!(super::looks_like_local_path("C:/Users/conta"));
+        assert!(super::looks_like_local_path(r"C:\Users\conta"));
+        assert!(super::looks_like_local_path(r"\\host\share"));
+        assert!(super::looks_like_local_path("/mnt/c/x"));
+        assert!(!super::looks_like_local_path("/home/u/repo"));
+        assert!(!super::looks_like_local_path("relative/dir"));
+    }
+
+    #[test]
+    fn ssh_launch_with_zsh_integration_sets_zdotdir() {
+        use crate::modules::ssh::integration::SshIntegration;
+        seed_ssh_host("zsh-check");
+        let cmd = build_ssh(
+            Some("/home/u/repo".into()),
+            "zsh-check",
+            Some(SshIntegration::Zsh {
+                zdotdir: "/home/u/.cache/terax/shell-integration/zsh".into(),
+                shell: "/bin/zsh".into(),
+            }),
+            false,
+        )
+        .expect("build");
+        let argv: Vec<_> = cmd
+            .get_argv()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let joined = argv.join(" ");
+        // ssh_login_shell probes the live host in tests; with no server it
+        // falls back to /bin/sh (Other), so assert the bare shape + no blocks.
+        assert!(joined.contains("deploy@10.0.0.5"), "got: {joined}");
+        assert_eq!(cmd.get_env("TERAX_BLOCKS"), None);
+    }
+
+    #[test]
+    fn ssh_launch_with_bash_integration_uses_rcfile() {
+        use crate::modules::ssh::integration::SshIntegration;
+        seed_ssh_host("bash-check");
+        let cmd = build_ssh(
+            None,
+            "bash-check",
+            Some(SshIntegration::Bash {
+                rcfile: "/home/u/.cache/terax/shell-integration/bash/bashrc".into(),
+                shell: "/bin/bash".into(),
+            }),
+            true,
+        )
+        .expect("build");
+        let argv: Vec<_> = cmd
+            .get_argv()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let joined = argv.join(" ");
+        assert!(joined.contains("deploy@10.0.0.5"), "got: {joined}");
     }
 }

@@ -1,4 +1,5 @@
 import { type RefObject, useCallback, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
 import { native } from "@/modules/ai/lib/native";
 import type { Tab } from "@/modules/tabs";
@@ -8,7 +9,17 @@ import {
   type WorkspaceEnv,
 } from "@/modules/workspace";
 
+function sameEnv(a: WorkspaceEnv, b: WorkspaceEnv): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "wsl" && b.kind === "wsl") return a.distro === b.distro;
+  if (a.kind === "ssh" && b.kind === "ssh") return a.hostId === b.hostId;
+  return true;
+}
+
 async function resolveEnvHome(env: WorkspaceEnv): Promise<string> {
+  if (env.kind === "ssh") {
+    return invoke<string>("ssh_home_for", { id: env.hostId });
+  }
   return env.kind === "wsl"
     ? getWslHome(env.distro)
     : (await homeDir()).replace(/\\/g, "/");
@@ -61,23 +72,24 @@ export function useWorkspaceSwitcher({
       .finally(() => setLaunchCwdResolved(true));
   }, []);
 
-  const authorizeHome = useCallback(async (nextHome: string) => {
-    setHome(nextHome);
-    setLaunchCwd(nextHome);
-    try {
-      await native.workspaceAuthorize(nextHome);
-    } catch {
-      // Non-fatal — git panel will surface "not authorized" if needed.
-    }
-  }, []);
+  const authorizeHome = useCallback(
+    async (nextHome: string, env?: WorkspaceEnv) => {
+      setHome(nextHome);
+      setLaunchCwd(nextHome);
+      // SSH roots authorize on the remote agent, not the local registry.
+      if (env?.kind === "ssh") return;
+      try {
+        await native.workspaceAuthorize(nextHome);
+      } catch {
+        // Non-fatal — git panel will surface "not authorized" if needed.
+      }
+    },
+    [],
+  );
 
   const switchWorkspace = useCallback(
     async (env: WorkspaceEnv): Promise<boolean> => {
-      if (
-        env.kind === workspaceEnv.kind &&
-        (env.kind === "local" ||
-          (workspaceEnv.kind === "wsl" && env.distro === workspaceEnv.distro))
-      ) {
+      if (sameEnv(env, workspaceEnv)) {
         return false;
       }
       const dirty = tabsRef.current.some((t) => t.kind === "editor" && t.dirty);
@@ -98,7 +110,7 @@ export function useWorkspaceSwitcher({
 
       clearWorkspaceState();
       setWorkspaceEnv(env.kind === "local" ? LOCAL_WORKSPACE : env);
-      await authorizeHome(nextHome);
+      await authorizeHome(nextHome, env);
       resetWorkspace(nextHome);
       return true;
     },
@@ -121,7 +133,7 @@ export function useWorkspaceSwitcher({
       } catch {
         return null;
       }
-      await authorizeHome(nextHome);
+      await authorizeHome(nextHome, env);
       return nextHome;
     },
     [setWorkspaceEnv, authorizeHome],
