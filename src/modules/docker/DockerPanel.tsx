@@ -8,6 +8,7 @@ import {
   Refresh01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import { DetailsDrawer } from "./components/DetailsDrawer";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
 import { daemonLabel } from "./lib/capabilities";
@@ -37,6 +38,11 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
   const [segment, setSegment] = useState<DockerResourceKind>("containers");
   const [filter, setFilter] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [inspecting, setInspecting] = useState<{
+    kind: "container";
+    id: string;
+    title: string;
+  } | null>(null);
 
   const hostState = useDockerStore((s) =>
     hostId ? (s.byHost[hostId] ?? null) : null,
@@ -86,7 +92,14 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col">
+      {inspecting ? (
+        <DetailsDrawer
+          hostId={hostId}
+          target={inspecting}
+          onClose={() => setInspecting(null)}
+        />
+      ) : null}
       <PanelTitle
         title="Docker"
         subtitle={hostAlias ?? hostId}
@@ -159,6 +172,13 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
                       confirmingRemove={confirmRemove === id}
                       onAction={(a) => runAction(a, id)}
                       onCancelRemove={() => setConfirmRemove(null)}
+                      onInspect={() =>
+                        setInspecting({
+                          kind: "container",
+                          id,
+                          title: containerName(c),
+                        })
+                      }
                     />
                   );
                 })
@@ -222,12 +242,14 @@ function ContainerRow({
   confirmingRemove,
   onAction,
   onCancelRemove,
+  onInspect,
 }: {
   container: DockerContainer;
   busy: ContainerAction | undefined;
   confirmingRemove: boolean;
   onAction: (a: ContainerAction) => void;
   onCancelRemove: () => void;
+  onInspect: () => void;
 }) {
   const id = containerId(container);
   const name = containerName(container);
@@ -239,8 +261,15 @@ function ContainerRow({
     <div
       role="button"
       tabIndex={0}
-      title={`${name} (${id})`}
-      className="group relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-primary/40"
+      title={`${name} (${id}) — click for details`}
+      onClick={confirmingRemove ? undefined : onInspect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && !confirmingRemove) {
+          e.preventDefault();
+          onInspect();
+        }
+      }}
+      className="group relative flex cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1.5 outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-primary/40"
     >
       <span
         role="img"

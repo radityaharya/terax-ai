@@ -60,8 +60,16 @@ function emptyHost(): HostDockerState {
   };
 }
 
+export type InspectState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; data: unknown }
+  | { status: "error"; message: string };
+
 type State = {
   byHost: Record<string, HostDockerState>;
+  /** hostId -> "kind:id" -> inspect state. */
+  inspects: Record<string, InspectState>;
   refreshCapabilities: (hostId: string) => Promise<void>;
   refreshContainers: (hostId: string, all?: boolean) => Promise<void>;
   refreshImages: (hostId: string) => Promise<void>;
@@ -75,6 +83,12 @@ type State = {
     opts?: { force?: boolean; timeout?: number },
   ) => Promise<void>;
   refreshStats: (hostId: string, ids?: string[]) => Promise<void>;
+  fetchInspect: (
+    hostId: string,
+    kind: "container" | "image" | "volume" | "network" | "service",
+    id: string,
+  ) => Promise<void>;
+  clearInspect: (hostId: string, kind: string, id: string) => void;
 };
 
 function patch(
@@ -110,8 +124,13 @@ function classifyDaemonError(e: unknown): DockerDaemonState {
   return { status: "offline", message: msg };
 }
 
+export function inspectKey(kind: string, id: string): string {
+  return `${kind}:${id}`;
+}
+
 export const useDockerStore = create<State>((set) => ({
   byHost: {},
+  inspects: {},
 
   refreshCapabilities: async (hostId: string) => {
     patch(set, hostId, (h) => ({ ...h, daemon: { status: "checking" } }));
@@ -297,6 +316,39 @@ export const useDockerStore = create<State>((set) => ({
     } catch (e) {
       patch(set, hostId, (h) => ({ ...h, statsError: String(e) }));
     }
+  },
+
+  fetchInspect: async (hostId, kind, id) => {
+    const key = `${hostId}\u0000${inspectKey(kind, id)}`;
+    set((s) => ({
+      ...s,
+      inspects: { ...s.inspects, [key]: { status: "loading" } },
+    }));
+    try {
+      const data = await sshRpc<unknown>("docker_inspect", { kind, id }, hostId);
+      set((s) => ({
+        ...s,
+        inspects: { ...s.inspects, [key]: { status: "ready", data } },
+      }));
+    } catch (e) {
+      set((s) => ({
+        ...s,
+        inspects: {
+          ...s.inspects,
+          [key]: { status: "error", message: String(e) },
+        },
+      }));
+    }
+  },
+
+  clearInspect: (hostId, kind, id) => {
+    const key = `${hostId}\u0000${inspectKey(kind, id)}`;
+    set((s) => {
+      if (!(key in s.inspects)) return s;
+      const next = { ...s.inspects };
+      delete next[key];
+      return { ...s, inspects: next };
+    });
   },
 }));
 
