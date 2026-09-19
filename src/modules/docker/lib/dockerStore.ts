@@ -14,12 +14,36 @@ function emptyList<T>(): ResourceListState<T> {
   return { items: [], loading: false, error: null, updatedAt: null };
 }
 
+export type ContainerAction =
+  | "start"
+  | "stop"
+  | "restart"
+  | "kill"
+  | "remove";
+
+export type StatsSample = {
+  container: string;
+  name: string;
+  cpuPerc: string;
+  memUsage: string;
+  memPerc: string;
+  netIO: string;
+  blockIO: string;
+  pids: string;
+};
+
 type HostDockerState = {
   daemon: DockerDaemonState;
   containers: ResourceListState<DockerContainer>;
   images: ResourceListState<DockerImage>;
   volumes: ResourceListState<DockerVolume>;
   networks: ResourceListState<DockerNetwork>;
+  /** Container ids with a lifecycle action in flight. */
+  busyContainers: Record<string, ContainerAction>;
+  /** Last polled `docker stats` samples keyed by container id. */
+  stats: Record<string, StatsSample>;
+  statsAt: number | null;
+  statsError: string | null;
 };
 
 function emptyHost(): HostDockerState {
@@ -29,6 +53,10 @@ function emptyHost(): HostDockerState {
     images: emptyList(),
     volumes: emptyList(),
     networks: emptyList(),
+    busyContainers: {},
+    stats: {},
+    statsAt: null,
+    statsError: null,
   };
 }
 
@@ -40,6 +68,13 @@ type State = {
   refreshVolumes: (hostId: string) => Promise<void>;
   refreshNetworks: (hostId: string) => Promise<void>;
   refreshAll: (hostId: string) => Promise<void>;
+  containerAction: (
+    hostId: string,
+    action: ContainerAction,
+    ids: string[],
+    opts?: { force?: boolean; timeout?: number },
+  ) => Promise<void>;
+  refreshStats: (hostId: string, ids?: string[]) => Promise<void>;
 };
 
 function patch(
@@ -206,6 +241,62 @@ export const useDockerStore = create<State>((set) => ({
       s.refreshVolumes(hostId),
       s.refreshNetworks(hostId),
     ]);
+  },
+
+  containerAction: async (hostId, action, ids, opts) => {
+    if (ids.length === 0) return;
+    patch(set, hostId, (h) => ({
+      ...h,
+      busyContainers: {
+        ...h.busyContainers,
+        ...Object.fromEntries(ids.map((id) => [id, action])),
+      },
+    }));
+    try {
+      const method =
+        action === "remove" ? "docker_rm" : `docker_${action}`;
+      await sshRpc<string>(
+        method,
+        {
+          ids,
+          ...(action === "remove" && opts?.force ? { force: true } : {}),
+          ...(opts?.timeout !== undefined ? { timeout: opts.timeout } : {}),
+        },
+        hostId,
+      );
+      await useDockerStore.getState().refreshContainers(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        containers: { ...h.containers, error: String(e) },
+      }));
+    } finally {
+      patch(set, hostId, (h) => {
+        const busy = { ...h.busyContainers };
+        for (const id of ids) delete busy[id];
+        return { ...h, busyContainers: busy };
+      });
+    }
+  },
+
+  refreshStats: async (hostId, ids) => {
+    try {
+      const samples = await sshRpc<StatsSample[]>(
+        "docker_stats",
+        ids && ids.length > 0 ? { ids } : {},
+        hostId,
+      );
+      patch(set, hostId, (h) => ({
+        ...h,
+        stats: Object.fromEntries(
+          samples.map((s) => [s.container || s.name, s]),
+        ),
+        statsAt: Date.now(),
+        statsError: null,
+      }));
+    } catch (e) {
+      patch(set, hostId, (h) => ({ ...h, statsError: String(e) }));
+    }
   },
 }));
 

@@ -1,5 +1,10 @@
 export { DockerPanel } from "./DockerPanel";
-export { useDockerStore, hostDocker } from "./lib/dockerStore";
+export {
+  useDockerStore,
+  hostDocker,
+  type ContainerAction,
+  type StatsSample,
+} from "./lib/dockerStore";
 export { daemonLabel, swarmLabel, composeLabel } from "./lib/capabilities";
 export { checkImageUpdate, type ImageUpdate } from "./lib/updateCheck";
 export type {
