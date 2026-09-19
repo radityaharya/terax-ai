@@ -20,6 +20,7 @@ pub const METHODS: &[&str] = &[
 
 pub const REMOTE_METHOD_FS_READ_DIR: &str = "fs_read_dir";
 pub const REMOTE_METHOD_FS_READ_FILE: &str = "fs_read_file";
+pub const REMOTE_METHOD_FS_READ_BYTES: &str = "fs_read_bytes";
 pub const REMOTE_METHOD_FS_WRITE_FILE: &str = "fs_write_file";
 pub const REMOTE_METHOD_FS_STAT: &str = "fs_stat";
 pub const REMOTE_METHOD_FS_SEARCH: &str = "fs_search";
@@ -63,6 +64,7 @@ pub const REMOTE_METHODS: &[&str] = &[
     METHOD_CAPABILITIES,
     REMOTE_METHOD_FS_READ_DIR,
     REMOTE_METHOD_FS_READ_FILE,
+    REMOTE_METHOD_FS_READ_BYTES,
     REMOTE_METHOD_FS_WRITE_FILE,
     REMOTE_METHOD_FS_STAT,
     REMOTE_METHOD_FS_SEARCH,

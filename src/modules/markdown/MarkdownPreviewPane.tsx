@@ -1,5 +1,6 @@
 import { MarkdownCode } from "@/components/ai-elements/markdown-code";
 import { cn } from "@/lib/utils";
+import { sshHostId, sshRpc } from "@/modules/ai/lib/native";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
@@ -33,10 +34,12 @@ export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
   useEffect(() => {
     let cancelled = false;
     setStatus({ kind: "loading" });
-    invoke<ReadResult>("fs_read_file", {
-      path,
-      workspace: currentWorkspaceEnv(),
-    })
+    (sshHostId()
+      ? sshRpc<ReadResult>("fs_read_file", { path, force: false })
+      : invoke<ReadResult>("fs_read_file", {
+          path,
+          workspace: currentWorkspaceEnv(),
+        }))
       .then((res) => {
         if (cancelled) return;
         if (res.kind === "text") {

@@ -21,6 +21,31 @@ type Params = {
   adoptWorkspaceEnv: (env: WorkspaceEnv) => Promise<string | null>;
 };
 
+function isLocalCwd(cwd: string, spaces: SpaceMeta[], tabs: Tab[]): boolean {
+  // A cwd belongs to a local/WSL space unless every terminal tab holding it
+  // lives in an SSH space. SSH paths authorize on the remote agent, never
+  // in the local registry.
+  const holders = tabs.filter(
+    (t) =>
+      t.kind === "terminal" &&
+      (t.cwd === cwd || leafCwd(t.paneTree) === cwd),
+  );
+  if (holders.length === 0) return true;
+  return holders.some((t) => {
+    const env = spaces.find((s) => s.id === t.spaceId)?.env;
+    return !env || env.kind !== "ssh";
+  });
+}
+
+function leafCwd(n: PaneNode): string | null {
+  if (isLeaf(n)) return n.cwd ?? null;
+  for (const c of n.children) {
+    const found = leafCwd(c);
+    if (found) return found;
+  }
+  return null;
+}
+
 function uniqueCwds(tabs: Tab[]): string[] {
   const set = new Set<string>();
   const walk = (n: PaneNode) => {
@@ -102,8 +127,13 @@ export function useSpacesBoot({
           restored.push(freshTerminalTab(active, cwd, allocId));
         }
 
+        // Only local/WSL cwds authorize locally. SSH paths belong to
+        // the remote agent; authorizing them locally would reject with
+        // "outside the authorized workspace" on every boot.
         await Promise.allSettled(
-          uniqueCwds(restored).map((cwd) => native.workspaceAuthorize(cwd)),
+          uniqueCwds(restored)
+            .filter((cwd) => isLocalCwd(cwd, spaces, restored))
+            .map((cwd) => native.workspaceAuthorize(cwd)),
         );
 
         const initialActiveIndex: Record<string, number> = {};
