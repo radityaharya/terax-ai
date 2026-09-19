@@ -79,6 +79,7 @@ import {
   useSourceControlContext,
 } from "@/modules/source-control";
 import {
+  persistSpacesList,
   SpaceSwitcher,
   useSpacePersistence,
   useSpaces,
@@ -372,10 +373,15 @@ export default function App() {
   useEditorFileSync({ tabs, tabsRef, editorRefs });
   useThemeFileEditing({ tabsRef, openFileTab });
 
+  const activeSpace = useSpaces((s) =>
+    activeSpaceId ? (s.spaces.find((sp) => sp.id === activeSpaceId) ?? null) : null,
+  );
   const { explorerRoot, inheritedCwdForNewTab } = useWorkspaceCwd(
     activeTab,
     tabs,
     launchCwd ?? home,
+    workspaceEnv,
+    activeSpace?.root ?? null,
   );
 
   useWindowTitle(activeTab, explorerRoot);
@@ -1239,7 +1245,16 @@ export default function App() {
           );
       if (bound) {
         if (bound.id !== activeSpaceIdRef.current) setActive(bound.id);
-        await adoptWorkspaceEnv(bound.env);
+        const home = await adoptWorkspaceEnv(bound.env);
+        // Backfill spaces created before home probing worked: a null root
+        // leaves the explorer and status bar with "no directory".
+        if (home && !bound.root) {
+          const spaces = useSpaces.getState().spaces.map((s) =>
+            s.id === bound.id ? { ...s, root: home, updatedAt: Date.now() } : s,
+          );
+          useSpaces.setState({ spaces });
+          void persistSpacesList(spaces);
+        }
         return false;
       }
       const env: WorkspaceEnv = { kind: "ssh", hostId: host.id };
