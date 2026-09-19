@@ -846,18 +846,21 @@ export const useDockerStore = create<State>((set) => ({
     try {
       const res = await sshRpc<{
         bytes: string;
-        next_offset: number;
+        nextOffset?: number;
+        next_offset?: number;
         dropped: number;
         exited: boolean;
-        exit_code: number | null;
+        exitCode?: number | null;
+        exit_code?: number | null;
         events?: import("./types").PullProgressEvent[];
       }>("docker_logs_poll", { handle: job.handle, sinceOffset: job.offset }, hostId);
       patch(set, hostId, (h) => {
         const cur = h.pulls[jobId] ?? job;
+        const exitCode = res.exitCode ?? res.exit_code ?? null;
         const next: PullJob = {
           ...cur,
           output: cur.output + (res.bytes ?? ""),
-          offset: res.next_offset ?? cur.offset,
+          offset: res.nextOffset ?? res.next_offset ?? cur.offset,
           dropped: (res.dropped ?? 0) > cur.dropped ? (res.dropped ?? 0) : cur.dropped,
           events: [...cur.events, ...(res.events ?? [])].slice(-200),
         };
@@ -870,9 +873,9 @@ export const useDockerStore = create<State>((set) => ({
           if (ev.kind === "done") next.phase = "done";
         }
         if (res.exited && next.phase === "pulling") {
-          next.phase = res.exit_code === 0 ? "done" : "error";
+          next.phase = exitCode === 0 ? "done" : "error";
           if (next.phase === "error" && !next.error) {
-            next.error = `pull exited ${res.exit_code ?? "?"}`;
+            next.error = `pull exited ${exitCode ?? "?"}`;
           }
         }
         return { ...h, pulls: { ...h.pulls, [jobId]: next } };
@@ -1105,23 +1108,27 @@ export const useDockerStore = create<State>((set) => ({
     try {
       const res = await sshRpc<{
         bytes: string;
-        next_offset: number;
+        nextOffset?: number;
+        next_offset?: number;
         dropped: number;
         exited: boolean;
-        exit_code: number | null;
+        exitCode?: number | null;
+        exit_code?: number | null;
       }>("docker_logs_poll", { handle: follow.handle, sinceOffset: follow.offset }, hostId);
       patch(set, hostId, (h) => {
         const cur = h.logFollows[followId] ?? follow;
         const chunk = res.bytes ?? "";
+        const nextOffset = res.nextOffset ?? res.next_offset ?? cur.offset;
+        const exitCode = res.exitCode ?? res.exit_code ?? null;
         const next: LogFollowState = {
           ...cur,
           lines: chunk
             ? [...cur.lines, ...chunk.split("\n")].slice(-5000)
             : cur.lines,
-          offset: res.next_offset ?? cur.offset,
+          offset: nextOffset,
           dropped: Math.max(cur.dropped, res.dropped ?? 0),
           exited: res.exited,
-          exitCode: res.exit_code,
+          exitCode,
           phase: res.exited ? "done" : "following",
         };
         return { ...h, logFollows: { ...h.logFollows, [followId]: next } };
@@ -1207,10 +1214,12 @@ export const useDockerStore = create<State>((set) => ({
     try {
       const res = await sshRpc<{
         bytes: string;
-        next_offset: number;
+        nextOffset?: number;
+        next_offset?: number;
         dropped: number;
         exited: boolean;
-        exit_code: number | null;
+        exitCode?: number | null;
+        exit_code?: number | null;
       }>("docker_events_poll", { handle: feed.handle, sinceOffset: feed.offset }, hostId);
       const fresh: DockerEvent[] = String(res.bytes ?? "")
         .split("\n")
@@ -1231,7 +1240,7 @@ export const useDockerStore = create<State>((set) => ({
           eventsFeed: {
             ...curFeed,
             events: [...curFeed.events, ...fresh].slice(-500),
-            offset: res.next_offset ?? curFeed.offset,
+            offset: res.nextOffset ?? res.next_offset ?? curFeed.offset,
             dropped: Math.max(curFeed.dropped, res.dropped ?? 0),
             phase: res.exited ? "done" : "streaming",
           },
