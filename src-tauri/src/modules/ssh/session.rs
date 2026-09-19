@@ -37,6 +37,9 @@ fn base_args(host: &SshHost, batch: bool) -> Vec<String> {
     if batch {
         args.push("-o".to_string());
         args.push("BatchMode=yes".to_string());
+        // Hush the MOTD/banner on non-interactive runs: it pollutes captured
+        // stdout (home probing, version checks) and has no user to read it.
+        args.push("-q".to_string());
     }
     if let Some(ref key) = host.identity_file {
         args.push("-i".to_string());

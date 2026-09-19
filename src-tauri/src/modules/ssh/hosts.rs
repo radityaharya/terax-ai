@@ -159,6 +159,54 @@ impl Default for HostStore {
     }
 }
 
+fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("terax-ssh-hosts.json"))
+}
+
+fn store_path_fallback() -> Option<std::path::PathBuf> {
+    dirs::data_dir().map(|d| d.join("terax").join("terax-ssh-hosts.json"))
+}
+
+fn read_store(app: &tauri::AppHandle) -> Vec<SshHost> {
+    let Ok(path) = store_path(app) else {
+        return Vec::new();
+    };
+    if !path.exists() {
+        return Vec::new();
+    }
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Vec::new();
+    };
+    serde_json::from_slice::<Vec<SshHost>>(&bytes).unwrap_or_default()
+}
+
+fn write_store(app: &tauri::AppHandle, hosts: &[SshHost]) -> Result<(), String> {
+    let path = store_path(app)?;
+    let tmp = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec(hosts).map_err(|e| e.to_string())?;
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)
+            .map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+        }
+        f.write_all(&bytes).map_err(|e| e.to_string())?;
+        f.sync_all().map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 static HOST_CACHE: OnceLock<HostStore> = OnceLock::new();
 
 pub fn host_store() -> &'static HostStore {
@@ -190,6 +238,49 @@ impl HostStore {
         for host in hosts {
             map.insert(host.id.clone(), host);
         }
+    }
+
+    /// Loads persisted hosts into memory. Called once at startup and on
+    /// first access; in-memory writes always persist via persist().
+    pub fn load(&self, app: &tauri::AppHandle) {
+        let stored = read_store(app);
+        if stored.is_empty() {
+            return;
+        }
+        let mut map = self.hosts.lock().unwrap();
+        for host in stored {
+            map.entry(host.id.clone()).or_insert(host);
+        }
+    }
+
+    /// Loads persisted hosts without an AppHandle (PTY spawn path). Falls
+    /// back to the platform data dir layout Tauri uses.
+    pub fn load_fallback(&self) {
+        if !self.hosts.lock().unwrap().is_empty() {
+            return;
+        }
+        let Some(path) = store_path_fallback() else {
+            return;
+        };
+        if !path.exists() {
+            return;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        let stored: Vec<SshHost> = serde_json::from_slice(&bytes).unwrap_or_default();
+        if stored.is_empty() {
+            return;
+        }
+        let mut map = self.hosts.lock().unwrap();
+        for host in stored {
+            map.entry(host.id.clone()).or_insert(host);
+        }
+    }
+
+    pub fn persist(&self, app: &tauri::AppHandle) -> Result<(), String> {
+        let hosts: Vec<SshHost> = self.hosts.lock().unwrap().values().cloned().collect();
+        write_store(app, &hosts)
     }
 }
 

@@ -82,7 +82,11 @@ pub fn build_command(
 /// shell (POSIX).
 pub fn build_ssh(cwd: Option<String>, host_id: &str) -> Result<CommandBuilder, String> {
     crate::modules::workspace::validate_ssh_host_id(host_id)?;
-    let host = crate::modules::ssh::hosts::host_store()
+    let store = crate::modules::ssh::hosts::host_store();
+    // PTY spawn has no AppHandle: load persisted hosts from disk when the
+    // in-memory store is empty (fresh process, dev rebuild).
+    store.load_fallback();
+    let host = store
         .get(host_id)
         .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
     let remote_shell = crate::modules::ssh::session::ssh_login_shell(&host)

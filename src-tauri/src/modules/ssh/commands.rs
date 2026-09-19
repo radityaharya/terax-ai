@@ -12,12 +12,17 @@ fn err(e: SshError) -> String {
 }
 
 #[tauri::command]
-pub async fn ssh_list_hosts() -> Result<Vec<SshHost>, String> {
-    Ok(host_store().list())
+pub async fn ssh_list_hosts(app: tauri::AppHandle) -> Result<Vec<SshHost>, String> {
+    let store = host_store();
+    store.load(&app);
+    Ok(store.list())
 }
 
 #[tauri::command]
-pub async fn ssh_save_host(input: SshHostInput) -> Result<SshHost, String> {
+pub async fn ssh_save_host(
+    app: tauri::AppHandle,
+    input: SshHostInput,
+) -> Result<SshHost, String> {
     let fields = normalize_host_input(&input).map_err(|m| m)?;
     let now = now_ms();
     let store = host_store();
@@ -52,33 +57,43 @@ pub async fn ssh_save_host(input: SshHostInput) -> Result<SshHost, String> {
         updated_at_ms: now,
     };
     store.upsert(host.clone());
+    store.persist(&app)?;
     Ok(host)
 }
 
 #[tauri::command]
-pub async fn ssh_delete_host(id: String) -> Result<(), String> {
+pub async fn ssh_delete_host(app: tauri::AppHandle, id: String) -> Result<(), String> {
     validate_host_id(&id)?;
-    if !host_store().remove(&id) {
+    let store = host_store();
+    if !store.remove(&id) {
         return Err(format!("unknown SSH host: {id}"));
     }
+    store.persist(&app)?;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn ssh_bind_space(id: String, space_id: Option<String>) -> Result<(), String> {
+pub async fn ssh_bind_space(
+    app: tauri::AppHandle,
+    id: String,
+    space_id: Option<String>,
+) -> Result<(), String> {
     validate_host_id(&id)?;
     let store = host_store();
     let mut host = store.get(&id).ok_or_else(|| format!("unknown SSH host: {id}"))?;
     host.bound_space_id = space_id;
     host.updated_at_ms = now_ms();
     store.upsert(host);
+    store.persist(&app)?;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn ssh_test(id: String) -> Result<String, String> {
+pub async fn ssh_test(app: tauri::AppHandle, id: String) -> Result<String, String> {
     validate_host_id(&id)?;
-    let host = host_store().get(&id).ok_or_else(|| format!("unknown SSH host: {id}"))?;
+    let store = host_store();
+    store.load(&app);
+    let host = store.get(&id).ok_or_else(|| format!("unknown SSH host: {id}"))?;
     probe_auth(&host).map_err(err)?;
     ssh_home(&host).map_err(err)
 }
@@ -97,7 +112,11 @@ pub async fn ssh_import_config() -> Result<Vec<ImportedHost>, String> {
 }
 
 #[tauri::command]
-pub async fn ssh_import_host(alias: String, user: Option<String>) -> Result<SshHost, String> {
+pub async fn ssh_import_host(
+    app: tauri::AppHandle,
+    alias: String,
+    user: Option<String>,
+) -> Result<SshHost, String> {
     let imported = ssh_import_config()
         .await?
         .into_iter()
@@ -112,7 +131,7 @@ pub async fn ssh_import_host(alias: String, user: Option<String>) -> Result<SshH
         })
         .unwrap_or_else(|| "root".to_string());
     let fields = imported_to_fields(&imported, default_user.trim());
-    ssh_save_host(SshHostInput {
+    ssh_save_host(app, SshHostInput {
         id: None,
         alias: fields.alias,
         user: fields.user,
@@ -155,23 +174,29 @@ pub async fn ssh_known_hosts_path() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-pub async fn ssh_home_for(id: String) -> Result<String, String> {
+pub async fn ssh_home_for(app: tauri::AppHandle, id: String) -> Result<String, String> {
     validate_host_id(&id)?;
-    let host = host_store().get(&id).ok_or_else(|| format!("unknown SSH host: {id}"))?;
+    let store = host_store();
+    store.load(&app);
+    let host = store.get(&id).ok_or_else(|| format!("unknown SSH host: {id}"))?;
     ssh_home(&host).map_err(err)
 }
 
 #[tauri::command]
-pub async fn ssh_login_shell_for(id: String) -> Result<String, String> {
+pub async fn ssh_login_shell_for(app: tauri::AppHandle, id: String) -> Result<String, String> {
     validate_host_id(&id)?;
-    let host = host_store().get(&id).ok_or_else(|| format!("unknown SSH host: {id}"))?;
+    let store = host_store();
+    store.load(&app);
+    let host = store.get(&id).ok_or_else(|| format!("unknown SSH host: {id}"))?;
     ssh_login_shell(&host).map_err(err)
 }
 
 #[tauri::command]
-pub async fn ssh_probe_auth(id: String) -> Result<ProbeOutcome, String> {
+pub async fn ssh_probe_auth(app: tauri::AppHandle, id: String) -> Result<ProbeOutcome, String> {
     validate_host_id(&id)?;
-    let host = host_store().get(&id).ok_or_else(|| format!("unknown SSH host: {id}"))?;
+    let store = host_store();
+    store.load(&app);
+    let host = store.get(&id).ok_or_else(|| format!("unknown SSH host: {id}"))?;
     match probe_auth(&host) {
         Ok(()) => Ok(ProbeOutcome::ok()),
         Err(SshError::AuthRequired { message, hint }) => Ok(ProbeOutcome::auth(message, hint)),
@@ -265,13 +290,16 @@ pub fn ensure_remote_agent(host: &SshHost) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn ssh_rpc(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SshShared>,
     host_id: String,
     method: String,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     super::hosts::validate_host_id(&host_id)?;
-    let host = host_store()
+    let store = host_store();
+    store.load(&app);
+    let host = store
         .get(&host_id)
         .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
     let allowed = [
@@ -321,12 +349,24 @@ pub async fn ssh_rpc(
         return Err(format!("remote method not allowed: {method}"));
     }
     let remote_bin = ensure_remote_agent(&host)?;
-    let remote_root = host
-        .remote_root
-        .clone()
-        .filter(|r| !r.is_empty())
-        .or_else(|| super::session::ssh_home(&host).map_err(|e| e.to_string()).ok())
-        .ok_or_else(|| "could not resolve remote root".to_string())?;
+    // Resolve the agent root: explicit setting wins, else probe the remote
+    // home once and remember it on the host so later calls skip the probe.
+    let remote_root = match host.remote_root.clone().filter(|r| !r.is_empty()) {
+        Some(root) => root,
+        None => match super::session::ssh_home(&host) {
+            Ok(home) => {
+                let mut updated = host.clone();
+                updated.remote_root = Some(home.clone());
+                updated.updated_at_ms = now_ms();
+                store.upsert(updated);
+                let _ = store.persist(&app);
+                home
+            }
+            Err(e) => {
+                return Err(format!("could not resolve remote home: {e}"));
+            }
+        },
+    };
     let params = params.as_object().cloned().unwrap_or_default();
     let params = serde_json::Value::Object(params);
     state
