@@ -1,6 +1,4 @@
-use std::collections::HashMap;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::errors::{classify_probe_output, classify_stderr, AuthHint, SshError};
@@ -373,96 +371,10 @@ pub fn rpc_args(host: &SshHost, remote_cmd: &str) -> Vec<String> {
     args
 }
 
-pub fn master_socket_path(host_id: &str) -> Result<std::path::PathBuf, SshError> {
-    super::hosts::validate_host_id(host_id).map_err(|m| SshError::UnsafeHost { message: m })?;
-    let dir = dirs::cache_dir()
-        .ok_or_else(|| SshError::Io {
-            message: "could not resolve cache directory".into(),
-        })?
-        .join("terax")
-        .join("ssh-masters");
-    std::fs::create_dir_all(&dir).map_err(|e| SshError::Io {
-        message: format!("create master dir: {e}"),
-    })?;
-    Ok(dir.join(format!("master-{host_id}")))
-}
-
-pub struct MasterRegistry {
-    live: Mutex<HashMap<String, bool>>,
-}
-
-impl Default for MasterRegistry {
-    fn default() -> Self {
-        Self {
-            live: Mutex::new(HashMap::new()),
-        }
-    }
-}
-
-impl MasterRegistry {
-    pub fn mark_live(&self, host_id: &str) {
-        self.live.lock().unwrap().insert(host_id.to_string(), true);
-    }
-
-    pub fn mark_dead(&self, host_id: &str) {
-        self.live.lock().unwrap().remove(host_id);
-    }
-
-    pub fn is_live_cached(&self, host_id: &str) -> bool {
-        self.live.lock().unwrap().contains_key(host_id)
-    }
-}
-
-pub struct ProbeCache {
-    entries: Mutex<HashMap<String, (bool, std::time::Instant)>>,
-}
-
-impl Default for ProbeCache {
-    fn default() -> Self {
-        Self {
-            entries: Mutex::new(HashMap::new()),
-        }
-    }
-}
-
-impl ProbeCache {
-    pub fn get(&self, host_id: &str) -> Option<bool> {
-        let mut map = self.entries.lock().unwrap();
-        let (ok, at) = map.get(host_id)?;
-        if at.elapsed() < Duration::from_secs(60) {
-            Some(*ok)
-        } else {
-            map.remove(host_id);
-            None
-        }
-    }
-
-    pub fn set(&self, host_id: &str, ok: bool) {
-        self.entries
-            .lock()
-            .unwrap()
-            .insert(host_id.to_string(), (ok, std::time::Instant::now()));
-    }
-}
-
 pub fn auth_hint_for_ui(hint: &AuthHint) -> &'static str {
     match hint {
         AuthHint::PublicKeyDenied => "key",
         AuthHint::PasswordRequired => "password",
         AuthHint::KeyboardInteractive => "terminal-2fa",
-    }
-}
-
-pub struct SessionDeps {
-    pub masters: Arc<MasterRegistry>,
-    pub probes: Arc<ProbeCache>,
-}
-
-impl Default for SessionDeps {
-    fn default() -> Self {
-        Self {
-            masters: Arc::new(MasterRegistry::default()),
-            probes: Arc::new(ProbeCache::default()),
-        }
     }
 }

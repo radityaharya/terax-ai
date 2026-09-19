@@ -53,10 +53,26 @@ impl ShellKind {
 
 #[derive(Clone, Debug)]
 pub enum SshIntegration {
-    Zsh { zdotdir: String },
-    Bash { rcfile: String },
-    Fish,
+    Zsh { zdotdir: String, shell: String },
+    Bash { rcfile: String, shell: String },
+    Fish { shell: String },
+    /// Bare shell: no integration scripts installed. Still carries the
+    /// resolved login shell so the spawn path skips its own probe.
+    Plain { shell: String },
     None,
+}
+
+impl SshIntegration {
+    /// Remote login shell carried alongside the integration wiring, if any.
+    pub fn shell_path(&self) -> Option<&str> {
+        match self {
+            SshIntegration::Zsh { shell, .. }
+            | SshIntegration::Bash { shell, .. }
+            | SshIntegration::Fish { shell }
+            | SshIntegration::Plain { shell } => Some(shell),
+            SshIntegration::None => None,
+        }
+    }
 }
 
 /// Spawn-time entry point: resolves the host, ensures the agent, probes the
@@ -87,13 +103,39 @@ fn ensure_inner(
     let host = store
         .get(host_id)
         .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
-    let remote_bin = super::commands::ensure_remote_agent(&host)?;
+    let remote_bin = super::commands::ensure_remote_agent(&host, Some(&ssh.session))?;
+    // Home: persisted record wins, then the session cache, else one probe
+    // that is remembered for the rest of the app run.
     let remote_root = match host.remote_root.clone().filter(|r| !r.is_empty()) {
-        Some(root) => root,
-        None => super::session::ssh_home(&host).map_err(|e| e.to_string())?,
+        Some(root) => {
+            ssh.session.update(host_id, |f| {
+                if f.home.is_none() {
+                    f.home = Some(root.clone());
+                }
+            });
+            root
+        }
+        None => match ssh.session.get(host_id).home {
+            Some(home) => home,
+            None => {
+                let home = super::session::ssh_home(&host).map_err(|e| e.to_string())?;
+                ssh.session.update(host_id, |f| f.home = Some(home.clone()));
+                home
+            }
+        },
     };
-    let shell_path = super::session::ssh_login_shell(&host).map_err(|e| e.to_string())?;
+    // Login shell: cached for the app run after the first probe.
+    let shell_path = match ssh.session.get(host_id).login_shell {
+        Some(shell) => shell,
+        None => {
+            let shell = super::session::ssh_login_shell(&host).map_err(|e| e.to_string())?;
+            ssh.session.update(host_id, |f| f.login_shell = Some(shell.clone()));
+            shell
+        }
+    };
     Ok(ensure_remote_integration(
+        // Return the resolved shell too so the PTY spawn path doesn't
+        // re-probe it (that was a duplicate ssh handshake per terminal).
         &ssh.rpc,
         host_id,
         &host,
@@ -117,7 +159,9 @@ pub fn ensure_remote_integration(
 ) -> SshIntegration {
     let kind = ShellKind::classify(shell_path);
     if matches!(kind, ShellKind::Other) {
-        return SshIntegration::None;
+        return SshIntegration::Plain {
+            shell: shell_path.to_string(),
+        };
     }
     let base = format!("{}/.cache/terax/shell-integration", remote_root.trim_end_matches('/'));
     // Remote create_dir errors when the dir exists (explorer "new folder"
@@ -154,11 +198,13 @@ pub fn ensure_remote_integration(
                 .and_then(|_| write("zsh/.zlogin", &unix_newlines(ZLOGIN_SCRIPT)))
                 .map(|_| SshIntegration::Zsh {
                     zdotdir: format!("{base}/zsh"),
+                    shell: shell_path.to_string(),
                 })
         }
         ShellKind::Bash => write("bash/bashrc", &unix_newlines(BASHRC_SCRIPT)).map(|_| {
             SshIntegration::Bash {
                 rcfile: format!("{base}/bash/bashrc"),
+                shell: shell_path.to_string(),
             }
         }),
         ShellKind::Fish => {
@@ -178,9 +224,13 @@ pub fn ensure_remote_integration(
                     remote_root,
                 )
             })
-            .map(|_| SshIntegration::Fish)
+            .map(|_| SshIntegration::Fish {
+                shell: shell_path.to_string(),
+            })
         }
-        ShellKind::Other => Ok(SshIntegration::None),
+        ShellKind::Other => Ok(SshIntegration::Plain {
+            shell: shell_path.to_string(),
+        }),
     };
     match result {
         Ok(integration) => {

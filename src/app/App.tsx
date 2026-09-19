@@ -1354,12 +1354,11 @@ export default function App() {
         setActiveId(existing.id);
         return false;
       }
-      let home: string | null = null;
-      try {
-        home = await invoke<string>("ssh_home_for", { id: host.id });
-      } catch {
-        home = null;
-      }
+      // probeHost already resolved home into the connection status; reuse it
+      // instead of a duplicate ssh_home_for handshake per host click.
+      const known = useHostStore.getState().connections[host.id];
+      const home =
+        known?.state === "online" && known.home ? known.home : null;
       newTabWithEnv(env, home ?? undefined, host.alias);
       return true;
     },

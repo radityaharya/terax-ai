@@ -92,11 +92,19 @@ pub fn build_ssh(
 ) -> Result<CommandBuilder, String> {
     use crate::modules::ssh::integration::{ShellKind, SshIntegration, FISH_REINSTALL_PROMPT};
     let host = crate::modules::ssh::integration::host_by_id(host_id)?;
-    let remote_shell = crate::modules::ssh::session::ssh_login_shell(&host)
-        .map_err(|e| e.to_string())
-        .unwrap_or_else(|_| "/bin/sh".to_string());
-    let kind = ShellKind::classify(&remote_shell);
+    // The login shell was already probed (and cached) by the integration
+    // step in pty_open; reuse it instead of a second ssh handshake. Only
+    // probe fresh when integration never ran (SshIntegration::None).
     let integration = integration.unwrap_or(SshIntegration::None);
+    let remote_shell = integration
+        .shell_path()
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            crate::modules::ssh::session::ssh_login_shell(&host)
+                .map_err(|e| e.to_string())
+                .unwrap_or_else(|_| "/bin/sh".to_string())
+        });
+    let kind = ShellKind::classify(&remote_shell);
     let mut cmd = CommandBuilder::new(crate::modules::ssh::ssh_binary());
     for arg in crate::modules::ssh::session::terminal_args(&host, None) {
         cmd.arg(arg);
@@ -110,13 +118,13 @@ pub fn build_ssh(
     let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     let cd = dir.as_deref().map(|d| format!("cd {} && ", q(d))).unwrap_or_default();
     let remote_cmd = match (&kind, &integration) {
-        (ShellKind::Zsh, SshIntegration::Zsh { zdotdir }) => {
+        (ShellKind::Zsh, SshIntegration::Zsh { zdotdir, .. }) => {
             format!("{cd}ZDOTDIR={} {} -l", q(zdotdir), q(&remote_shell))
         }
-        (ShellKind::Bash, SshIntegration::Bash { rcfile }) => {
+        (ShellKind::Bash, SshIntegration::Bash { rcfile, .. }) => {
             format!("{cd}{} --rcfile {} -i", q(&remote_shell), q(rcfile))
         }
-        (ShellKind::Fish, SshIntegration::Fish) => {
+        (ShellKind::Fish, SshIntegration::Fish { .. }) => {
             format!(
                 "{cd}env fish_features=no-mark-prompt {} -i -C {}",
                 q(&remote_shell),
@@ -1356,6 +1364,7 @@ mod tests {
             "zsh-check",
             Some(SshIntegration::Zsh {
                 zdotdir: "/home/u/.cache/terax/shell-integration/zsh".into(),
+                shell: "/bin/zsh".into(),
             }),
             false,
         )
@@ -1381,6 +1390,7 @@ mod tests {
             "bash-check",
             Some(SshIntegration::Bash {
                 rcfile: "/home/u/.cache/terax/shell-integration/bash/bashrc".into(),
+                shell: "/bin/bash".into(),
             }),
             true,
         )

@@ -28,14 +28,27 @@ struct RpcConnection {
     token: String,
 }
 
+/// Independent stdio pipes to the same host's agent. The agent protocol
+/// is strictly one-request-at-a-time per pipe (single-threaded serve
+/// loop), and one Mutex guards that framing per pipe, so unrelated calls
+/// (explorer listing dir A, git polling status, preview stating a file)
+/// were queueing behind each other on a single pipe. A small pool lets
+/// them run concurrently; the remote agent itself is stateless per call
+/// (each request carries its full path + token), so any pipe serves any
+/// method.
+const POOL_SIZE: usize = 4;
+
 pub struct SshRpcManager {
-    connections: Mutex<HashMap<String, Arc<RpcConnection>>>,
+    /// host_id -> up to POOL_SIZE pipes, round-robined per request.
+    connections: Mutex<HashMap<String, Vec<Arc<RpcConnection>>>>,
+    next_lane: Mutex<HashMap<String, usize>>,
 }
 
 impl Default for SshRpcManager {
     fn default() -> Self {
         Self {
             connections: Mutex::new(HashMap::new()),
+            next_lane: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -79,28 +92,25 @@ impl SshRpcManager {
     }
 
     pub fn drop_connection(&self, host_id: &str) {
-        if let Some(conn) = self.connections.lock().unwrap().remove(host_id) {
-            if let Ok(mut rpc) = conn.rpc.lock() {
-                let _ = rpc.child.kill();
+        if let Some(pool) = self.connections.lock().unwrap().remove(host_id) {
+            for conn in pool {
+                if let Ok(mut rpc) = conn.rpc.lock() {
+                    let _ = rpc.child.kill();
+                }
             }
         }
+        self.next_lane.lock().unwrap().remove(host_id);
     }
 
-    fn connection(
+    fn spawn_lane(
         &self,
-        host_id: &str,
+        host: &super::hosts::SshHost,
         remote_bin: &str,
         remote_root: &str,
     ) -> Result<Arc<RpcConnection>, String> {
-        if let Some(conn) = self.connections.lock().unwrap().get(host_id).cloned() {
-            return Ok(conn);
-        }
-        let host = host_store()
-            .get(host_id)
-            .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
         let token = generate_token().map_err(|e| e.to_string())?;
         let remote_cmd = format!("{remote_bin} serve --root {remote_root} --token {token}");
-        let args = rpc_args(&host, &remote_cmd);
+        let args = rpc_args(host, &remote_cmd);
         let mut cmd = Command::new(super::session::ssh_binary());
         for arg in args {
             cmd.arg(arg);
@@ -127,10 +137,57 @@ impl SshRpcManager {
         if !ping.get("ok").and_then(Value::as_bool).unwrap_or(false) {
             return Err("remote agent ping failed".into());
         }
-        self.connections
+        Ok(conn)
+    }
+
+    /// Round-robin a lane from the host's pool, growing it lazily to
+    /// POOL_SIZE. The pool map is only held for the index bookkeeping;
+    /// lane spawns (full ssh handshakes) happen outside the map lock so
+    /// concurrent first-use calls don't serialize on it.
+    fn connection(
+        &self,
+        host_id: &str,
+        remote_bin: &str,
+        remote_root: &str,
+    ) -> Result<Arc<RpcConnection>, String> {
+        let lane = {
+            let mut lanes = self.next_lane.lock().unwrap();
+            let next = lanes.entry(host_id.to_string()).or_insert(0);
+            let lane = *next % POOL_SIZE;
+            *next = next.wrapping_add(1);
+            lane
+        };
+        if let Some(conn) = self
+            .connections
             .lock()
             .unwrap()
-            .insert(host_id.to_string(), conn.clone());
+            .get(host_id)
+            .and_then(|pool| pool.get(lane).cloned())
+        {
+            return Ok(conn);
+        }
+        let host = host_store()
+            .get(host_id)
+            .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
+        let conn = self.spawn_lane(&host, remote_bin, remote_root)?;
+        let mut pools = self.connections.lock().unwrap();
+        let pool = pools.entry(host_id.to_string()).or_default();
+        if lane < pool.len() {
+            // Another thread won the race and filled this lane first; use
+            // theirs and drop ours (our child process gets killed here).
+            let existing = pool[lane].clone();
+            drop(pools);
+            if let Ok(mut rpc) = conn.rpc.lock() {
+                let _ = rpc.child.kill();
+            }
+            return Ok(existing);
+        }
+        // Lanes are positional by round-robin index; pad any gap so that
+        // pool[lane] is always this lane's connection.
+        while pool.len() < lane {
+            pool.push(conn.clone());
+        }
+        pool.push(conn.clone());
         Ok(conn)
     }
 

@@ -1,4 +1,3 @@
-pub mod askpass;
 pub mod commands;
 pub mod config;
 pub mod errors;

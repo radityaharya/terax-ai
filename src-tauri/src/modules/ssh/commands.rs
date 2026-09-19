@@ -5,7 +5,7 @@ use super::hosts::{
     SshHost, SshHostInput,
 };
 use super::known_hosts::{default_known_hosts_path, host_key_status, scan_host_keys, ScannedKey};
-use super::session::{probe_auth, ssh_home, ssh_login_shell, MasterRegistry, ProbeCache};
+use super::session::{probe_auth, ssh_home, ssh_login_shell};
 
 fn err(e: SshError) -> String {
     e.to_string()
@@ -239,23 +239,66 @@ impl ProbeOutcome {
 }
 
 pub struct SshShared {
-    pub masters: std::sync::Arc<MasterRegistry>,
-    pub probes: std::sync::Arc<ProbeCache>,
     pub rpc: std::sync::Arc<super::rpc::SshRpcManager>,
     /// Serializes agent ensure+upload per host: parallel first-use calls
     /// (explorer + git + status bar) must not race duplicate uploads.
     ensure_lock: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Per-host session cache: avoids re-probing facts that cannot change
+    /// within an app run. Every entry here saves at least one full `ssh`
+    /// handshake (200ms-2s) on the hot path. Note: ControlMaster is NOT
+    /// available on this platform (Windows OpenSSH has no ControlPath
+    /// support: `getsockname failed: Not a socket`), so caching probe
+    /// results is the only connection-reuse lever we have. Spawn paths
+    /// (PTY integration install) read these too.
+    pub session: std::sync::Arc<SessionCache>,
+}
+
+/// Facts about a host that are stable for the lifetime of the app process:
+/// agent binary version match, remote home dir, remote login shell.
+#[derive(Clone, Default)]
+pub struct HostSessionFacts {
+    /// Agent binary at ~/.cache/terax/terax-remote already verified to
+    /// match REMOTE_AGENT_VERSION this session (version probe skipped).
+    pub agent_verified: bool,
+    /// Cached remote $HOME (avoids ssh_home spawn per call).
+    pub home: Option<String>,
+    /// Cached remote login shell (avoids ssh_login_shell spawn per call).
+    pub login_shell: Option<String>,
+}
+
+#[derive(Default)]
+pub struct SessionCache {
+    facts: std::sync::Mutex<std::collections::HashMap<String, HostSessionFacts>>,
+}
+
+impl SessionCache {
+    pub fn get(&self, host_id: &str) -> HostSessionFacts {
+        self.facts.lock().unwrap().get(host_id).cloned().unwrap_or_default()
+    }
+
+    pub fn update(&self, host_id: &str, f: impl FnOnce(&mut HostSessionFacts)) {
+        let mut map = self.facts.lock().unwrap();
+        let entry = map.entry(host_id.to_string()).or_default();
+        f(entry);
+    }
+
+    pub fn mark_agent_verified(&self, host_id: &str) {
+        self.update(host_id, |f| f.agent_verified = true);
+    }
+
+    pub fn invalidate_host(&self, host_id: &str) {
+        self.facts.lock().unwrap().remove(host_id);
+    }
 }
 
 impl Default for SshShared {
     fn default() -> Self {
         Self {
-            masters: std::sync::Arc::new(MasterRegistry::default()),
-            probes: std::sync::Arc::new(ProbeCache::default()),
             rpc: std::sync::Arc::new(super::rpc::SshRpcManager::default()),
             ensure_lock: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             )),
+            session: std::sync::Arc::new(SessionCache::default()),
         }
     }
 }
@@ -319,16 +362,30 @@ fn bundled_remote_bin() -> Option<std::path::PathBuf> {
 
 /// Uploads the bundled agent to `~/.cache/terax/terax-remote` when missing
 /// or version-mismatched. Returns the remote path to execute.
-pub fn ensure_remote_agent(host: &SshHost) -> Result<String, String> {
+///
+/// `session` is the per-host cache: when the agent was already verified
+/// this app run, the version-probe handshake is skipped entirely.
+pub fn ensure_remote_agent(host: &SshHost, session: Option<&SessionCache>) -> Result<String, String> {
+    let remote_path = "~/.cache/terax/terax-remote";
+    if let Some(cache) = session {
+        if cache.get(&host.id).agent_verified {
+            return Ok(remote_path.to_string());
+        }
+    }
     let local = bundled_remote_bin()
         .ok_or_else(|| "remote agent binary not built yet (run pnpm build:remote)".to_string())?;
-    let remote_path = "~/.cache/terax/terax-remote";
     // Version check first: reuse the installed agent when it matches.
     let probe = super::session::run_ssh_capture_version(host, remote_path)?;
     if probe.trim().ends_with(REMOTE_AGENT_VERSION) {
+        if let Some(cache) = session {
+            cache.mark_agent_verified(&host.id);
+        }
         return Ok(remote_path.to_string());
     }
     super::session::upload_file(host, &local, remote_path)?;
+    if let Some(cache) = session {
+        cache.mark_agent_verified(&host.id);
+    }
     Ok(remote_path.to_string())
 }
 
@@ -397,26 +454,41 @@ pub async fn ssh_rpc(
     // + status bar) fires concurrent ssh_rpc calls, and without this they
     // race duplicate version probes and uploads over separate connections.
     // The second waiter finds the agent already installed and skips upload.
+    // Once verified this session, the probe is skipped entirely.
     let remote_bin = {
         let _guard = HoldEnsure::acquire(&state.ensure_lock, &host_id);
-        ensure_remote_agent(&host)?
+        ensure_remote_agent(&host, Some(&state.session))?
     };
-    // Resolve the agent root: explicit setting wins, else probe the remote
-    // home once and remember it on the host so later calls skip the probe.
+    // Resolve the agent root: explicit setting wins, then the in-memory
+    // session cache (no ssh spawn), then the persisted host record, else
+    // probe the remote home once and remember it everywhere.
     let remote_root = match host.remote_root.clone().filter(|r| !r.is_empty()) {
-        Some(root) => root,
-        None => match super::session::ssh_home(&host) {
-            Ok(home) => {
-                let mut updated = host.clone();
-                updated.remote_root = Some(home.clone());
-                updated.updated_at_ms = now_ms();
-                store.upsert(updated);
-                let _ = store.persist(&app);
-                home
-            }
-            Err(e) => {
-                return Err(format!("could not resolve remote home: {e}"));
-            }
+        Some(root) => {
+            state.session.update(&host_id, |f| {
+                if f.home.is_none() {
+                    f.home = Some(root.clone());
+                }
+            });
+            root
+        }
+        None => match state.session.get(&host_id).home {
+            Some(home) => home,
+            None => match super::session::ssh_home(&host) {
+                Ok(home) => {
+                    state.session.update(&host_id, |f| {
+                        f.home = Some(home.clone());
+                    });
+                    let mut updated = host.clone();
+                    updated.remote_root = Some(home.clone());
+                    updated.updated_at_ms = now_ms();
+                    store.upsert(updated);
+                    let _ = store.persist(&app);
+                    home
+                }
+                Err(e) => {
+                    return Err(format!("could not resolve remote home: {e}"));
+                }
+            },
         },
     };
     let params = params.as_object().cloned().unwrap_or_default();
@@ -437,6 +509,9 @@ pub async fn ssh_disconnect(
 ) -> Result<(), String> {
     super::hosts::validate_host_id(&host_id)?;
     state.rpc.drop_connection(&host_id);
+    // Drop cached session facts too: a disconnect means the next use must
+    // re-verify the agent and re-resolve home/shell against a live host.
+    state.session.invalidate_host(&host_id);
     Ok(())
 }
 

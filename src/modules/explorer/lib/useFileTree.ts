@@ -247,6 +247,11 @@ export function useFileTree(rootPath: string | null, options?: Options) {
 
   // Root change → restore the cached expansion for this root, re-scope watches,
   // and persist the outgoing root's expansion on the way out.
+  //
+  // The root itself fetches immediately; previously-expanded descendants
+  // fetch lazily on idle (requestIdleCallback, 1.5s fallback) so switching
+  // hosts/folders shows the top level first instead of waiting on every
+  // recalled subtree — each subtree is a full ssh round trip remotely.
   useEffect(() => {
     if (!rootPath) {
       setNodes({});
@@ -270,11 +275,44 @@ export function useFileTree(rootPath: string | null, options?: Options) {
 
     const toWatch = [rootPath, ...restored];
     void fetchChildren(rootPath);
-    for (const d of restored) void fetchChildren(d);
     for (const p of toWatch) watchedRef.current.add(p);
     watchAdd(toWatch);
 
+    let cancelled = false;
+    const fetchRestored = () => {
+      if (cancelled) return;
+      for (const d of restored) {
+        if (cancelled) return;
+        void fetchChildren(d);
+      }
+    };
+    let idleId: number | null = null;
+    let fallbackId: ReturnType<typeof setTimeout> | null = null;
+    if (restored.length > 0) {
+      const ric =
+        typeof window !== "undefined" &&
+        (window as unknown as {
+          requestIdleCallback?: (
+            cb: () => void,
+            opts?: { timeout: number },
+          ) => number;
+        }).requestIdleCallback;
+      if (ric) {
+        idleId = ric.call(window, fetchRestored, { timeout: 1500 });
+      } else {
+        fallbackId = setTimeout(fetchRestored, 0);
+      }
+    }
+
     return () => {
+      cancelled = true;
+      if (idleId !== null) {
+        const w = window as unknown as {
+          cancelIdleCallback?: (id: number) => void;
+        };
+        w.cancelIdleCallback?.(idleId);
+      }
+      if (fallbackId !== null) clearTimeout(fallbackId);
       rememberExpansion(rootPath, expandedRef.current);
       if (watchedRef.current.size > 0) {
         watchRemove([...watchedRef.current]);
