@@ -4,10 +4,12 @@ export { HostKeyDialog } from "./HostKeyDialog";
 export { SshAuthDialog, type SshAuthChoice } from "./SshAuthDialog";
 export {
   bindHostSpace,
+  deleteHost,
   useHostStore,
   refreshHosts,
   refreshImported,
   probeHost,
+  saveHost,
   type ConnectionStatus,
 } from "./lib/hostStore";
 export { markHostActive, cancelIdleDisconnect } from "./lib/idleDisconnect";

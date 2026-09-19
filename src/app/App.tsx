@@ -47,6 +47,7 @@ import {
   bindHostSpace,
   markHostActive,
   probeHost,
+  useHostStore,
   type SshAuthChoice,
   type SshHost,
 } from "@/modules/hosts";
@@ -601,9 +602,28 @@ export default function App() {
   });
   const askPresence = usePresence(Boolean(askPopup), 120);
 
+  // A local path (Windows drive, backslashes) must never reach a remote
+  // shell as cwd.
+  function looksLikeLocalCwd(s: string): boolean {
+    return s.includes("\\") || /^[A-Za-z]:/.test(s) || s.startsWith("\\\\");
+  }
+
+  // In SSH spaces a stale local inherited cwd would kill the remote
+  // shell (guarded server-side, but the tab would land at home anyway).
+  // Prefer the active remote cwd; fall back to the space root.
+  const sshSafeCwd = useCallback((): string | undefined => {
+    if (workspaceEnv.kind !== "ssh") return inheritedCwdForNewTab();
+    const inherited = inheritedCwdForNewTab();
+    if (inherited && !looksLikeLocalCwd(inherited)) return inherited;
+    return (
+      useSpaces.getState().spaces.find((s) => s.id === activeSpaceIdRef.current)
+        ?.root ?? undefined
+    );
+  }, [workspaceEnv, inheritedCwdForNewTab]);
+
   const openNewTab = useCallback(() => {
-    newTab(inheritedCwdForNewTab());
-  }, [newTab, inheritedCwdForNewTab]);
+    newTab(sshSafeCwd());
+  }, [newTab, sshSafeCwd]);
 
   const openNewPrivateTab = useCallback(() => {
     newPrivateTab(inheritedCwdForNewTab());
@@ -749,10 +769,16 @@ export default function App() {
     [],
   );
 
+  const activeSpaceRoot = useSpaces(
+    (s) => s.spaces.find((sp) => sp.id === activeSpaceId)?.root ?? null,
+  );
   const activeTerminalLeafCwd =
     activeTab?.kind === "terminal"
       ? (findLeafCwd(activeTab.paneTree, activeTab.activeLeafId) ??
         activeTab.cwd ??
+        // SSH tabs without shell integration never report OSC 7: show the
+        // space root instead of "no directory".
+        (workspaceEnv.kind === "ssh" ? activeSpaceRoot : null) ??
         null)
       : null;
 
@@ -1198,9 +1224,10 @@ export default function App() {
 
   // Jump to a host: reuse its bound space (tabs persist per host), or create
   // one bound to this host. Adopting the env swaps explorer/git/terminal to
-  // the remote; the agent transport serves fs calls once connected.
+  // the remote; the agent transport serves fs calls once connected. Returns
+  // true when a new space was created (its first tab is already open).
   const handleConnectHost = useCallback(
-    async (host: SshHost) => {
+    async (host: SshHost): Promise<boolean> => {
       markHostActive(host.id);
       const { spaces, create, setActive } = useSpaces.getState();
       const bound = host.boundSpaceId
@@ -1213,7 +1240,7 @@ export default function App() {
       if (bound) {
         if (bound.id !== activeSpaceIdRef.current) setActive(bound.id);
         await adoptWorkspaceEnv(bound.env);
-        return;
+        return false;
       }
       const env: WorkspaceEnv = { kind: "ssh", hostId: host.id };
       let home: string | null = null;
@@ -1231,15 +1258,11 @@ export default function App() {
       void bindHostSpace(host.id, meta.id);
       clearWorkspaceState();
       setWorkspaceEnv(env);
-      if (home) {
-        try {
-          await native.workspaceAuthorize(home);
-        } catch {
-          // Remote authorize lands with the agent transport; ignore for now.
-        }
-      }
+      // resetWorkspace opens the space's first tab at the remote home;
+      // passing undefined would inherit the previous local cwd instead.
       resetWorkspace(home ?? undefined);
       setActive(meta.id);
+      return true;
     },
     [
       adoptWorkspaceEnv,
@@ -1732,12 +1755,22 @@ export default function App() {
               }}
               onChoice={(_choice: SshAuthChoice) => {
                 // Complete auth natively in a terminal tab: connect the
-                // host env first so the new tab spawns ssh, then open it.
+                // host env first so the new tab spawns ssh. A fresh space
+                // already opened its first tab; only bound spaces with no
+                // fresh tab need one, opened at the remote home.
                 const pending = sshAuthPrompt;
                 setSshAuthPrompt(null);
                 if (pending) {
-                  void handleConnectHost(pending.host).then(() => {
-                    newTab(undefined);
+                  void handleConnectHost(pending.host).then((created) => {
+                    if (!created) {
+                      // Open the auth terminal at the remote home, never
+                      // the inherited local cwd.
+                      const status =
+                        useHostStore.getState().connections[pending.host.id];
+                      const home =
+                        status?.state === "online" ? status.home : null;
+                      newTab(home ?? undefined);
+                    }
                   });
                 }
               }}

@@ -94,7 +94,13 @@ pub fn build_ssh(cwd: Option<String>, host_id: &str) -> Result<CommandBuilder, S
     }
     // Apply the remote cwd inside the remote shell. Single-quoted with
     // embedded-quote escaping; empty/absent cwd starts at the remote home.
-    if let Some(dir) = cwd.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+    // A local path leaking in (Windows drive, backslashes) must never kill
+    // the session: fall back to the remote home instead.
+    if let Some(dir) = cwd
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .filter(|s| !looks_like_local_path(s))
+    {
         let quoted = format!("'{}'", dir.replace('\'', "'\\''"));
         cmd.arg(format!("cd {quoted} && exec {remote_shell}"));
     } else {
@@ -107,6 +113,30 @@ pub fn build_ssh(cwd: Option<String>, host_id: &str) -> Result<CommandBuilder, S
     // frontend must not expect command blocks on SSH tabs.
     log::info!("spawning SSH shell: {}@{}", host.user, host.hostname);
     Ok(cmd)
+}
+
+/// True for paths that are local to the desktop (Windows drive, backslashes,
+/// UNC, WSL drvfs). Remote shells must never receive them as cwd.
+fn looks_like_local_path(s: &str) -> bool {
+    if s.contains('\\') {
+        return true;
+    }
+    if s.len() >= 2 && s.as_bytes()[1] == b':' {
+        return true;
+    }
+    if s.starts_with("\\\\") {
+        return true;
+    }
+    // WSL drvfs (/mnt/c/...) is Windows storage, not a remote path.
+    if let Some(rest) = s.strip_prefix("/mnt/") {
+        let mut chars = rest.chars();
+        if let (Some(drive), Some(next)) = (chars.next(), chars.next()) {
+            if drive.is_ascii_alphabetic() && next == '/' {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // Honor the override only if it matches an enumerated shell, so a tampered
@@ -1254,5 +1284,38 @@ mod tests {
             .collect();
         let joined = argv.join(" ");
         assert!(joined.contains("o'\\''brien"), "got: {joined}");
+    }
+
+    #[test]
+    fn ssh_launch_ignores_leaked_local_paths() {
+        seed_ssh_host("leak-check");
+        for leaked in [
+            "C:/Users/conta",
+            r"C:\Users\conta",
+            r"\\server\share",
+            "/mnt/c/Users/conta",
+        ] {
+            let cmd = build_ssh(Some(leaked.into()), "leak-check").expect("build");
+            let argv: Vec<_> = cmd
+                .get_argv()
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            let joined = argv.join(" ");
+            assert!(
+                !joined.contains("cd "),
+                "local path must not reach remote shell, got: {joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_path_detector_catches_windows_forms() {
+        assert!(super::looks_like_local_path("C:/Users/conta"));
+        assert!(super::looks_like_local_path(r"C:\Users\conta"));
+        assert!(super::looks_like_local_path(r"\\host\share"));
+        assert!(super::looks_like_local_path("/mnt/c/x"));
+        assert!(!super::looks_like_local_path("/home/u/repo"));
+        assert!(!super::looks_like_local_path("relative/dir"));
     }
 }
