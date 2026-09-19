@@ -8,7 +8,19 @@ import {
   type WorkspaceEnv,
 } from "@/modules/workspace";
 
+function sameEnv(a: WorkspaceEnv, b: WorkspaceEnv): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "wsl" && b.kind === "wsl") return a.distro === b.distro;
+  if (a.kind === "ssh" && b.kind === "ssh") return a.hostId === b.hostId;
+  return true;
+}
+
 async function resolveEnvHome(env: WorkspaceEnv): Promise<string> {
+  // SSH remote home resolves via ssh_home in Phase 1. Until then the caller
+  // surfaces the rejection instead of falling back to a local path.
+  if (env.kind === "ssh") {
+    throw new Error("SSH workspaces need a connected host (not implemented yet)");
+  }
   return env.kind === "wsl"
     ? getWslHome(env.distro)
     : (await homeDir()).replace(/\\/g, "/");
@@ -73,11 +85,7 @@ export function useWorkspaceSwitcher({
 
   const switchWorkspace = useCallback(
     async (env: WorkspaceEnv): Promise<boolean> => {
-      if (
-        env.kind === workspaceEnv.kind &&
-        (env.kind === "local" ||
-          (workspaceEnv.kind === "wsl" && env.distro === workspaceEnv.distro))
-      ) {
+      if (sameEnv(env, workspaceEnv)) {
         return false;
       }
       const dirty = tabsRef.current.some((t) => t.kind === "editor" && t.dirty);

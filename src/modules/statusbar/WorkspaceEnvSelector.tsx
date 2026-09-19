@@ -37,7 +37,12 @@ function WorkspaceEnvSelectorWindows({ onSelect }: Props) {
     }
   };
 
-  const label = env.kind === "wsl" ? `WSL: ${env.distro}` : "Windows";
+  const label =
+    env.kind === "wsl"
+      ? `WSL: ${env.distro}`
+      : env.kind === "ssh"
+        ? `SSH: ${env.hostId}`
+        : "Windows";
 
   return (
     <DropdownMenu onOpenChange={handleOpenChange}>

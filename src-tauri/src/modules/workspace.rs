@@ -77,6 +77,7 @@ pub fn authorize_spawn_cwd(
     cwd: Option<&str>,
     workspace: &WorkspaceEnv,
 ) -> Result<Option<PathBuf>, String> {
+    require_local_workspace(workspace)?;
     let Some(cwd) = cwd.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
@@ -102,6 +103,7 @@ pub fn authorize_user_spawn_cwd(
     cwd: Option<&str>,
     workspace: &WorkspaceEnv,
 ) -> Result<Option<PathBuf>, String> {
+    require_local_workspace(workspace)?;
     let Some(cwd) = cwd.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
@@ -146,6 +148,7 @@ pub async fn workspace_authorize(
     registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<String, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
+    require_local_workspace(&workspace)?;
     let resolved = resolve_path(&path, &workspace);
     let canonical = registry.authorize(&resolved).map_err(|e| e.to_string())?;
     Ok(crate::modules::fs::to_canon(&canonical))
@@ -316,6 +319,10 @@ pub enum WorkspaceEnv {
     Wsl {
         distro: String,
     },
+    Ssh {
+        #[serde(rename = "hostId")]
+        host_id: String,
+    },
 }
 
 impl WorkspaceEnv {
@@ -326,6 +333,24 @@ impl WorkspaceEnv {
     pub fn is_wsl(&self) -> bool {
         matches!(self, Self::Wsl { .. })
     }
+
+    pub fn is_ssh(&self) -> bool {
+        matches!(self, Self::Ssh { .. })
+    }
+}
+
+/// Rejects SSH workspaces at local-IO boundaries. Remote paths are opaque
+/// strings until the terax-remote agent transport exists (Phase 3); running
+/// them through local canonicalize/fs/spawn would misinterpret or leak them.
+/// Every local `#[tauri::command]` must call this before touching the FS.
+pub fn require_local_workspace(workspace: &WorkspaceEnv) -> Result<(), String> {
+    match workspace {
+        WorkspaceEnv::Ssh { host_id } => {
+            validate_ssh_host_id(host_id)?;
+            Err("ssh workspaces need a connected host agent (not implemented yet)".into())
+        }
+        _ => Ok(()),
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -335,17 +360,45 @@ pub struct WslDistro {
     pub running: bool,
 }
 
+/// True for SSH host ids safe to use in socket paths and scope keys.
+/// Same shape as WSL distro names: alphanumeric with `.`, `_`, `-`, space
+/// separators. Rejects anything that could traverse (`..`, `\`, `/`) so a
+/// malicious host id cannot escape the master's socket dir.
+pub fn is_safe_ssh_host_id(id: &str) -> bool {
+    if id.is_empty() || id.len() > 255 {
+        return false;
+    }
+    if id == "." || id == ".." || id.starts_with('.') {
+        return false;
+    }
+    id.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ' '))
+        && !id.contains("..")
+}
+
+pub(crate) fn validate_ssh_host_id(id: &str) -> Result<(), String> {
+    if is_safe_ssh_host_id(id) {
+        Ok(())
+    } else {
+        Err(format!("unsafe SSH host id: {id}"))
+    }
+}
+
 #[cfg(windows)]
 pub fn resolve_path(path: &str, workspace: &WorkspaceEnv) -> PathBuf {
     match workspace {
         WorkspaceEnv::Local => PathBuf::from(path),
         WorkspaceEnv::Wsl { distro } => wsl_path_to_host(distro, path),
+        WorkspaceEnv::Ssh { .. } => PathBuf::from(r"\\terax-ssh\__unimplemented__"),
     }
 }
 
 #[cfg(not(windows))]
-pub fn resolve_path(path: &str, _workspace: &WorkspaceEnv) -> PathBuf {
-    PathBuf::from(path)
+pub fn resolve_path(path: &str, workspace: &WorkspaceEnv) -> PathBuf {
+    match workspace {
+        WorkspaceEnv::Ssh { .. } => PathBuf::from("/terax-ssh/__unimplemented__"),
+        _ => PathBuf::from(path),
+    }
 }
 
 /// True for WSL distro names safe to splice into a UNC path. Real WSL distros
@@ -677,6 +730,27 @@ mod tests {
     }
 
     #[test]
+    fn ssh_host_id_validator_accepts_real_ids() {
+        assert!(is_safe_ssh_host_id("prod-web-01"));
+        assert!(is_safe_ssh_host_id("db.primary"));
+        assert!(is_safe_ssh_host_id("staging_2"));
+        assert!(is_safe_ssh_host_id("My Server"));
+    }
+
+    #[test]
+    fn ssh_host_id_validator_rejects_traversal() {
+        assert!(!is_safe_ssh_host_id(".."));
+        assert!(!is_safe_ssh_host_id("../foo"));
+        assert!(!is_safe_ssh_host_id("foo/bar"));
+        assert!(!is_safe_ssh_host_id("foo\\bar"));
+        assert!(!is_safe_ssh_host_id("foo..bar"));
+        assert!(!is_safe_ssh_host_id(""));
+        assert!(!is_safe_ssh_host_id(".hidden"));
+        assert!(!is_safe_ssh_host_id("foo:bar"));
+        assert!(validate_ssh_host_id("../x").is_err());
+    }
+
+    #[test]
     fn wsl_path_to_unc_blocks_traversal_distro() {
         // Malicious distro name must produce a path that is_dir() will reject,
         // never escape the WSL share root.
@@ -934,6 +1008,46 @@ mod auth_tests {
         let env = tempdir("envfb");
         let resolved = resolve_launch_cwd(Some("/no/such/terax/dir"), Some(env.clone()));
         assert_eq!(resolved, Some(env));
+    }
+
+    fn ssh_env() -> WorkspaceEnv {
+        WorkspaceEnv::Ssh {
+            host_id: "test-host".into(),
+        }
+    }
+
+    #[test]
+    fn ssh_spawn_cwd_is_rejected_before_agent_transport() {
+        let reg = WorkspaceRegistry::default();
+        let err = authorize_spawn_cwd(&reg, Some("/home/u"), &ssh_env())
+            .expect_err("ssh spawn must be rejected");
+        assert!(err.contains("host agent"), "got: {err}");
+    }
+
+    #[test]
+    fn ssh_user_spawn_cwd_is_rejected_before_agent_transport() {
+        let reg = WorkspaceRegistry::default();
+        let err = authorize_user_spawn_cwd(&reg, Some("/home/u"), &ssh_env())
+            .expect_err("ssh user spawn must be rejected");
+        assert!(err.contains("host agent"), "got: {err}");
+    }
+
+    #[test]
+    fn ssh_user_spawn_cwd_or_home_returns_none_without_touching_registry() {
+        let reg = WorkspaceRegistry::default();
+        assert_eq!(user_spawn_cwd_or_home(&reg, Some("/home/u"), &ssh_env()), None);
+    }
+
+    #[test]
+    fn ssh_resolve_path_is_never_a_real_directory() {
+        let p = resolve_path("/home/u/repo", &ssh_env());
+        assert!(!p.is_dir(), "got: {}", p.display());
+    }
+
+    #[test]
+    fn require_local_workspace_rejects_ssh() {
+        assert!(require_local_workspace(&ssh_env()).is_err());
+        assert!(require_local_workspace(&WorkspaceEnv::Local).is_ok());
     }
 }
 

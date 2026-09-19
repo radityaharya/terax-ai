@@ -127,7 +127,7 @@ fn wrap_posix_with_sentinel(command: &str, sentinel: &str) -> String {
 }
 
 fn wrap_with_sentinel(command: &str, workspace: &WorkspaceEnv, sentinel: &str) -> String {
-    if workspace.is_wsl() {
+    if workspace.is_wsl() || workspace.is_ssh() {
         return wrap_posix_with_sentinel(command, sentinel);
     }
     #[cfg(unix)]

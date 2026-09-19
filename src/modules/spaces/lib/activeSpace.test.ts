@@ -59,6 +59,7 @@ describe("activeSpaceEnv", () => {
 
 describe("freshTabCwd", () => {
   const wsl: WorkspaceEnv = { kind: "wsl", distro: "Ubuntu" };
+  const ssh: WorkspaceEnv = { kind: "ssh", hostId: "prod" };
   const local: WorkspaceEnv = { kind: "local" };
 
   it("prefers the restored home for any env", () => {
@@ -69,6 +70,13 @@ describe("freshTabCwd", () => {
 
   it("returns null for a WSL space when its home did not resolve", () => {
     expect(freshTabCwd(wsl, null, "C:/Users/me", "C:/Users/me")).toBeNull();
+  });
+
+  it("returns null for an SSH space when its home did not resolve", () => {
+    expect(freshTabCwd(ssh, null, "C:/Users/me", "C:/Users/me")).toBeNull();
+    expect(freshTabCwd(ssh, "/home/u", "C:/Users/me", "C:/Users/me")).toBe(
+      "/home/u",
+    );
   });
 
   it("falls back to the local launch cwd then home for a local space", () => {

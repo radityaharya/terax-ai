@@ -47,6 +47,7 @@ fn workspace_cache_key(workspace: &WorkspaceEnv) -> String {
     match workspace {
         WorkspaceEnv::Local => "local".into(),
         WorkspaceEnv::Wsl { distro } => format!("wsl:{distro}"),
+        WorkspaceEnv::Ssh { host_id } => format!("ssh:{host_id}"),
     }
 }
 
@@ -245,6 +246,12 @@ where
     S: AsRef<OsStr>,
 {
     let dur = Duration::from_secs(timeout_secs.clamp(1, MAX_TIMEOUT_SECS));
+    if workspace.is_ssh() {
+        return Err(GitError::command(
+            "ssh workspaces",
+            "git needs a connected host agent (not implemented yet)",
+        ));
+    }
     let args: Vec<OsString> = args
         .into_iter()
         .map(|arg| arg.as_ref().to_os_string())
@@ -309,6 +316,12 @@ fn build_git_command(
     cwd: Option<&str>,
     args: &[OsString],
 ) -> Result<Command> {
+    if _workspace.is_ssh() {
+        return Err(GitError::command(
+            "ssh workspaces",
+            "git needs a connected host agent (not implemented yet)",
+        ));
+    }
     #[cfg(windows)]
     if let WorkspaceEnv::Wsl { distro } = _workspace {
         validate_wsl_distro_name(distro)

@@ -64,6 +64,7 @@ export async function acquireDocExtension(
   path: string,
   langId: string,
 ): Promise<LspDocHandle | null> {
+  // Remote workspaces (WSL today, SSH once connected) run no local server.
   if (currentWorkspaceEnv().kind !== "local") return null;
   const prefs = usePreferencesStore.getState();
   const preset = serverForLanguage(

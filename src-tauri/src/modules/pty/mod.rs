@@ -63,7 +63,8 @@ pub async fn pty_open(
     let cwd = user_spawn_cwd_or_home(&registry, cwd.as_deref(), &workspace);
     // A Windows helper cannot execute inside WSL without explicit path and
     // network translation. Do not inject credentials for a broken command.
-    let control_env = if workspace.is_wsl() {
+    // Same for SSH: the helper runs on the remote in Phase 3, not locally.
+    let control_env = if workspace.is_wsl() || workspace.is_ssh() {
         None
     } else {
         pane_id.and_then(|pane_id| control.shell_env(pane_id))

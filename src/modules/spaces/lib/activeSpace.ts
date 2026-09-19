@@ -19,8 +19,8 @@ export function activeSpaceEnv(
   return findActiveSpace(spaces, activeId)?.env ?? { kind: "local" };
 }
 
-// A WSL space falls back to null, not the local cwd, so its first tab opens at
-// the WSL home instead of a Windows path.
+// A WSL or SSH space falls back to null, not the local cwd, so its first tab
+// opens at the remote home instead of a local path.
 export function freshTabCwd(
   env: WorkspaceEnv,
   restoredHome: string | null,
