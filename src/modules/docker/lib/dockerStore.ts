@@ -64,6 +64,36 @@ type HostDockerState = {
   /** Prune op in flight (target key). */
   pruning: PruneTarget | null;
   pruneOutput: string | null;
+  /** Image ids with an op in flight (pull/tag/push/rmi). */
+  busyImages: Record<string, string>;
+  /** Update-check results keyed by image reference. */
+  updates: Record<string, ImageUpdateState>;
+  /** Registry login state per registry host. */
+  registries: Record<string, { loggedIn: boolean; busy: boolean; error: string | null }>;
+  /** Pull jobs keyed by local job id. */
+  pulls: Record<string, PullJob>;
+};
+
+export type ImageUpdateState =
+  | { status: "unknown" | "checking" }
+  | { status: "current"; localDigest: string }
+  | { status: "available"; localDigest: string }
+  | { status: "error"; message: string };
+
+export type PullJob = {
+  reference: string;
+  platform: string;
+  quiet: boolean;
+  /** Agent bg handle once spawned. */
+  handle: number | null;
+  phase: "starting" | "pulling" | "done" | "error";
+  /** Raw ring-buffer text (fallback view). */
+  output: string;
+  offset: number;
+  dropped: number;
+  events: import("./types").PullProgressEvent[];
+  digest: string | null;
+  error: string | null;
 };
 
 function emptyHost(): HostDockerState {
@@ -82,6 +112,10 @@ function emptyHost(): HostDockerState {
     diskError: null,
     pruning: null,
     pruneOutput: null,
+    busyImages: {},
+    updates: {},
+    registries: {},
+    pulls: {},
   };
 }
 
@@ -121,6 +155,23 @@ type State = {
     opts?: { all?: boolean; volumes?: boolean },
   ) => Promise<void>;
   clearPruneOutput: (hostId: string) => void;
+  removeImage: (hostId: string, id: string, force?: boolean) => Promise<void>;
+  checkUpdate: (hostId: string, reference: string) => Promise<void>;
+  startPull: (
+    hostId: string,
+    reference: string,
+    opts?: { platform?: string; quiet?: boolean },
+  ) => string;
+  pollPull: (hostId: string, jobId: string) => Promise<void>;
+  cancelPull: (hostId: string, jobId: string) => Promise<void>;
+  dismissPull: (hostId: string, jobId: string) => void;
+  registryLogin: (
+    hostId: string,
+    registry: string,
+    username: string,
+    password: string,
+  ) => Promise<void>;
+  registryLogout: (hostId: string, registry: string) => Promise<void>;
 };
 
 function patch(
@@ -434,6 +485,264 @@ export const useDockerStore = create<State>((set) => ({
 
   clearPruneOutput: (hostId) => {
     patch(set, hostId, (h) => ({ ...h, pruneOutput: null }));
+  },
+
+  removeImage: async (hostId, id, force) => {
+    patch(set, hostId, (h) => ({
+      ...h,
+      busyImages: { ...h.busyImages, [id]: "removing" },
+    }));
+    try {
+      await sshRpc<string>(
+        "docker_rmi",
+        { ids: [id], ...(force ? { force: true } : {}) },
+        hostId,
+      );
+      await useDockerStore.getState().refreshImages(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        images: { ...h.images, error: String(e) },
+      }));
+    } finally {
+      patch(set, hostId, (h) => {
+        const busy = { ...h.busyImages };
+        delete busy[id];
+        return { ...h, busyImages: busy };
+      });
+    }
+  },
+
+  checkUpdate: async (hostId, reference) => {
+    patch(set, hostId, (h) => ({
+      ...h,
+      updates: { ...h.updates, [reference]: { status: "checking" } },
+    }));
+    try {
+      const res = await sshRpc<{
+        reference: string;
+        localDigest: string;
+        updateAvailable: boolean;
+      }>("docker_image_update_check", { reference }, hostId);
+      patch(set, hostId, (h) => ({
+        ...h,
+        updates: {
+          ...h.updates,
+          [reference]: res.updateAvailable
+            ? { status: "available", localDigest: res.localDigest }
+            : { status: "current", localDigest: res.localDigest },
+        },
+      }));
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        updates: {
+          ...h.updates,
+          [reference]: { status: "error", message: String(e) },
+        },
+      }));
+    }
+  },
+
+  startPull: (hostId, reference, opts) => {
+    const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const job: PullJob = {
+      reference,
+      platform: opts?.platform ?? "",
+      quiet: opts?.quiet ?? false,
+      handle: null,
+      phase: "starting",
+      output: "",
+      offset: 0,
+      dropped: 0,
+      events: [],
+      digest: null,
+      error: null,
+    };
+    patch(set, hostId, (h) => ({
+      ...h,
+      pulls: { ...h.pulls, [jobId]: job },
+    }));
+    void (async () => {
+      try {
+        const info = await sshRpc<{ handle: number }>(
+          "docker_pull",
+          {
+            reference,
+            ...(opts?.platform ? { platform: opts.platform } : {}),
+            ...(opts?.quiet ? { quiet: true } : {}),
+          },
+          hostId,
+        );
+        patch(set, hostId, (h) => ({
+          ...h,
+          pulls: {
+            ...h.pulls,
+            [jobId]: { ...(h.pulls[jobId] ?? job), handle: info.handle, phase: "pulling" },
+          },
+        }));
+        await useDockerStore.getState().pollPull(hostId, jobId);
+      } catch (e) {
+        patch(set, hostId, (h) => ({
+          ...h,
+          pulls: {
+            ...h.pulls,
+            [jobId]: { ...(h.pulls[jobId] ?? job), phase: "error", error: String(e) },
+          },
+        }));
+      }
+    })();
+    return jobId;
+  },
+
+  pollPull: async (hostId, jobId) => {
+    const job = useDockerStore.getState().byHost[hostId]?.pulls[jobId];
+    if (!job || job.handle === null || job.phase === "done" || job.phase === "error") return;
+    try {
+      const res = await sshRpc<{
+        bytes: string;
+        next_offset: number;
+        dropped: number;
+        exited: boolean;
+        exit_code: number | null;
+        events?: import("./types").PullProgressEvent[];
+      }>("docker_logs_poll", { handle: job.handle, sinceOffset: job.offset }, hostId);
+      patch(set, hostId, (h) => {
+        const cur = h.pulls[jobId] ?? job;
+        const next: PullJob = {
+          ...cur,
+          output: cur.output + (res.bytes ?? ""),
+          offset: res.next_offset ?? cur.offset,
+          dropped: (res.dropped ?? 0) > cur.dropped ? (res.dropped ?? 0) : cur.dropped,
+          events: [...cur.events, ...(res.events ?? [])].slice(-200),
+        };
+        for (const ev of res.events ?? []) {
+          if (ev.kind === "digest" && ev.digest) next.digest = ev.digest;
+          if (ev.kind === "error" && ev.text) {
+            next.phase = "error";
+            next.error = ev.text;
+          }
+          if (ev.kind === "done") next.phase = "done";
+        }
+        if (res.exited && next.phase === "pulling") {
+          next.phase = res.exit_code === 0 ? "done" : "error";
+          if (next.phase === "error" && !next.error) {
+            next.error = `pull exited ${res.exit_code ?? "?"}`;
+          }
+        }
+        return { ...h, pulls: { ...h.pulls, [jobId]: next } };
+      });
+      const after = useDockerStore.getState().byHost[hostId]?.pulls[jobId];
+      if (after && after.phase === "done") {
+        await useDockerStore.getState().refreshImages(hostId);
+      }
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        pulls: {
+          ...h.pulls,
+          [jobId]: { ...(h.pulls[jobId] ?? job), phase: "error", error: String(e) },
+        },
+      }));
+    }
+  },
+
+  cancelPull: async (hostId, jobId) => {
+    const job = useDockerStore.getState().byHost[hostId]?.pulls[jobId];
+    if (job?.handle !== null && job?.handle !== undefined) {
+      try {
+        await sshRpc("docker_logs_kill", { handle: job.handle }, hostId);
+      } catch {
+        // best effort
+      }
+    }
+    patch(set, hostId, (h) => ({
+      ...h,
+      pulls: {
+        ...h.pulls,
+        [jobId]: { ...(h.pulls[jobId] ?? job!), phase: "error", error: "Cancelled." },
+      },
+    }));
+  },
+
+  dismissPull: (hostId, jobId) => {
+    patch(set, hostId, (h) => {
+      const pulls = { ...h.pulls };
+      delete pulls[jobId];
+      return { ...h, pulls };
+    });
+  },
+
+  registryLogin: async (hostId, registry, username, password) => {
+    patch(set, hostId, (h) => ({
+      ...h,
+      registries: {
+        ...h.registries,
+        [registry]: { loggedIn: false, busy: true, error: null },
+      },
+    }));
+    try {
+      // Password travels the token-authenticated RPC channel only, passed
+      // to `docker login --password-stdin` server-side. The store holds
+      // login state — never the credential.
+      await sshRpc("docker_registry_login", { registry, username, password }, hostId);
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("secrets_set", {
+          service: "terax-ai",
+          account: `docker-registry:${hostId}:${registry}`,
+          password,
+        });
+      } catch {
+        // keyring unavailable — login still succeeded for this session
+      }
+      patch(set, hostId, (h) => ({
+        ...h,
+        registries: {
+          ...h.registries,
+          [registry]: { loggedIn: true, busy: false, error: null },
+        },
+      }));
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        registries: {
+          ...h.registries,
+          [registry]: { loggedIn: false, busy: false, error: String(e) },
+        },
+      }));
+    }
+  },
+
+  registryLogout: async (hostId, registry) => {
+    patch(set, hostId, (h) => ({
+      ...h,
+      registries: {
+        ...h.registries,
+        [registry]: { loggedIn: false, busy: true, error: null },
+      },
+    }));
+    try {
+      await sshRpc("docker_registry_logout", { registry }, hostId);
+    } catch {
+      // best effort — still clear local state
+    }
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("secrets_delete", {
+        service: "terax-ai",
+        account: `docker-registry:${hostId}:${registry}`,
+      });
+    } catch {
+      // already absent — fine
+    }
+    patch(set, hostId, (h) => ({
+      ...h,
+      registries: {
+        ...h.registries,
+        [registry]: { loggedIn: false, busy: false, error: null },
+      },
+    }));
   },
 }));
 

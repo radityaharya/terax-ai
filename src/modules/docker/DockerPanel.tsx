@@ -11,6 +11,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { CleanupHub } from "./components/CleanupHub";
 import { DetailsDrawer } from "./components/DetailsDrawer";
+import { PullDialog } from "./dialogs/PullDialog";
+import { RegistryDialog } from "./dialogs/RegistryDialog";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
 import { daemonLabel } from "./lib/capabilities";
@@ -46,6 +48,23 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
     title: string;
   } | null>(null);
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [pullOpen, setPullOpen] = useState(false);
+  const [pullReference, setPullReference] = useState("");
+  const [registryOpen, setRegistryOpen] = useState(false);
+  const [activePulls, setActivePulls] = useState<string[]>([]);
+  const startPull = useDockerStore((s) => s.startPull);
+
+  const openPull = (reference: string) => {
+    const ref = reference.trim();
+    if (!ref || !hostId) {
+      setPullOpen(true);
+      return;
+    }
+    const jobId = startPull(hostId, ref);
+    setActivePulls((ids) => [...ids, jobId]);
+    setPullOpen(false);
+    setPullReference("");
+  };
 
   const hostState = useDockerStore((s) =>
     hostId ? (s.byHost[hostId] ?? null) : null,
@@ -126,6 +145,30 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
       {cleanupOpen ? (
         <CleanupHub hostId={hostId} onClose={() => setCleanupOpen(false)} />
       ) : null}
+      {activePulls.map((jobId) => (
+        <PullDialog
+          key={jobId}
+          hostId={hostId}
+          jobId={jobId}
+          onClose={() =>
+            setActivePulls((ids) => ids.filter((j) => j !== jobId))
+          }
+        />
+      ))}
+      {pullOpen ? (
+        <PullPrompt
+          reference={pullReference}
+          onChange={setPullReference}
+          onSubmit={() => openPull(pullReference)}
+          onClose={() => {
+            setPullOpen(false);
+            setPullReference("");
+          }}
+        />
+      ) : null}
+      {registryOpen ? (
+        <RegistryDialog hostId={hostId} onClose={() => setRegistryOpen(false)} />
+      ) : null}
       <PanelTitle
         title="Docker"
         subtitle={hostAlias ?? hostId}
@@ -197,6 +240,26 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
                 Stats
               </button>
             ) : null}
+            {segment === "images" ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setRegistryOpen(true)}
+                  title="Registry login"
+                  className="h-7 shrink-0 rounded-md px-2 text-[11px] font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/40"
+                >
+                  Registry
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPullOpen(true)}
+                  title="Pull image"
+                  className="h-7 shrink-0 rounded-md bg-primary px-2 text-[11px] font-medium text-primary-foreground outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-primary/40"
+                >
+                  Pull
+                </button>
+              </>
+            ) : null}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
             {segment === "containers" ? (
@@ -237,8 +300,16 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
                   );
                 })
               )
+            ) : segment === "images" ? (
+              <ImagesList
+                hostId={hostId}
+                filter={filter}
+                onPull={() => setPullOpen(true)}
+                onRegistry={() => setRegistryOpen(true)}
+                activePulls={activePulls}
+              />
             ) : (
-              <EmptyNote text={`${SEGMENTS.find((s) => s.id === segment)?.label} land with images/volumes wiring (D2).`} />
+              <EmptyNote text={`${SEGMENTS.find((s) => s.id === segment)?.label} land with volumes/networks wiring (D2).`} />
             )}
           </div>
         </>
@@ -256,6 +327,238 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
       )}
     </div>
   );
+}
+
+function PullPrompt({
+  reference,
+  onChange,
+  onSubmit,
+  onClose,
+}: {
+  reference: string;
+  onChange: (v: string) => void;
+  onSubmit: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="absolute inset-y-0 right-0 z-20 flex w-80 max-w-[85%] flex-col border-l border-border/60 bg-background shadow-xl"
+      role="dialog"
+      aria-label="Pull image"
+    >
+      <div className="flex shrink-0 items-center px-2.5 py-2">
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-foreground">
+          Pull image
+        </span>
+      </div>
+      <div className="flex flex-col gap-2 px-2.5 py-2">
+        <label className="flex flex-col gap-1 text-[11px]">
+          <span className="font-medium text-muted-foreground">Image reference</span>
+          <input
+            value={reference}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder="nginx:latest"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onSubmit();
+              if (e.key === "Escape") onClose();
+            }}
+            className="h-7 rounded-md border border-border/60 bg-background px-2 text-xs outline-none placeholder:text-muted-foreground/60 focus:border-primary/50"
+          />
+        </label>
+        <div className="text-[10px] text-muted-foreground/70">
+          Pulled on the remote host. Progress streams live; the images list
+          refreshes when it finishes.
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center justify-end gap-1.5 border-t border-border/60 px-2.5 py-2">
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={!reference.trim()}
+          onClick={onSubmit}
+          className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+        >
+          Pull
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ImagesList({
+  hostId,
+  filter,
+  onPull,
+  onRegistry,
+  activePulls,
+}: {
+  hostId: string;
+  filter: string;
+  onPull: () => void;
+  onRegistry: () => void;
+  activePulls: string[];
+}) {
+  const images = useDockerStore((s) => s.byHost[hostId]?.images);
+  const busyImages = useDockerStore((s) => s.byHost[hostId]?.busyImages ?? {});
+  const updates = useDockerStore((s) => s.byHost[hostId]?.updates ?? {});
+  const removeImage = useDockerStore((s) => s.removeImage);
+  const checkUpdate = useDockerStore((s) => s.checkUpdate);
+  const startPull = useDockerStore((s) => s.startPull);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+
+  const filtered = useMemo(() => {
+    const items = images?.items ?? [];
+    const q = filter.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter((img) =>
+      [imageRef(img), img.ID, img.Id, img.Size]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q)),
+    );
+  }, [images?.items, filter]);
+
+  if (images?.loading && filtered.length === 0) {
+    return <EmptyNote text="Loading images…" />;
+  }
+  if (images?.error && filtered.length === 0) {
+    return <EmptyNote text={images.error} />;
+  }
+  if (filtered.length === 0 && activePulls.length === 0) {
+    return (
+      <EmptyNote
+        text={filter ? "No images match the filter." : "No images on this host."}
+      />
+    );
+  }
+  return (
+    <>
+      {filtered.map((img) => {
+        const id = imageId(img);
+        const ref = imageRef(img);
+        const update = updates[ref];
+        return (
+          <div
+            key={id + ref}
+            className="group relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 outline-none transition-colors hover:bg-accent/50"
+          >
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-[12px] font-medium leading-tight">
+                {ref}
+                {update?.status === "available" ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const jobId = startPull(hostId, ref);
+                      void jobId;
+                    }}
+                    title="Update available — pull now"
+                    className="ml-1.5 rounded bg-amber-500/15 px-1 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-500/25"
+                  >
+                    update
+                  </button>
+                ) : null}
+                {busyImages[id] ? (
+                  <span className="ml-1.5 text-[10px] font-normal text-muted-foreground/70">
+                    removing…
+                  </span>
+                ) : null}
+              </span>
+              <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
+                {confirmRemove === id
+                  ? `Remove ${ref}?`
+                  : `${String(img.Size ?? "")} · ${id.slice(0, 12)}${update?.status === "checking" ? " · checking updates…" : ""}`}
+              </span>
+            </span>
+            {confirmRemove === id ? (
+              <span className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirmRemove(null);
+                    void removeImage(hostId, id, true);
+                  }}
+                  className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10"
+                >
+                  Remove
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmRemove(null)}
+                  className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
+                >
+                  Keep
+                </button>
+              </span>
+            ) : (
+              <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+                <RowButton
+                  label={`Check for updates to ${ref}`}
+                  onClick={() => void checkUpdate(hostId, ref)}
+                >
+                  <HugeiconsIcon icon={Refresh01Icon} size={13} strokeWidth={1.75} />
+                </RowButton>
+                <RowButton
+                  label={`Remove ${ref}`}
+                  onClick={() => setConfirmRemove(id)}
+                >
+                  <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
+                </RowButton>
+              </span>
+            )}
+          </div>
+        );
+      })}
+      {activePulls.length > 0 ? (
+        <div className="px-2 pt-1 text-[10px] text-muted-foreground/70">
+          {activePulls.length} pull{activePulls.length === 1 ? "" : "s"} in progress — see panels on the right.
+        </div>
+      ) : null}
+      <div className="flex gap-1.5 px-2 pt-2">
+        <button
+          type="button"
+          onClick={onPull}
+          className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          Pull image…
+        </button>
+        <button
+          type="button"
+          onClick={onRegistry}
+          className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          Registry login…
+        </button>
+      </div>
+    </>
+  );
+}
+
+function imageId(img: {
+  ID?: string;
+  Id?: string;
+  [key: string]: unknown;
+}): string {
+  const raw = String(img.ID ?? img.Id ?? "?");
+  return raw.replace(/^sha256:/, "").slice(0, 12);
+}
+
+function imageRef(img: {
+  Repository?: string;
+  Tag?: string;
+  Digest?: string;
+  [key: string]: unknown;
+}): string {
+  const repo = String(img.Repository ?? "<none>");
+  const tag = String(img.Tag ?? "<none>");
+  if (repo === "<none>" && tag === "<none>") return String(img.Digest ?? imageId(img));
+  return `${repo}:${tag}`;
 }
 
 export function containerId(c: DockerContainer): string {
