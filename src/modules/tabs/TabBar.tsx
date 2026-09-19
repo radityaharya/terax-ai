@@ -54,6 +54,7 @@ import {
 } from "react";
 import { labelFor } from "./lib/tabLabel";
 import type { EditorTab, Tab } from "./lib/useTabs";
+import type { SshHost } from "@/modules/hosts/lib/types";
 import { NewTabMenu } from "./NewTabMenu";
 
 type Props = {
@@ -66,6 +67,7 @@ type Props = {
   onNewPreview: () => void;
   onNewEditor: () => void;
   onNewGitGraph: () => void;
+  onNewSshHost?: (host: SshHost) => void;
   onLaunchAgents: (request: AgentLaunchRequest) => void;
   onClose: (id: number) => void;
   /** Chrome-style: close every tab to the right of the given tab. */
@@ -92,6 +94,7 @@ export function TabBar({
   onNewPreview,
   onNewEditor,
   onNewGitGraph,
+  onNewSshHost,
   onLaunchAgents,
   onClose,
   onCloseTabsToRight,
@@ -598,6 +601,7 @@ export function TabBar({
           onNewPreview={onNewPreview}
           onNewEditor={onNewEditor}
           onNewGitGraph={onNewGitGraph}
+          onNewSshHost={onNewSshHost}
           onLaunchAgents={onLaunchAgents}
         />
       </div>

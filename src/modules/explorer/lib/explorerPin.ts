@@ -13,6 +13,13 @@ type State = {
   setPin: (root: string, hostId: string | null) => void;
   clearPin: () => void;
   togglePin: (root: string, hostId: string | null) => void;
+  /**
+   * Per-scope memory: scope key ("local" | "wsl:<d>" | "ssh:<host>") ->
+   * last directory the explorer showed for that scope. Updated only by
+   * focused-pane cd / explicit reveal, never by tab switches.
+   */
+  memory: Record<string, string>;
+  remember: (scopeKey: string, root: string) => void;
 };
 
 export const useExplorerPinStore = create<State>((set, get) => ({
@@ -27,6 +34,13 @@ export const useExplorerPinStore = create<State>((set, get) => ({
       set({ pin: { root, hostId } });
     }
   },
+  memory: {},
+  remember: (scopeKey, root) =>
+    set((s) =>
+      s.memory[scopeKey] === root
+        ? s
+        : { memory: { ...s.memory, [scopeKey]: root } },
+    ),
 }));
 
 /**
@@ -41,4 +55,12 @@ export function activePin(
   if (!pin.root) return null;
   if (pin.hostId !== activeHostId) return null;
   return pin.root;
+}
+
+/** Last remembered root for a scope, if any. */
+export function scopeMemoryRoot(
+  memory: Record<string, string>,
+  scopeKey: string,
+): string | null {
+  return memory[scopeKey] ?? null;
 }

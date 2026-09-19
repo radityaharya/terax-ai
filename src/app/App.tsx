@@ -41,6 +41,7 @@ import {
   activePin,
   FileExplorer,
   type FileExplorerHandle,
+  scopeMemoryRoot,
   useExplorerPinStore,
 } from "@/modules/explorer";
 import type { GitHistorySearchHandle } from "@/modules/git-history";
@@ -121,6 +122,7 @@ import {
 } from "@/modules/theme";
 import { UpdaterDialog } from "@/modules/updater";
 import {
+  LOCAL_WORKSPACE,
   useWorkspaceEnvStore,
   type WorkspaceEnv,
   workspaceScopeKey,
@@ -240,13 +242,8 @@ export default function App() {
 
   const workspaceEnv = useWorkspaceEnvStore((s) => s.env);
   const setWorkspaceEnv = useWorkspaceEnvStore((s) => s.setEnv);
-  const {
-    home,
-    launchCwd,
-    launchCwdResolved,
-    switchWorkspace,
-    adoptWorkspaceEnv,
-  } = useWorkspaceSwitcher({
+  const { home, launchCwd, launchCwdResolved, adoptWorkspaceEnv } =
+    useWorkspaceSwitcher({
     tabsRef,
     workspaceEnv,
     setWorkspaceEnv,
@@ -264,14 +261,32 @@ export default function App() {
   }, [tabs, activeId, activeSpaceId]);
   const sourceControlSpaceId = activeSpaceId ?? DEFAULT_SPACE_ID;
 
+  // Per-tab model: the status-bar env picker never tears anything down.
+  // SSH picks open a tab on that host (same as Hosts panel); local/WSL
+  // picks open a tab in that env. Nothing existing is closed or reset.
+  // Defined before handleConnectHost would create a use-before-declare, so
+  // the connect goes through a ref updated below.
+  const handleConnectHostRef = useRef<(host: SshHost) => Promise<boolean>>(
+    () => Promise.resolve(false),
+  );
   const handleWorkspaceChange = useCallback(
     async (env: WorkspaceEnv) => {
-      const switched = await switchWorkspace(env);
-      if (switched && activeSpaceId) {
-        useSpaces.getState().setEnv(activeSpaceId, env);
+      if (env.kind === "ssh") {
+        const host = useHostStore
+          .getState()
+          .hosts.find((h) => h.id === env.hostId);
+        if (host) {
+          await handleConnectHostRef.current(host);
+          return;
+        }
       }
+      if (env.kind === "local") {
+        newTab(home ?? undefined, LOCAL_WORKSPACE);
+        return;
+      }
+      newTab(undefined, env);
     },
-    [switchWorkspace, activeSpaceId],
+    [home, newTab],
   );
 
   useSpacesBoot({
@@ -389,22 +404,77 @@ export default function App() {
     activeSpace?.root ?? null,
   );
 
-  // Hybrid follow + pin: by default the explorer follows the active tab;
-  // pinning locks it to a directory until unpinned or the host changes.
+  // Explorer memory (Tabby-style): per scope-key (local | wsl:<d> |
+  // ssh:<host>) the explorer remembers the last directory it showed and
+  // keeps showing it until the FOCUSED pane cds somewhere else. Switching
+  // tabs never moves the tree — only a cd in the focused leaf, an explicit
+  // reveal, or unpin does. A pin locks the tree to one directory.
   const explorerPin = useExplorerPinStore((s) => s.pin);
   const toggleExplorerPin = useExplorerPinStore((s) => s.togglePin);
+  const explorerMemory = useExplorerPinStore((s) => s.memory);
+  const rememberExplorerRoot = useExplorerPinStore((s) => s.remember);
   const activeTabHostId =
     activeTab && tabEnv(activeTab).kind === "ssh"
       ? (tabEnv(activeTab) as { hostId: string }).hostId
       : null;
+  const activeScopeKey = workspaceScopeKey(
+    activeTab ? tabEnv(activeTab) : workspaceEnv,
+  );
   const pinnedExplorerRoot = activePin(explorerPin, activeTabHostId);
   const explorerPinned = pinnedExplorerRoot !== null;
+  // Followed root: the focused leaf's cwd when it belongs to the active
+  // scope; otherwise the remembered root for this scope; otherwise the
+  // legacy derived root (first paint / cold tabs).
+  const focusedScopeMatches =
+    activeTab?.kind === "terminal" &&
+    workspaceScopeKey(tabEnv(activeTab)) === activeScopeKey;
+  const focusedCwd =
+    focusedScopeMatches && activeTab?.kind === "terminal"
+      ? (findLeafCwd(activeTab.paneTree, activeTab.activeLeafId) ??
+        activeTab.cwd ??
+        null)
+      : null;
+  const followedRoot =
+    focusedCwd ??
+    scopeMemoryRoot(explorerMemory, activeScopeKey) ??
+    explorerRoot;
   const handleToggleExplorerPin = useCallback(() => {
-    const target = pinnedExplorerRoot ?? explorerRoot;
+    const target = pinnedExplorerRoot ?? followedRoot;
     if (target) toggleExplorerPin(target, activeTabHostId);
-  }, [pinnedExplorerRoot, explorerRoot, toggleExplorerPin, activeTabHostId]);
+  }, [pinnedExplorerRoot, followedRoot, toggleExplorerPin, activeTabHostId]);
 
-  useWindowTitle(activeTab, pinnedExplorerRoot ?? explorerRoot);
+  // Remember what the explorer shows per scope. Fires on focused-leaf cd
+  // and on explicit reveals (both flow through followedRoot); tab switches
+  // keep the old memory because focusedCwd belongs to another scope... no —
+  // focusedCwd IS the new tab's cwd. Guard: only remember when the focused
+  // leaf actually changed cwd (OSC 7), not on tab activation. The leaf cwd
+  // map below tracks the last-seen cwd per leaf; a change means a real cd.
+  const seenLeafCwds = useRef(new Map<number, string>());
+  useEffect(() => {
+    if (explorerPinned) return;
+    if (activeTab?.kind !== "terminal") return;
+    const leafId = activeTab.activeLeafId;
+    const cwd =
+      findLeafCwd(activeTab.paneTree, leafId) ?? activeTab.cwd ?? null;
+    if (!cwd) return;
+    // SSH + local paths must never cross scopes: only remember when the
+    // cwd belongs to the active scope's world.
+    const tabScope = workspaceScopeKey(tabEnv(activeTab));
+    if (tabScope !== activeScopeKey) return;
+    if (seenLeafCwds.current.get(leafId) === cwd) return;
+    seenLeafCwds.current.set(leafId, cwd);
+    rememberExplorerRoot(tabScope, cwd);
+  }, [
+    tabs,
+    activeId,
+    activeTab,
+    activeScopeKey,
+    explorerPinned,
+    rememberExplorerRoot,
+  ]);
+
+  const effectiveExplorerRoot = pinnedExplorerRoot ?? followedRoot;
+  useWindowTitle(activeTab, effectiveExplorerRoot);
 
   useEffect(() => {
     setActiveSearchAddon(
@@ -863,7 +933,7 @@ export default function App() {
       activeTerminalLeafCwd,
       // Pinned explorer locks the git context too — badge, panel and target
       // all operate on the pin while it is set.
-      explorerRoot: pinnedExplorerRoot ?? explorerRoot,
+      explorerRoot: effectiveExplorerRoot,
       launchCwd,
       launchCwdResolved,
       home,
@@ -1228,16 +1298,18 @@ export default function App() {
 
   const handleNewSpace = useCallback(() => {
     const { spaces, create, setActive } = useSpaces.getState();
+    // Spaces are pure tab groups: no env. The new tab inherits the
+    // active tab's env via useTabs, so a space spawned from an SSH tab
+    // starts on that host.
     const meta = create({
       name: `Space ${spaces.length + 1}`,
       root: activeCwd ?? home ?? null,
-      env: workspaceEnv,
     });
     setActiveSpaceForNewTabs(meta.id);
     newTab(activeCwd ?? undefined);
     setActive(meta.id);
     return meta.id;
-  }, [activeCwd, home, workspaceEnv, newTab, setActiveSpaceForNewTabs]);
+  }, [activeCwd, home, newTab, setActiveSpaceForNewTabs]);
 
   const [hostEditor, setHostEditor] = useState<{
     open: boolean;
@@ -1281,6 +1353,13 @@ export default function App() {
       return true;
     },
     [newTabWithEnv, setActiveId],
+  );
+  handleConnectHostRef.current = handleConnectHost;
+  // Stable alias for menu callbacks (NewTabMenu) so the Header JSX above
+  // doesn't re-render on every handleConnectHost identity change.
+  const handleConnectHostRefForMenu = useCallback(
+    (host: SshHost) => handleConnectHostRef.current(host),
+    [],
   );
 
   const handleDeleteSpace = useCallback(
@@ -1358,7 +1437,7 @@ export default function App() {
             tabs,
             activeId,
             searchTarget,
-            explorerRoot: pinnedExplorerRoot ?? explorerRoot,
+            explorerRoot: effectiveExplorerRoot,
             home,
             openNewTab,
             openNewBlock: openNewBlockTab,
@@ -1392,7 +1471,7 @@ export default function App() {
       activeId,
       searchTarget,
       explorerRoot,
-      pinnedExplorerRoot,
+      effectiveExplorerRoot,
       home,
       openNewTab,
       openNewBlockTab,
@@ -1485,7 +1564,7 @@ export default function App() {
     setLive,
     activeId,
     tabs,
-    explorerRoot,
+    explorerRoot: effectiveExplorerRoot,
     launchCwd,
     home,
     openPreviewTab,
@@ -1508,6 +1587,7 @@ export default function App() {
               onNewPreview={() => openPreviewTab("")}
               onNewEditor={() => setNewEditorOpen(true)}
               onNewGitGraph={openGitGraphFromContext}
+              onNewSshHost={(host) => void handleConnectHostRefForMenu(host)}
               onLaunchAgents={launchAgentGroup}
               onClose={handleClose}
               onCloseTabsToRight={handleCloseTabsToRight}
@@ -1572,7 +1652,7 @@ export default function App() {
                       ) : sidebarView === "explorer" ? (
                         <FileExplorer
                           ref={explorerRef}
-                          rootPath={explorerRoot}
+                          rootPath={effectiveExplorerRoot}
                           pinnedRoot={pinnedExplorerRoot}
                           hostLabel={
                             workspaceEnv.kind === "ssh"
@@ -1725,7 +1805,7 @@ export default function App() {
             onOpenChange={setCommandPaletteOpen}
             initialMode={paletteInitialMode}
             commandItems={commandPaletteItems}
-            workspaceRoot={explorerRoot}
+            workspaceRoot={effectiveExplorerRoot}
             onOpenContentHit={openContentHit}
             insertCommand={insertHistoryCommand}
           />
@@ -1733,7 +1813,7 @@ export default function App() {
           <NewEditorDialog
             open={newEditorOpen}
             onOpenChange={setNewEditorOpen}
-            rootPath={explorerRoot ?? home}
+            rootPath={effectiveExplorerRoot ?? home}
             onCreated={(path) => openFileTab(path)}
           />
 
