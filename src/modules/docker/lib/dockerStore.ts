@@ -32,6 +32,19 @@ export type StatsSample = {
   pids: string;
 };
 
+export type DiskUsage = {
+  imagesSize: string;
+  imagesReclaimable: string;
+  containersSize: string;
+  containersReclaimable: string;
+  volumesSize: string;
+  volumesReclaimable: string;
+  buildCacheSize: string;
+  buildCacheReclaimable: string;
+};
+
+export type PruneTarget = "containers" | "images" | "volumes" | "networks" | "builder" | "system";
+
 type HostDockerState = {
   daemon: DockerDaemonState;
   containers: ResourceListState<DockerContainer>;
@@ -44,6 +57,13 @@ type HostDockerState = {
   stats: Record<string, StatsSample>;
   statsAt: number | null;
   statsError: string | null;
+  /** `docker system df` snapshot for the cleanup hub. */
+  disk: DiskUsage | null;
+  diskLoading: boolean;
+  diskError: string | null;
+  /** Prune op in flight (target key). */
+  pruning: PruneTarget | null;
+  pruneOutput: string | null;
 };
 
 function emptyHost(): HostDockerState {
@@ -57,6 +77,11 @@ function emptyHost(): HostDockerState {
     stats: {},
     statsAt: null,
     statsError: null,
+    disk: null,
+    diskLoading: false,
+    diskError: null,
+    pruning: null,
+    pruneOutput: null,
   };
 }
 
@@ -89,6 +114,13 @@ type State = {
     id: string,
   ) => Promise<void>;
   clearInspect: (hostId: string, kind: string, id: string) => void;
+  refreshDisk: (hostId: string) => Promise<void>;
+  prune: (
+    hostId: string,
+    target: PruneTarget,
+    opts?: { all?: boolean; volumes?: boolean },
+  ) => Promise<void>;
+  clearPruneOutput: (hostId: string) => void;
 };
 
 function patch(
@@ -349,6 +381,59 @@ export const useDockerStore = create<State>((set) => ({
       delete next[key];
       return { ...s, inspects: next };
     });
+  },
+
+  refreshDisk: async (hostId) => {
+    patch(set, hostId, (h) => ({ ...h, diskLoading: true, diskError: null }));
+    try {
+      const disk = await sshRpc<DiskUsage>("docker_system_df", {}, hostId);
+      patch(set, hostId, (h) => ({
+        ...h,
+        disk,
+        diskLoading: false,
+        diskError: null,
+      }));
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        diskLoading: false,
+        diskError: String(e),
+      }));
+    }
+  },
+
+  prune: async (hostId, target, opts) => {
+    patch(set, hostId, (h) => ({ ...h, pruning: target, pruneOutput: null }));
+    try {
+      const output = await sshRpc<string>(
+        "docker_prune",
+        {
+          target,
+          ...(opts?.all ? { all: true } : {}),
+          ...(opts?.volumes ? { volumes: true } : {}),
+        },
+        hostId,
+      );
+      patch(set, hostId, (h) => ({
+        ...h,
+        pruning: null,
+        pruneOutput: String(output ?? "Done."),
+      }));
+      // Fresh numbers after any prune.
+      await useDockerStore.getState().refreshDisk(hostId);
+      await useDockerStore.getState().refreshContainers(hostId);
+      await useDockerStore.getState().refreshImages(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        pruning: null,
+        pruneOutput: `Failed: ${String(e)}`,
+      }));
+    }
+  },
+
+  clearPruneOutput: (hostId) => {
+    patch(set, hostId, (h) => ({ ...h, pruneOutput: null }));
   },
 }));
 

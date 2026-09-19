@@ -3,11 +3,13 @@ import {
   RotateClockwiseIcon,
   Cancel01Icon,
   Delete02Icon,
+  HardDriveIcon,
   PlayIcon,
   StopIcon,
   Refresh01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import { CleanupHub } from "./components/CleanupHub";
 import { DetailsDrawer } from "./components/DetailsDrawer";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
@@ -43,6 +45,7 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
     id: string;
     title: string;
   } | null>(null);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
 
   const hostState = useDockerStore((s) =>
     hostId ? (s.byHost[hostId] ?? null) : null,
@@ -100,6 +103,9 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
           onClose={() => setInspecting(null)}
         />
       ) : null}
+      {cleanupOpen ? (
+        <CleanupHub hostId={hostId} onClose={() => setCleanupOpen(false)} />
+      ) : null}
       <PanelTitle
         title="Docker"
         subtitle={hostAlias ?? hostId}
@@ -108,6 +114,12 @@ export function DockerPanel({ hostId, hostAlias }: Props) {
             <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
               {daemonLabel(daemon)}
             </span>
+            <HeaderButton
+              label="Disk usage & cleanup"
+              onClick={() => setCleanupOpen(true)}
+            >
+              <HugeiconsIcon icon={HardDriveIcon} size={13} strokeWidth={1.75} />
+            </HeaderButton>
             <HeaderButton
               label="Refresh Docker"
               onClick={() => void refreshAll(hostId)}
