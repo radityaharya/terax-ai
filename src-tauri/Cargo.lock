@@ -5403,6 +5403,7 @@ dependencies = [
  "tauri-plugin-window-state",
  "tempfile",
  "terax-control-protocol",
+ "terax-core",
  "tokio",
  "wasmparser 0.258.0",
  "which",
@@ -5428,6 +5429,38 @@ version = "0.9.0-beta"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "terax-core"
+version = "0.9.0-beta"
+dependencies = [
+ "dirs 7.0.0",
+ "globset",
+ "grep-matcher",
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "libc",
+ "log",
+ "nucleo-matcher",
+ "proptest",
+ "serde",
+ "serde_json",
+ "shared_child",
+ "tempfile",
+ "which",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "terax-remote"
+version = "0.9.0-beta"
+dependencies = [
+ "serde",
+ "serde_json",
+ "terax-control-protocol",
+ "terax-core",
 ]
 
 [[package]]
