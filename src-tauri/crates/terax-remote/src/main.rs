@@ -26,6 +26,7 @@ use terax_control_protocol::{
 use terax_core::workspace::{WorkspaceEnv, WorkspaceRegistry};
 
 mod auth;
+mod docker;
 
 struct Agent {
     registry: WorkspaceRegistry,
@@ -34,6 +35,7 @@ struct Agent {
     bg: Mutex<HashMap<u32, Arc<terax_core::shell::background::BackgroundProc>>>,
     next_session: AtomicU32,
     next_bg: AtomicU32,
+    docker: docker::DockerShared,
 }
 
 fn main() {
@@ -83,6 +85,7 @@ fn serve_root(root: String, token: String) {
         bg: Mutex::new(HashMap::new()),
         next_session: AtomicU32::new(1),
         next_bg: AtomicU32::new(1),
+        docker: docker::DockerShared::default(),
     };
     auth::expect_token(&token);
     let stdin = std::io::stdin();
@@ -139,6 +142,15 @@ impl Agent {
 
     fn route(&self, request: ControlRequest) -> ControlResponse {
         let params = request.params.clone();
+        // Docker routes live in docker.rs; thin dispatch only here.
+        if request.method.starts_with("docker_") {
+            let authorized = |p: &PathBuf| self.authorized(p);
+            let id = request.id.clone();
+            if let Some(resp) = docker::handle_docker(&self.docker, &request.method, id, &params, authorized) {
+                return resp;
+            }
+            return ControlResponse::failure(request.id, "unknown_method", "unknown remote method");
+        }
         let get = |k: &str| params.get(k).cloned().unwrap_or(Value::Null);
         let str_param = |k: &str| get(k).as_str().unwrap_or("").to_string();
         match request.method.as_str() {

@@ -45,6 +45,7 @@ import {
   useExplorerPinStore,
 } from "@/modules/explorer";
 import type { GitHistorySearchHandle } from "@/modules/git-history";
+import { DockerPanel } from "@/modules/docker";
 import {
   HostEditorDialog,
   HostKeyDialog,
@@ -1657,6 +1658,17 @@ export default function App() {
                           onShowHostKey={(host) => setHostKeyPrompt(host)}
                           onShowAuth={(host, next, message) =>
                             setSshAuthPrompt({ host, next, message })
+                          }
+                        />
+                      ) : sidebarView === "docker" ? (
+                        <DockerPanel
+                          hostId={activeTabHostId}
+                          hostAlias={
+                            useHostStore
+                              .getState()
+                              .hosts.find(
+                                (h: SshHost) => h.id === activeTabHostId,
+                              )?.alias ?? activeTabHostId
                           }
                         />
                       ) : sidebarView === "explorer" ? (

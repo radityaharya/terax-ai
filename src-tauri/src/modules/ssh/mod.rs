@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod config;
+pub mod docker;
 pub mod errors;
 pub mod hosts;
 pub mod integration;

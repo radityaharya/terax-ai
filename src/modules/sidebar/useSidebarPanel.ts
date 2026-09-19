@@ -47,7 +47,8 @@ function readSidebarView(): SidebarViewId {
     if (
       stored === "explorer" ||
       stored === "source-control" ||
-      stored === "hosts"
+      stored === "hosts" ||
+      stored === "docker"
     )
       return stored;
   } catch {

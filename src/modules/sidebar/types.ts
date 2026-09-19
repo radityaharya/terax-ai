@@ -1,1 +1,1 @@
-export type SidebarViewId = "explorer" | "source-control" | "hosts";
+export type SidebarViewId = "explorer" | "source-control" | "hosts" | "docker";
