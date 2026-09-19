@@ -1,6 +1,8 @@
 import { cn } from "@/lib/utils";
 import { useWorkspaceEnvStore } from "@/modules/workspace";
 import {
+  ArrowDown01Icon,
+  ArrowRight01Icon,
   Cancel01Icon,
   Delete02Icon,
   PencilEdit02Icon,
@@ -343,6 +345,16 @@ function RowButton({
   );
 }
 
+const SSH_CONFIG_COLLAPSED_KEY = "terax.hosts.sshConfigCollapsed";
+
+function readSshConfigCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SSH_CONFIG_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 function ImportedSection({
   hosts,
   onImport,
@@ -351,39 +363,64 @@ function ImportedSection({
   onImport: () => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState(readSshConfigCollapsed);
+  const toggle = () => {
+    setCollapsed((v) => {
+      try {
+        localStorage.setItem(SSH_CONFIG_COLLAPSED_KEY, v ? "0" : "1");
+      } catch {}
+      return !v;
+    });
+  };
   return (
     <div className="mt-2 border-t border-border/60 pt-1.5">
-      <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60">
-        From ~/.ssh/config
-      </div>
-      {hosts.map((h) => (
-        <button
-          key={h.alias}
-          type="button"
-          disabled={busy !== null}
-          onClick={() => {
-            setBusy(h.alias);
-            importOne(h.alias).finally(() => {
-              setBusy(null);
-              onImport();
-            });
-          }}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent/50 disabled:opacity-50"
-        >
-          <HugeiconsIcon
-            icon={ServerStack03Icon}
-            size={13}
-            strokeWidth={1.75}
-            className="shrink-0 text-muted-foreground/60"
-          />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[12px]">{h.alias}</span>
-            <span className="block truncate text-[10px] text-muted-foreground/60">
-              {busy === h.alias ? "Importing..." : targetOf(h)}
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={!collapsed}
+        title={collapsed ? "Expand ssh-config hosts" : "Collapse ssh-config hosts"}
+        className="flex w-full items-center gap-1 rounded px-2 pb-1 text-left text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/40"
+      >
+        <HugeiconsIcon
+          icon={collapsed ? ArrowRight01Icon : ArrowDown01Icon}
+          size={12}
+          strokeWidth={2}
+          className="shrink-0"
+        />
+        <span className="flex-1 truncate">From ~/.ssh/config</span>
+        <span className="font-normal normal-case tracking-normal text-muted-foreground/50">
+          {hosts.length}
+        </span>
+      </button>
+      {!collapsed &&
+        hosts.map((h) => (
+          <button
+            key={h.alias}
+            type="button"
+            disabled={busy !== null}
+            onClick={() => {
+              setBusy(h.alias);
+              importOne(h.alias).finally(() => {
+                setBusy(null);
+                onImport();
+              });
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent/50 disabled:opacity-50"
+          >
+            <HugeiconsIcon
+              icon={ServerStack03Icon}
+              size={13}
+              strokeWidth={1.75}
+              className="shrink-0 text-muted-foreground/60"
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[12px]">{h.alias}</span>
+              <span className="block truncate text-[10px] text-muted-foreground/60">
+                {busy === h.alias ? "Importing..." : targetOf(h)}
+              </span>
             </span>
-          </span>
-        </button>
-      ))}
+          </button>
+        ))}
     </div>
   );
 }
