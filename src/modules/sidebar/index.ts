@@ -1,6 +1,6 @@
+export { ACTIVITY_BAR_WIDTH, ActivityBar } from "./ActivityBar";
 export type { DeckCard } from "./SidebarDeck";
 export { SidebarDeck } from "./SidebarDeck";
-export { SIDEBAR_RAIL_HEIGHT, SidebarRail } from "./SidebarRail";
 export { useSidebarDeckStore } from "./sidebarDeckStore";
 export type { SidebarViewId } from "./types";
 export {

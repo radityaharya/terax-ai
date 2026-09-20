@@ -72,12 +72,12 @@ import {
   useGlobalShortcuts,
 } from "@/modules/shortcuts";
 import {
+  ActivityBar,
   SIDEBAR_DECK_MAX_WIDTH,
   SIDEBAR_DECK_MIN_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
   SidebarDeck,
-  SidebarRail,
   useSidebarDeckPanel,
   useSidebarPanel,
 } from "@/modules/sidebar";
@@ -401,7 +401,6 @@ export default function App() {
     sidebarWidthRef,
     sidebarView,
     initialSidebarCollapsed,
-    persistSidebarView,
     persistSidebarCollapsed,
     toggleSidebar,
     cycleSidebarView,
@@ -1686,7 +1685,13 @@ export default function App() {
             />
           )}
 
-          <main className="zoom-content flex min-h-0 flex-1 flex-col">
+          <main className="zoom-content flex min-h-0 flex-1">
+            <ActivityBar
+              activeView={sidebarView}
+              onSelectView={cycleSidebarView}
+              changedCount={sourceControl.changedCount}
+              onOpenSettings={() => void openSettingsWindow()}
+            />
             <ResizablePanelGroup
               orientation="horizontal"
               className="min-h-0 flex-1"
@@ -1718,8 +1723,8 @@ export default function App() {
                   persistSidebarCollapsed(size.inPixels <= 0);
                 }}
               >
-                <div className="h-full min-h-0 pl-2 pr-0.5">
-                  <div className="terax-pane flex h-full min-h-0 flex-col">
+                <div className="h-full min-h-0 pr-0.5">
+                  <div className="terax-pane terax-pane-flat-left flex h-full min-h-0 flex-col">
                     <div
                       key={sidebarView}
                       className="min-h-0 flex-1 terax-panel-in"
@@ -1795,11 +1800,6 @@ export default function App() {
                         />
                       )}
                     </div>
-                    <SidebarRail
-                      activeView={sidebarView}
-                      onSelectView={persistSidebarView}
-                      changedCount={sourceControl.changedCount}
-                    />
                   </div>
                 </div>
               </ResizablePanel>

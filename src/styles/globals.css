@@ -217,6 +217,20 @@
   overflow: hidden;
 }
 
+/* Merged left rail: the activity bar and the sidebar sit flush as one
+ * continuous surface, so the outer-left corner is rounded once and the shared
+ * seam is a single border — squaring both edges avoids a doubled 1px line and
+ * a hairline of rounding showing through where they meet. */
+.terax-pane-flat-left {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.terax-pane-flat-right {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right-width: 0;
+}
+
 /* Window vibrancy (macOS NSVisualEffectView / Windows Mica). Only the frame
  * goes translucent: panes keep `--background` so terminal and editor text
  * stays on a solid, readable surface and the terminal canvas still matches its
