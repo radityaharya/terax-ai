@@ -853,7 +853,9 @@ export const useDockerStore = create<State>((set) => ({
         exitCode?: number | null;
         exit_code?: number | null;
         events?: import("./types").PullProgressEvent[];
-      }>("docker_logs_poll", { handle: job.handle, sinceOffset: job.offset }, hostId);
+      // Pull procs live in the agent's events map (not logs) — poll with
+      // docker_events_poll so the progress parser runs server-side.
+      }>("docker_events_poll", { handle: job.handle, sinceOffset: job.offset }, hostId);
       patch(set, hostId, (h) => {
         const cur = h.pulls[jobId] ?? job;
         const exitCode = res.exitCode ?? res.exit_code ?? null;
@@ -899,7 +901,7 @@ export const useDockerStore = create<State>((set) => ({
     const job = useDockerStore.getState().byHost[hostId]?.pulls[jobId];
     if (job?.handle !== null && job?.handle !== undefined) {
       try {
-        await sshRpc("docker_logs_kill", { handle: job.handle }, hostId);
+        await sshRpc("docker_events_kill", { handle: job.handle }, hostId);
       } catch {
         // best effort
       }

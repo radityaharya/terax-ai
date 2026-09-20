@@ -75,6 +75,42 @@ fn generate_token() -> Result<String, SshError> {
     Ok(token)
 }
 
+/// Methods whose agent-side state lives in the serving **process**:
+/// background procs (`bg` / `docker.logs` / `docker.events` maps, keyed by
+/// numeric handle) and PTY-backed shell sessions. A spawn on lane N must be
+/// followed by poll/kill on the same lane or the handle lookup fails with
+/// `no_handle`. Every other method is stateless (each request carries its
+/// full path + token) and stays on the round-robin pool.
+fn is_stateful_method(method: &str) -> bool {
+    matches!(
+        method,
+        "shell_session_open"
+            | "shell_session_run"
+            | "shell_session_close"
+            | "shell_bg_spawn"
+            | "shell_bg_logs"
+            | "shell_bg_kill"
+            | "docker_pull"
+            | "docker_logs_spawn"
+            | "docker_logs_poll"
+            | "docker_logs_kill"
+            | "docker_events_spawn"
+            | "docker_events_poll"
+            | "docker_events_kill"
+            | "docker_service_logs_spawn"
+            | "docker_service_logs_poll"
+            | "docker_service_logs_kill"
+            | "docker_compose_logs_spawn"
+            | "docker_compose_logs_poll"
+            | "docker_compose_logs_kill"
+    )
+}
+
+/// Lane reserved for stateful calls. It never advances the round-robin
+/// cursor, so stateless traffic cannot steal it mid-sequence and strand a
+/// background handle on the wrong agent process.
+const STATEFUL_LANE: usize = 0;
+
 impl SshRpcManager {
     /// Sends a request to the host agent, spawning the channel on first use.
     /// The agent binary path on the remote is resolved at connect time.
@@ -87,7 +123,11 @@ impl SshRpcManager {
         remote_root: &str,
     ) -> Result<Value, String> {
         validate_host_id(host_id).map_err(|m| m)?;
-        let conn = self.connection(host_id, remote_bin, remote_root)?;
+        let conn = if is_stateful_method(method) {
+            self.pinned_connection(host_id, remote_bin, remote_root, STATEFUL_LANE)?
+        } else {
+            self.connection(host_id, remote_bin, remote_root)?
+        };
         self.call(&conn, host_id, method, params)
     }
 
@@ -153,7 +193,13 @@ impl SshRpcManager {
         let lane = {
             let mut lanes = self.next_lane.lock().unwrap();
             let next = lanes.entry(host_id.to_string()).or_insert(0);
-            let lane = *next % POOL_SIZE;
+            // The stateful lane is reserved: round-robin skips it so bulk
+            // stateless calls never evict the pipe that owns live handles.
+            let mut lane = *next % POOL_SIZE;
+            if lane == STATEFUL_LANE {
+                *next = next.wrapping_add(1);
+                lane = *next % POOL_SIZE;
+            }
             *next = next.wrapping_add(1);
             lane
         };
@@ -166,6 +212,38 @@ impl SshRpcManager {
         {
             return Ok(conn);
         }
+        self.insert_lane(host_id, lane, remote_bin, remote_root)
+    }
+
+    /// Fetch-or-spawn a fixed lane without touching the round-robin cursor.
+    /// Used by stateful methods so a spawn/poll/kill sequence always lands
+    /// on the same agent process (and by nobody else).
+    fn pinned_connection(
+        &self,
+        host_id: &str,
+        remote_bin: &str,
+        remote_root: &str,
+        lane: usize,
+    ) -> Result<Arc<RpcConnection>, String> {
+        if let Some(conn) = self
+            .connections
+            .lock()
+            .unwrap()
+            .get(host_id)
+            .and_then(|pool| pool.get(lane).cloned())
+        {
+            return Ok(conn);
+        }
+        self.insert_lane(host_id, lane, remote_bin, remote_root)
+    }
+
+    fn insert_lane(
+        &self,
+        host_id: &str,
+        lane: usize,
+        remote_bin: &str,
+        remote_root: &str,
+    ) -> Result<Arc<RpcConnection>, String> {
         let host = host_store()
             .get(host_id)
             .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
@@ -296,6 +374,42 @@ fn read_byte_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stateful_methods_are_pinned() {
+        for m in [
+            "shell_session_open",
+            "shell_session_run",
+            "shell_session_close",
+            "shell_bg_spawn",
+            "shell_bg_logs",
+            "shell_bg_kill",
+            "docker_pull",
+            "docker_logs_spawn",
+            "docker_logs_poll",
+            "docker_logs_kill",
+            "docker_events_spawn",
+            "docker_events_poll",
+            "docker_events_kill",
+        ] {
+            assert!(is_stateful_method(m), "{m} must pin to the stateful lane");
+        }
+    }
+
+    #[test]
+    fn stateless_methods_stay_on_pool() {
+        for m in [
+            "ping",
+            "fs_read_dir",
+            "docker_ps",
+            "docker_inspect",
+            "docker_images",
+            "docker_compose_ps",
+            "shell_exec",
+        ] {
+            assert!(!is_stateful_method(m), "{m} must not pin to the stateful lane");
+        }
+    }
 
     #[test]
     fn request_ids_are_unique() {
