@@ -1,18 +1,8 @@
 import {
-  type AutocompleteProviderId,
   type CustomEndpoint,
-  DEFAULT_AUTOCOMPLETE_MODEL,
-  DEFAULT_MODEL_ID,
-  DEFAULT_STT_PROVIDER,
   isKnownModelId,
-  LMSTUDIO_DEFAULT_BASE_URL,
-  MLX_DEFAULT_BASE_URL,
-  type ModelId,
   migrateLegacyCompatEndpoint,
-  OLLAMA_DEFAULT_BASE_URL,
-  OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
-  type SttProvider,
-  WHISPERCPP_DEFAULT_BASE_URL,
+  modelSelectionKey,
 } from "@/modules/ai/config";
 import {
   type AgentLaunchCommands,
@@ -126,7 +116,7 @@ export type Preferences = {
   backgroundOpacity: number;
   backgroundBlur: number;
   windowVibrancy: boolean;
-  defaultModelId: ModelId;
+  defaultModelId: string;
   editorTheme: EditorThemePref;
   editorFontSize: number;
   customInstructions: string;
@@ -134,22 +124,9 @@ export type Preferences = {
   restoreWindowState: boolean;
   autocompleteEnabled: boolean;
   autocompleteTrigger: AutocompleteTrigger;
-  autocompleteProvider: AutocompleteProviderId;
+  autocompleteEndpointId: string;
   autocompleteModelId: string;
-  lmstudioBaseURL: string;
-  lmstudioModelId: string;
-  mlxBaseURL: string;
-  mlxModelId: string;
-  ollamaBaseURL: string;
-  ollamaModelId: string;
-  openaiCompatibleBaseURL: string;
-  openaiCompatibleModelId: string;
-  openaiCompatibleContextLimit: number;
   customEndpoints: CustomEndpoint[];
-  openrouterModelId: string;
-  sttProvider: SttProvider;
-  groqSttModel: string;
-  whispercppBaseURL: string;
   favoriteModelIds: string[];
   recentModelIds: string[];
   vimMode: boolean;
@@ -229,22 +206,13 @@ export type AutocompleteTrigger = "auto" | "manual";
 
 const KEY_AUTOCOMPLETE_ENABLED = "autocompleteEnabled";
 const KEY_AUTOCOMPLETE_TRIGGER = "autocompleteTrigger";
-const KEY_AUTOCOMPLETE_PROVIDER = "autocompleteProvider";
+const KEY_AUTOCOMPLETE_ENDPOINT = "autocompleteEndpointId";
 const KEY_AUTOCOMPLETE_MODEL = "autocompleteModelId";
-const KEY_LMSTUDIO_BASE_URL = "lmstudioBaseURL";
-const KEY_LMSTUDIO_MODEL_ID = "lmstudioModelId";
-const KEY_MLX_BASE_URL = "mlxBaseURL";
-const KEY_MLX_MODEL_ID = "mlxModelId";
-const KEY_OLLAMA_BASE_URL = "ollamaBaseURL";
-const KEY_OLLAMA_MODEL_ID = "ollamaModelId";
+const KEY_CUSTOM_ENDPOINTS = "customEndpoints";
+// Legacy single-endpoint keys — read once to migrate into `customEndpoints`.
 const KEY_OPENAI_COMPAT_BASE_URL = "openaiCompatibleBaseURL";
 const KEY_OPENAI_COMPAT_MODEL_ID = "openaiCompatibleModelId";
 const KEY_OPENAI_COMPAT_CONTEXT_LIMIT = "openaiCompatibleContextLimit";
-const KEY_CUSTOM_ENDPOINTS = "customEndpoints";
-const KEY_OPENROUTER_MODEL_ID = "openrouterModelId";
-const KEY_STT_PROVIDER = "sttProvider";
-const KEY_GROQ_STT_MODEL = "groqSttModel";
-const KEY_WHISPERCPP_BASE_URL = "whispercppBaseURL";
 const KEY_FAVORITE_MODELS = "favoriteModelIds";
 const KEY_RECENT_MODELS = "recentModelIds";
 const KEY_VIM_MODE = "vimMode";
@@ -313,7 +281,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   backgroundImageId: null,
   backgroundOpacity: 0.5,
   backgroundBlur: 0,
-  defaultModelId: DEFAULT_MODEL_ID,
+  defaultModelId: "",
   editorTheme: EDITOR_THEME_AUTO,
   editorFontSize: EDITOR_FONT_SIZE_DEFAULT,
   customInstructions: "",
@@ -322,22 +290,9 @@ export const DEFAULT_PREFERENCES: Preferences = {
   restoreWindowState: true,
   autocompleteEnabled: false,
   autocompleteTrigger: "auto",
-  autocompleteProvider: "cerebras",
-  autocompleteModelId: DEFAULT_AUTOCOMPLETE_MODEL.cerebras ?? "",
-  lmstudioBaseURL: LMSTUDIO_DEFAULT_BASE_URL,
-  lmstudioModelId: "",
-  mlxBaseURL: MLX_DEFAULT_BASE_URL,
-  mlxModelId: "",
-  ollamaBaseURL: OLLAMA_DEFAULT_BASE_URL,
-  ollamaModelId: "",
-  openaiCompatibleBaseURL: OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
-  openaiCompatibleModelId: "",
-  openaiCompatibleContextLimit: 128_000,
+  autocompleteEndpointId: "",
+  autocompleteModelId: "",
   customEndpoints: [],
-  openrouterModelId: "",
-  sttProvider: DEFAULT_STT_PROVIDER,
-  groqSttModel: "whisper-large-v3-turbo",
-  whispercppBaseURL: WHISPERCPP_DEFAULT_BASE_URL,
   favoriteModelIds: [],
   recentModelIds: [],
   vimMode: false,
@@ -387,12 +342,57 @@ async function writePref<T>(key: string, value: T): Promise<void> {
   await emit(PREFS_CHANGED_EVENT, { key, value });
 }
 
+function normalizeEndpoint(raw: unknown): CustomEndpoint {
+  const o = (raw ?? {}) as Partial<CustomEndpoint> & { modelId?: unknown };
+  return {
+    id:
+      typeof o.id === "string" && o.id ? o.id : crypto.randomUUID().slice(0, 8),
+    name: typeof o.name === "string" ? o.name : "",
+    baseURL: typeof o.baseURL === "string" ? o.baseURL : "",
+    contextLimit:
+      typeof o.contextLimit === "number" && Number.isFinite(o.contextLimit)
+        ? o.contextLimit
+        : 128_000,
+  };
+}
+
 export async function loadPreferences(): Promise<Preferences> {
   // Single IPC roundtrip — fetching keys individually fans out to one
   // `plugin:store|get` per setting and is the dominant boot cost.
   const entries = await store.entries();
   const map = new Map<string, unknown>(entries);
   const get = <T>(k: string): T | undefined => map.get(k) as T | undefined;
+
+  // Endpoints are normalized from stored (possibly legacy) shapes; a legacy
+  // single endpoint or per-endpoint `modelId` seeds the default selection.
+  const storedEndpoints = get<unknown[]>(KEY_CUSTOM_ENDPOINTS);
+  let endpoints: CustomEndpoint[];
+  let migratedSelection: string | null = null;
+  if (Array.isArray(storedEndpoints) && storedEndpoints.length > 0) {
+    endpoints = storedEndpoints.map(normalizeEndpoint);
+    const legacy = storedEndpoints.find(
+      (e) => typeof (e as { modelId?: unknown })?.modelId === "string",
+    ) as { id?: unknown; modelId?: unknown } | undefined;
+    if (legacy && typeof legacy.modelId === "string" && legacy.modelId) {
+      migratedSelection = modelSelectionKey(
+        String(legacy.id ?? ""),
+        legacy.modelId,
+      );
+    }
+  } else {
+    const id = crypto.randomUUID().slice(0, 8);
+    const legacy = migrateLegacyCompatEndpoint(
+      get<string>(KEY_OPENAI_COMPAT_BASE_URL) ?? "",
+      get<string>(KEY_OPENAI_COMPAT_MODEL_ID) ?? "",
+      get<number>(KEY_OPENAI_COMPAT_CONTEXT_LIMIT) ?? 128_000,
+      id,
+    );
+    endpoints = legacy ? [legacy.endpoint] : [];
+    if (legacy) {
+      migratedSelection = modelSelectionKey(legacy.endpoint.id, legacy.modelId);
+    }
+  }
+
   return {
     theme: get<ThemePref>(KEY_THEME) ?? DEFAULT_PREFERENCES.theme,
     themeId: get<string>(KEY_THEME_ID) ?? DEFAULT_PREFERENCES.themeId,
@@ -407,11 +407,10 @@ export async function loadPreferences(): Promise<Preferences> {
     backgroundBlur: clampBlur(
       get<number>(KEY_BG_BLUR) ?? DEFAULT_PREFERENCES.backgroundBlur,
     ),
-    defaultModelId: ((): ModelId => {
+    defaultModelId: (() => {
       const stored = get<string>(KEY_DEFAULT_MODEL);
-      return stored && isKnownModelId(stored)
-        ? stored
-        : DEFAULT_PREFERENCES.defaultModelId;
+      if (stored && isKnownModelId(stored)) return stored;
+      return migratedSelection ?? DEFAULT_PREFERENCES.defaultModelId;
     })(),
     editorTheme: ((): EditorThemePref => {
       const stored = get<string>(KEY_EDITOR_THEME);
@@ -437,51 +436,13 @@ export async function loadPreferences(): Promise<Preferences> {
     autocompleteTrigger:
       get<AutocompleteTrigger>(KEY_AUTOCOMPLETE_TRIGGER) ??
       DEFAULT_PREFERENCES.autocompleteTrigger,
-    autocompleteProvider:
-      get<AutocompleteProviderId>(KEY_AUTOCOMPLETE_PROVIDER) ??
-      DEFAULT_PREFERENCES.autocompleteProvider,
+    autocompleteEndpointId:
+      get<string>(KEY_AUTOCOMPLETE_ENDPOINT) ??
+      DEFAULT_PREFERENCES.autocompleteEndpointId,
     autocompleteModelId:
       get<string>(KEY_AUTOCOMPLETE_MODEL) ??
       DEFAULT_PREFERENCES.autocompleteModelId,
-    lmstudioBaseURL:
-      get<string>(KEY_LMSTUDIO_BASE_URL) ?? DEFAULT_PREFERENCES.lmstudioBaseURL,
-    lmstudioModelId:
-      get<string>(KEY_LMSTUDIO_MODEL_ID) ?? DEFAULT_PREFERENCES.lmstudioModelId,
-    mlxBaseURL: get<string>(KEY_MLX_BASE_URL) ?? DEFAULT_PREFERENCES.mlxBaseURL,
-    mlxModelId: get<string>(KEY_MLX_MODEL_ID) ?? DEFAULT_PREFERENCES.mlxModelId,
-    ollamaBaseURL:
-      get<string>(KEY_OLLAMA_BASE_URL) ?? DEFAULT_PREFERENCES.ollamaBaseURL,
-    ollamaModelId:
-      get<string>(KEY_OLLAMA_MODEL_ID) ?? DEFAULT_PREFERENCES.ollamaModelId,
-    openaiCompatibleBaseURL:
-      get<string>(KEY_OPENAI_COMPAT_BASE_URL) ??
-      DEFAULT_PREFERENCES.openaiCompatibleBaseURL,
-    openaiCompatibleModelId:
-      get<string>(KEY_OPENAI_COMPAT_MODEL_ID) ??
-      DEFAULT_PREFERENCES.openaiCompatibleModelId,
-    openaiCompatibleContextLimit:
-      get<number>(KEY_OPENAI_COMPAT_CONTEXT_LIMIT) ??
-      DEFAULT_PREFERENCES.openaiCompatibleContextLimit,
-    customEndpoints: (() => {
-      const stored = get<CustomEndpoint[]>(KEY_CUSTOM_ENDPOINTS);
-      if (stored && stored.length > 0) return stored;
-      return migrateLegacyCompatEndpoint(
-        get<string>(KEY_OPENAI_COMPAT_BASE_URL) ?? "",
-        get<string>(KEY_OPENAI_COMPAT_MODEL_ID) ?? "",
-        get<number>(KEY_OPENAI_COMPAT_CONTEXT_LIMIT) ?? 128_000,
-        crypto.randomUUID().slice(0, 8),
-      );
-    })(),
-    openrouterModelId:
-      get<string>(KEY_OPENROUTER_MODEL_ID) ??
-      DEFAULT_PREFERENCES.openrouterModelId,
-    sttProvider:
-      get<SttProvider>(KEY_STT_PROVIDER) ?? DEFAULT_PREFERENCES.sttProvider,
-    groqSttModel:
-      get<string>(KEY_GROQ_STT_MODEL) ?? DEFAULT_PREFERENCES.groqSttModel,
-    whispercppBaseURL:
-      get<string>(KEY_WHISPERCPP_BASE_URL) ??
-      DEFAULT_PREFERENCES.whispercppBaseURL,
+    customEndpoints: endpoints,
     favoriteModelIds: (
       get<string[]>(KEY_FAVORITE_MODELS) ?? DEFAULT_PREFERENCES.favoriteModelIds
     ).filter(isKnownModelId),
@@ -638,7 +599,7 @@ export async function setBackgroundBlur(value: number): Promise<void> {
   await writePref(KEY_BG_BLUR, clampBlur(value));
 }
 
-export async function setDefaultModel(value: ModelId): Promise<void> {
+export async function setDefaultModel(value: string): Promise<void> {
   await writePref(KEY_DEFAULT_MODEL, value);
 }
 
@@ -684,77 +645,18 @@ export async function setAutocompleteEnabled(value: boolean): Promise<void> {
   await writePref(KEY_AUTOCOMPLETE_ENABLED, value);
 }
 
-export async function setAutocompleteProvider(
-  value: AutocompleteProviderId,
-): Promise<void> {
-  await writePref(KEY_AUTOCOMPLETE_PROVIDER, value);
+export async function setAutocompleteEndpointId(value: string): Promise<void> {
+  await writePref(KEY_AUTOCOMPLETE_ENDPOINT, value);
 }
 
 export async function setAutocompleteModelId(value: string): Promise<void> {
   await writePref(KEY_AUTOCOMPLETE_MODEL, value);
 }
 
-export async function setLmstudioBaseURL(value: string): Promise<void> {
-  await writePref(KEY_LMSTUDIO_BASE_URL, value);
-}
-
-export async function setLmstudioModelId(value: string): Promise<void> {
-  await writePref(KEY_LMSTUDIO_MODEL_ID, value);
-}
-
-export async function setMlxBaseURL(value: string): Promise<void> {
-  await writePref(KEY_MLX_BASE_URL, value);
-}
-
-export async function setMlxModelId(value: string): Promise<void> {
-  await writePref(KEY_MLX_MODEL_ID, value);
-}
-
-export async function setOllamaBaseURL(value: string): Promise<void> {
-  await writePref(KEY_OLLAMA_BASE_URL, value);
-}
-
-export async function setOllamaModelId(value: string): Promise<void> {
-  await writePref(KEY_OLLAMA_MODEL_ID, value);
-}
-
-export async function setOpenaiCompatibleBaseURL(value: string): Promise<void> {
-  await writePref(KEY_OPENAI_COMPAT_BASE_URL, value);
-}
-
-export async function setOpenaiCompatibleModelId(value: string): Promise<void> {
-  await writePref(KEY_OPENAI_COMPAT_MODEL_ID, value);
-}
-
-export async function setOpenaiCompatibleContextLimit(
-  value: number,
-): Promise<void> {
-  const clamped = Number.isFinite(value)
-    ? Math.max(1_000, Math.round(value))
-    : DEFAULT_PREFERENCES.openaiCompatibleContextLimit;
-  await writePref(KEY_OPENAI_COMPAT_CONTEXT_LIMIT, clamped);
-}
-
 export async function setCustomEndpoints(
   value: CustomEndpoint[],
 ): Promise<void> {
   await writePref(KEY_CUSTOM_ENDPOINTS, value);
-}
-
-export async function setOpenrouterModelId(value: string): Promise<void> {
-  await writePref(KEY_OPENROUTER_MODEL_ID, value);
-}
-
-export async function setSttProvider(value: SttProvider): Promise<void> {
-  await writePref(KEY_STT_PROVIDER, value);
-}
-
-export async function setGroqSttModel(value: string): Promise<void> {
-  await writePref(KEY_GROQ_STT_MODEL, value.trim());
-}
-
-export async function setWhispercppBaseURL(value: string): Promise<void> {
-  await writePref(KEY_WHISPERCPP_BASE_URL, value.trim());
 }
 
 export async function setFavoriteModelIds(value: string[]): Promise<void> {
@@ -976,22 +878,9 @@ export async function onPreferencesChange(
     [KEY_RESTORE_WINDOW]: "restoreWindowState",
     [KEY_AUTOCOMPLETE_ENABLED]: "autocompleteEnabled",
     [KEY_AUTOCOMPLETE_TRIGGER]: "autocompleteTrigger",
-    [KEY_AUTOCOMPLETE_PROVIDER]: "autocompleteProvider",
+    [KEY_AUTOCOMPLETE_ENDPOINT]: "autocompleteEndpointId",
     [KEY_AUTOCOMPLETE_MODEL]: "autocompleteModelId",
-    [KEY_LMSTUDIO_BASE_URL]: "lmstudioBaseURL",
-    [KEY_LMSTUDIO_MODEL_ID]: "lmstudioModelId",
-    [KEY_MLX_BASE_URL]: "mlxBaseURL",
-    [KEY_MLX_MODEL_ID]: "mlxModelId",
-    [KEY_OLLAMA_BASE_URL]: "ollamaBaseURL",
-    [KEY_OLLAMA_MODEL_ID]: "ollamaModelId",
-    [KEY_OPENAI_COMPAT_BASE_URL]: "openaiCompatibleBaseURL",
-    [KEY_OPENAI_COMPAT_MODEL_ID]: "openaiCompatibleModelId",
-    [KEY_OPENAI_COMPAT_CONTEXT_LIMIT]: "openaiCompatibleContextLimit",
     [KEY_CUSTOM_ENDPOINTS]: "customEndpoints",
-    [KEY_OPENROUTER_MODEL_ID]: "openrouterModelId",
-    [KEY_STT_PROVIDER]: "sttProvider",
-    [KEY_GROQ_STT_MODEL]: "groqSttModel",
-    [KEY_WHISPERCPP_BASE_URL]: "whispercppBaseURL",
     [KEY_FAVORITE_MODELS]: "favoriteModelIds",
     [KEY_RECENT_MODELS]: "recentModelIds",
     [KEY_VIM_MODE]: "vimMode",

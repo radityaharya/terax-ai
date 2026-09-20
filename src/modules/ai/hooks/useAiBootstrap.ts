@@ -2,17 +2,17 @@ import { useEffect, useState } from "react";
 import { firePendingReviewForSession } from "@/modules/agents/lib/review";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
+import { endpointConfigured, parseModelSelectionKey } from "../config";
 import {
   getAllCustomEndpointKeys,
-  getAllKeys,
-  hasAnyKey,
+  hasConfiguredEndpoint,
 } from "../lib/keyring";
 import { useAgentsStore } from "../store/agentsStore";
 import { useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
 
 /**
- * Startup wiring for the AI subsystem: loads provider keys (and keeps them in
+ * Startup wiring for the AI subsystem: loads endpoint keys (and keeps them in
  * sync), hydrates the preference store and mirrors the default model, hydrates
  * chat/agents/snippets stores, and fires any pending review for the active
  * session. Returns the two derived flags the shell needs.
@@ -21,8 +21,6 @@ export function useAiBootstrap(): {
   hasComposer: boolean;
   keysLoaded: boolean;
 } {
-  const apiKeys = useChatStore((s) => s.apiKeys);
-  const setApiKeys = useChatStore((s) => s.setApiKeys);
   const setCustomEndpointKeys = useChatStore((s) => s.setCustomEndpointKeys);
   const setSelectedModelId = useChatStore((s) => s.setSelectedModelId);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
@@ -32,46 +30,21 @@ export function useAiBootstrap(): {
     if (activeSessionId) firePendingReviewForSession(activeSessionId);
   }, [activeSessionId]);
 
-  const lmstudioModelId = usePreferencesStore((s) => s.lmstudioModelId);
-  const lmstudioBaseURL = usePreferencesStore((s) => s.lmstudioBaseURL);
-  const mlxModelId = usePreferencesStore((s) => s.mlxModelId);
-  const mlxBaseURL = usePreferencesStore((s) => s.mlxBaseURL);
-  const ollamaModelId = usePreferencesStore((s) => s.ollamaModelId);
-  const ollamaBaseURL = usePreferencesStore((s) => s.ollamaBaseURL);
-  const openaiCompatibleModelId = usePreferencesStore(
-    (s) => s.openaiCompatibleModelId,
-  );
-  const openaiCompatibleBaseURL = usePreferencesStore(
-    (s) => s.openaiCompatibleBaseURL,
-  );
   const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
-  const hasLocalModel =
-    (lmstudioBaseURL.trim().length > 0 && lmstudioModelId.trim().length > 0) ||
-    (mlxBaseURL.trim().length > 0 && mlxModelId.trim().length > 0) ||
-    (ollamaBaseURL.trim().length > 0 && ollamaModelId.trim().length > 0) ||
-    (openaiCompatibleBaseURL.trim().length > 0 &&
-      openaiCompatibleModelId.trim().length > 0) ||
-    customEndpoints.some(
-      (e) => e.baseURL.trim().length > 0 && e.modelId.trim().length > 0,
-    );
-  const hasComposer = hasAnyKey(apiKeys) || hasLocalModel;
+  const hasComposer = hasConfiguredEndpoint(customEndpoints);
 
   const prefsHydrated = usePreferencesStore((s) => s.hydrated);
   const [keysLoaded, setKeysLoaded] = useState(false);
   useEffect(() => {
     let alive = true;
     const reload = () => {
-      void getAllKeys().then((keys) => {
-        if (!alive) return;
-        setApiKeys(keys);
-        setKeysLoaded(true);
-      });
       if (!prefsHydrated) return;
       void getAllCustomEndpointKeys(
         usePreferencesStore.getState().customEndpoints,
       ).then((epKeys) => {
         if (!alive) return;
         setCustomEndpointKeys(epKeys);
+        setKeysLoaded(true);
       });
     };
     reload();
@@ -80,7 +53,7 @@ export function useAiBootstrap(): {
       alive = false;
       void unlistenP.then((fn) => fn());
     };
-  }, [setApiKeys, setCustomEndpointKeys, prefsHydrated]);
+  }, [setCustomEndpointKeys, prefsHydrated]);
 
   // Hydrate the cross-window preference store and mirror the default model
   // into chatStore so the dropdown reflects what the user picked in Settings.
@@ -91,8 +64,13 @@ export function useAiBootstrap(): {
   }, [initPrefs]);
   useEffect(() => {
     if (!prefsHydrated) return;
+    const parsed = parseModelSelectionKey(prefDefaultModel);
+    if (!parsed) return;
+    const configured = customEndpoints.filter(endpointConfigured);
+    if (!configured.some((e) => e.id === parsed.endpointId)) return;
+    if (useChatStore.getState().selectedModelId === prefDefaultModel) return;
     setSelectedModelId(prefDefaultModel);
-  }, [prefsHydrated, prefDefaultModel, setSelectedModelId]);
+  }, [prefsHydrated, prefDefaultModel, customEndpoints, setSelectedModelId]);
 
   useEffect(() => {
     void hydrateSessions();

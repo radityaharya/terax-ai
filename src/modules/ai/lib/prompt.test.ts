@@ -14,7 +14,6 @@ describe("prepareAgentPrompt", () => {
       "Stable instructions",
       "Plan instructions",
       history,
-      "openai",
     );
 
     expect(prompt.system).toEqual([
@@ -25,27 +24,7 @@ describe("prepareAgentPrompt", () => {
     expect(prompt.messages.every((message) => message.role !== "system")).toBe(
       true,
     );
-  });
-
-  it("keeps Anthropic cache markers on the stable prefix and rotating tail", () => {
-    const prompt = prepareAgentPrompt(
-      "Stable instructions",
-      "Plan instructions",
-      history,
-      "anthropic",
-    );
-
-    expect(prompt.system[0].providerOptions).toEqual({
-      anthropic: { cacheControl: { type: "ephemeral" } },
-    });
-    expect(prompt.system[1].providerOptions).toBeUndefined();
-    expect(prompt.messages[0].providerOptions).toBeUndefined();
-    expect(prompt.messages[1].providerOptions).toEqual({
-      anthropic: { cacheControl: { type: "ephemeral" } },
-    });
-    expect(history.every((message) => message.providerOptions == null)).toBe(
-      true,
-    );
+    expect(prompt.messages.every((m) => m.providerOptions == null)).toBe(true);
   });
 
   it("does not trigger the SDK system-message warning", async () => {
@@ -64,7 +43,6 @@ describe("prepareAgentPrompt", () => {
       "Stable instructions",
       "Plan instructions",
       history,
-      "openai",
     );
 
     try {

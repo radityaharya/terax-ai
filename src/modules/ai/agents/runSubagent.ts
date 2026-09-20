@@ -1,7 +1,8 @@
 import { generateText, stepCountIs } from "ai";
-import { DEFAULT_MODEL_ID, getModel, type ModelId } from "../config";
-import { buildLanguageModel } from "../lib/agent";
-import type { ProviderKeys } from "../lib/keyring";
+import type { CustomEndpoint } from "../config";
+import { modelIdForSelection } from "../config";
+import { buildLanguageModel, endpointForSelection } from "../lib/agent";
+import type { CustomEndpointKeys } from "../lib/keyring";
 import type { ToolContext } from "../tools/context";
 import { buildFsTools } from "../tools/fs";
 import { buildSearchTools } from "../tools/search";
@@ -12,10 +13,10 @@ const SUBAGENT_MAX_STEPS = 12;
 type Args = {
   type: SubagentType;
   prompt: string;
-  keys: ProviderKeys;
+  endpoints: readonly CustomEndpoint[];
+  endpointKeys: CustomEndpointKeys;
   modelId: string;
   toolContext: ToolContext;
-  lmstudioBaseURL?: string;
   onStep?: (label: string) => void;
 };
 
@@ -28,10 +29,10 @@ type RunResult = {
 export async function runSubagent({
   type,
   prompt,
-  keys,
+  endpoints,
+  endpointKeys,
   modelId,
   toolContext,
-  lmstudioBaseURL,
   onStep,
 }: Args): Promise<RunResult> {
   const def = SUBAGENTS[type];
@@ -46,11 +47,11 @@ export async function runSubagent({
     if (t in readOnly) tools[t] = readOnly[t];
   }
 
+  const ep = endpointForSelection(modelId, endpoints);
   const model = await buildLanguageModel(
-    getModel(modelId as ModelId).provider,
-    keys,
-    getModel(modelId as ModelId).id,
-    { lmstudioBaseURL },
+    ep.baseURL,
+    endpointKeys[ep.id] ?? null,
+    modelIdForSelection(modelId),
   );
 
   const start = Date.now();
@@ -73,5 +74,3 @@ export async function runSubagent({
     durationMs: Date.now() - start,
   };
 }
-
-export const DEFAULT_SUBAGENT_MODEL: ModelId = DEFAULT_MODEL_ID;

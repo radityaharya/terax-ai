@@ -3,20 +3,14 @@ import {
   type ChatTransport,
   lastAssistantMessageIsCompleteWithApprovalResponses,
 } from "ai";
-import { getModel, providerNeedsKey, type ModelId } from "../config";
+import { endpointIdForSelection, modelIdForSelection } from "../config";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { BUILTIN_AGENTS } from "../lib/agents";
 import { useAgentsStore } from "./agentsStore";
 import { usePlanStore } from "./planStore";
 import { createContextAwareTransport } from "../lib/transport";
 import type { ToolContext } from "../tools/tools";
-import {
-  chats,
-  getActiveProviderKey,
-  seedMessages,
-  touchChat,
-  useChatStore,
-} from "./chatStore";
+import { chats, seedMessages, touchChat, useChatStore } from "./chatStore";
 
 function makeChat(sessionId: string): Chat<UIMessage> {
   const readCache = new Map<string, { size: number; hash: number }>();
@@ -38,7 +32,8 @@ function makeChat(sessionId: string): Chat<UIMessage> {
   };
 
   const transport = createContextAwareTransport({
-    getKeys: () => useChatStore.getState().apiKeys,
+    getEndpoints: () => usePreferencesStore.getState().customEndpoints,
+    getEndpointKeys: () => useChatStore.getState().customEndpointKeys,
     toolContext,
     getModelId: () => useChatStore.getState().selectedModelId,
     getCustomInstructions: () =>
@@ -59,22 +54,6 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       };
     },
     getPlanMode: () => usePlanStore.getState().active,
-    getLmstudioBaseURL: () => usePreferencesStore.getState().lmstudioBaseURL,
-    getLmstudioModelId: () => usePreferencesStore.getState().lmstudioModelId,
-    getMlxBaseURL: () => usePreferencesStore.getState().mlxBaseURL,
-    getMlxModelId: () => usePreferencesStore.getState().mlxModelId,
-    getOllamaBaseURL: () => usePreferencesStore.getState().ollamaBaseURL,
-    getOllamaModelId: () => usePreferencesStore.getState().ollamaModelId,
-    getOpenaiCompatibleBaseURL: () =>
-      usePreferencesStore.getState().openaiCompatibleBaseURL,
-    getOpenaiCompatibleModelId: () =>
-      usePreferencesStore.getState().openaiCompatibleModelId,
-    getOpenaiCompatibleContextLimit: () =>
-      usePreferencesStore.getState().openaiCompatibleContextLimit,
-    getOpenrouterModelId: () =>
-      usePreferencesStore.getState().openrouterModelId,
-    getCustomEndpoints: () => usePreferencesStore.getState().customEndpoints,
-    getCustomEndpointKeys: () => useChatStore.getState().customEndpointKeys,
     onStep: (step) => {
       useChatStore.getState().patchAgentMeta({ step });
     },
@@ -132,10 +111,11 @@ export async function sendMessage(text: string): Promise<boolean> {
   const state = useChatStore.getState();
   const sessionId = state.activeSessionId;
   if (!sessionId) return false;
-  if (
-    providerNeedsKey(getModel(state.selectedModelId as ModelId).provider) &&
-    !getActiveProviderKey()
-  )
+  const endpoints = usePreferencesStore.getState().customEndpoints;
+  const ep = endpoints.find(
+    (e) => e.id === endpointIdForSelection(state.selectedModelId),
+  );
+  if (!ep || !ep.baseURL.trim() || !modelIdForSelection(state.selectedModelId))
     return false;
   const c = getOrCreateChat(sessionId);
   await c.sendMessage({ text });

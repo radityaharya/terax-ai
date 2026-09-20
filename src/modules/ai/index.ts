@@ -10,18 +10,15 @@ export { useSelectionAskAi } from "./hooks/useSelectionAskAi";
 export { useAiLiveBridge } from "./lib/useAiLiveBridge";
 export { LocalAgentNotificationsBridge } from "./components/LocalAgentNotificationsBridge";
 export {
-  EMPTY_PROVIDER_KEYS,
-  getAllKeys,
+  clearCustomEndpointKey,
   getAllCustomEndpointKeys,
-  getKey,
-  setKey,
-  clearKey,
-  hasAnyKey,
-  type ProviderKeys,
+  getCustomEndpointKey,
+  hasConfiguredEndpoint,
+  setCustomEndpointKey,
   type CustomEndpointKeys,
 } from "./lib/keyring";
 export {
-  getActiveProviderKey,
+  getActiveEndpointKey,
   hasKeyForModel,
   stop,
   useChatStore,

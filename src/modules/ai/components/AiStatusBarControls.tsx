@@ -6,34 +6,39 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
-import { Spinner } from "@/components/ui/spinner";
 import { fmtShortcut, MOD_KEY } from "@/lib/platform";
 import { cn } from "@/lib/utils";
+import {
+  type CustomEndpoint,
+  endpointIdForSelection,
+  type EndpointModel,
+  modelIdForSelection,
+  modelSelectionKey,
+} from "@/modules/ai/config";
+import { ACCEPTED_FILES, useComposer } from "@/modules/ai/lib/composer";
+import { useEndpointCatalog } from "@/modules/ai/lib/endpointCatalog";
+import {
+  detectProviderId,
+  labLogoUrl,
+  providerLogoUrl,
+} from "@/modules/ai/lib/modelMetadata";
+import {
+  pushRecentModel,
+  toggleFavoriteModel,
+} from "@/modules/ai/lib/modelPrefs";
+import { useChatStore } from "@/modules/ai/store/chatStore";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { setDefaultModel } from "@/modules/settings/store";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import {
   Add01Icon,
   AiBookIcon,
-  AppleIcon,
   ArrowDown01Icon,
   ArrowUpIcon,
-  BrainIcon,
-  ChatGptIcon,
-  ClaudeIcon,
   Clock01Icon,
-  CoinsDollarIcon,
-  ComputerIcon,
-  CpuIcon,
-  DeepseekIcon,
   FavouriteIcon,
-  FlashIcon,
-  GlobeIcon,
-  GoogleGeminiIcon,
-  Grok02Icon,
-  MistralIcon,
   Message01Icon,
-  Mic01Icon,
   PlugIcon,
-  ServerStack01Icon,
   Search01Icon,
   Settings01Icon,
   StarIcon,
@@ -41,41 +46,7 @@ import {
   Tick01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef, useState } from "react";
-import {
-  compatModelIdForEndpoint,
-  getCompatModelInfo,
-  getModel,
-  isCompatModelId,
-  MODELS,
-  providerNeedsKey,
-  PROVIDERS,
-  STT_PROVIDER_LABELS,
-  type ModelCapabilities,
-  type ModelId,
-  type ModelInfo,
-  type ProviderId,
-} from "../config";
-import { ACCEPTED_FILES, useComposer } from "../lib/composer";
-import { toggleFavoriteModel } from "../lib/modelPrefs";
-import { useChatStore } from "../store/chatStore";
-import { usePreferencesStore } from "@/modules/settings/preferences";
-
-const PROVIDER_ICON = {
-  openai: ChatGptIcon,
-  anthropic: ClaudeIcon,
-  google: GoogleGeminiIcon,
-  xai: Grok02Icon,
-  cerebras: CpuIcon,
-  groq: FlashIcon,
-  deepseek: DeepseekIcon,
-  mistral: MistralIcon,
-  openrouter: GlobeIcon,
-  "openai-compatible": PlugIcon,
-  lmstudio: ComputerIcon,
-  mlx: AppleIcon,
-  ollama: ServerStack01Icon,
-} as const satisfies Record<ProviderId, typeof ChatGptIcon>;
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export function AiOpenButton({ onOpen }: { onOpen: () => void }) {
   return (
@@ -123,36 +94,6 @@ export function AiStatusBarControls() {
       >
         <HugeiconsIcon icon={Add01Icon} size={13} strokeWidth={2} />
       </IconBtn>
-
-      {c.voice.supported && (
-        <IconBtn
-          title={
-            !c.voice.hasKey
-              ? `Voice needs a ${STT_PROVIDER_LABELS[c.voice.sttProvider]} key`
-              : c.voice.recording
-                ? "Stop & transcribe"
-                : c.voice.transcribing
-                  ? "Transcribing…"
-                  : "Voice input"
-          }
-          onClick={() =>
-            c.voice.recording ? c.voice.stop() : void c.voice.start()
-          }
-          disabled={c.isBusy || c.voice.transcribing || !c.voice.hasKey}
-          className={cn(
-            c.voice.recording &&
-            "bg-destructive/10 text-destructive hover:bg-destructive/15",
-          )}
-        >
-          {c.voice.recording ? (
-            <span className="size-2 animate-pulse rounded-full bg-destructive" />
-          ) : c.voice.transcribing ? (
-            <Spinner className="size-3" />
-          ) : (
-            <HugeiconsIcon icon={Mic01Icon} size={13} strokeWidth={1.75} />
-          )}
-        </IconBtn>
-      )}
 
       <ModelDropdown />
 
@@ -209,101 +150,92 @@ type Tab = "all" | "favorites" | "recent";
 
 function ModelDropdown() {
   const selected = useChatStore((s) => s.selectedModelId);
-  const apiKeys = useChatStore((s) => s.apiKeys);
   const setSelected = useChatStore((s) => s.setSelectedModelId);
+  const endpointKeys = useChatStore((s) => s.customEndpointKeys);
   const favoriteIds = usePreferencesStore((s) => s.favoriteModelIds);
   const recentIds = usePreferencesStore((s) => s.recentModelIds);
-  const customEndpoints = usePreferencesStore((s) => s.customEndpoints);
-  const current = isCompatModelId(selected)
-    ? getCompatModelInfo(selected, customEndpoints)
-    : getModel(selected as ModelId);
+  const endpoints = usePreferencesStore((s) => s.customEndpoints);
+  const catalog = useEndpointCatalog((s) => s.entries);
+  const loading = useEndpointCatalog((s) => s.loading);
+  const loadCatalog = useEndpointCatalog((s) => s.load);
+
+  const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [activeProvider, setActiveProvider] = useState<string | null>(null);
+  const [activeEndpoint, setActiveEndpoint] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("all");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const currentProviderHasKey = isCompatModelId(selected)
-    ? true
-    : providerNeedsKey(current.provider)
-      ? !!apiKeys[current.provider]
-      : true;
 
-  const hasKeyFor = (id: ProviderId) =>
-    providerNeedsKey(id) ? !!apiKeys[id] : true;
-
-  const epModelInfos = useMemo(() => {
-    return customEndpoints.map((ep) =>
-      getCompatModelInfo(compatModelIdForEndpoint(ep.id), customEndpoints),
-    );
-  }, [customEndpoints]);
-
-  const sortedProviders = useMemo(() => {
-    const configured: (typeof PROVIDERS)[number][] = [];
-    const unconfigured: (typeof PROVIDERS)[number][] = [];
-    for (const p of PROVIDERS) {
-      if (p.id === "openai-compatible") continue;
-      (hasKeyFor(p.id) ? configured : unconfigured).push(p);
+  useEffect(() => {
+    if (!open) return;
+    for (const ep of endpoints) {
+      void loadCatalog(ep, endpointKeys[ep.id] ?? null);
     }
-    return { configured, unconfigured };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKeys]);
+  }, [open, endpoints, endpointKeys, loadCatalog]);
 
-  const allModels = useMemo(
-    () => [...MODELS, ...epModelInfos],
-    [epModelInfos],
-  );
+  const selectedEndpointId = endpointIdForSelection(selected);
+  const currentEndpoint = endpoints.find((e) => e.id === selectedEndpointId);
+  const currentLabel =
+    modelIdForSelection(selected) ||
+    currentEndpoint?.name ||
+    "No model selected";
 
-  const COMPAT_PROVIDER_ID = "__compat__";
+  const groups = useMemo(() => {
+    return endpoints.map((ep) => ({
+      endpoint: ep,
+      models: catalog[ep.id]?.models ?? [],
+    }));
+  }, [endpoints, catalog]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    let pool: readonly ModelInfo[] = allModels;
+    let rows = groups.flatMap((g) =>
+      g.models.map((m) => ({ endpoint: g.endpoint, model: m })),
+    );
+    if (activeEndpoint !== null) {
+      rows = rows.filter((r) => r.endpoint.id === activeEndpoint);
+    }
     if (tab === "favorites") {
-      pool = pool.filter((m) => favoriteIds.includes(m.id));
+      rows = rows.filter((r) =>
+        favoriteIds.includes(modelSelectionKey(r.endpoint.id, r.model.id)),
+      );
     } else if (tab === "recent") {
       const order = new Map(recentIds.map((id, i) => [id, i]));
-      pool = pool
-        .filter((m) => order.has(m.id))
-        .slice()
-        .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
-    }
-    if (activeProvider === COMPAT_PROVIDER_ID) {
-      pool = pool.filter((m) => isCompatModelId(m.id));
-    } else if (activeProvider !== null) {
-      pool = pool.filter((m) => m.provider === activeProvider);
+      rows = rows
+        .filter((r) => order.has(modelSelectionKey(r.endpoint.id, r.model.id)))
+        .sort(
+          (a, b) =>
+            (order.get(modelSelectionKey(a.endpoint.id, a.model.id)) ?? 0) -
+            (order.get(modelSelectionKey(b.endpoint.id, b.model.id)) ?? 0),
+        );
     }
     if (q) {
-      pool = pool.filter(
-        (m) =>
-          m.label.toLowerCase().includes(q) ||
-          m.hint.toLowerCase().includes(q) ||
-          m.description.toLowerCase().includes(q) ||
-          m.provider.includes(q) ||
-          (m.tags?.some((t) => t.includes(q)) ?? false),
+      rows = rows.filter(
+        (r) =>
+          r.model.id.toLowerCase().includes(q) ||
+          r.model.label.toLowerCase().includes(q) ||
+          r.endpoint.name.toLowerCase().includes(q),
       );
     }
-    return pool;
-  }, [activeProvider, allModels, favoriteIds, recentIds, search, tab]);
+    return rows;
+  }, [activeEndpoint, favoriteIds, groups, recentIds, search, tab]);
+
+  const pick = (endpoint: CustomEndpoint, model: EndpointModel) => {
+    const selection = modelSelectionKey(endpoint.id, model.id);
+    setSelected(selection);
+    void setDefaultModel(selection);
+    void pushRecentModel(selection);
+  };
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className={cn(
-            "h-5.5 gap-1 rounded-md px-1.5 my-1 text-xs hover:bg-accent hover:text-foreground",
-            currentProviderHasKey
-              ? "text-muted-foreground"
-              : "text-amber-600 dark:text-amber-400",
-          )}
-          title={
-            currentProviderHasKey
-              ? `Model: ${current.label}`
-              : `${current.label} — no key configured`
-          }
+          className="h-5.5 gap-1 rounded-md px-1.5 my-1 text-xs hover:bg-accent hover:text-foreground text-muted-foreground"
+          title={`Model: ${currentLabel}`}
         >
-          {current.label}
+          {currentLabel}
           <HugeiconsIcon
             icon={ArrowDown01Icon}
             size={11}
@@ -316,11 +248,7 @@ function ModelDropdown() {
       <DropdownMenuContent
         align="end"
         className="w-[28rem] p-0 overflow-hidden rounded-xl border border-border/70 shadow-xl"
-        onFocusCapture={(e) => {
-          if (e.target !== inputRef.current) inputRef.current?.focus();
-        }}
       >
-        {/* Search */}
         <div className="flex items-center gap-2.5 border-b border-border/70 px-3 py-2.5">
           <HugeiconsIcon
             icon={Search01Icon}
@@ -329,16 +257,14 @@ function ModelDropdown() {
             className="shrink-0 text-muted-foreground/70"
           />
           <input
-            ref={inputRef}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => e.stopPropagation()}
-            placeholder="Search models, providers, capabilities…"
+            placeholder="Search models"
             className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
           />
         </div>
 
-        {/* Tabs */}
         <div className="flex items-center gap-0.5 border-b border-border/70 px-2 py-1.5">
           <TabButton
             label="All"
@@ -363,92 +289,77 @@ function ModelDropdown() {
         </div>
 
         <div className="flex max-h-104 min-h-0">
-          {/* Provider sidebar — configured first, unconfigured muted, no dividers. */}
           <div className="flex w-11 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border/70 bg-muted/20 py-1.5">
             <ProviderPill
               icon={AiBookIcon}
-              title="All providers"
-              active={activeProvider === null}
-              onClick={() => setActiveProvider(null)}
+              title="All endpoints"
+              active={activeEndpoint === null}
+              onClick={() => setActiveEndpoint(null)}
             />
-            {[...sortedProviders.configured, ...sortedProviders.unconfigured].map(
-              (p) => (
-                <ProviderPill
-                  key={p.id}
-                  icon={PROVIDER_ICON[p.id]}
-                  title={
-                    hasKeyFor(p.id)
-                      ? p.label
-                      : `${p.label} — not configured`
-                  }
-                  active={activeProvider === p.id}
-                  muted={!hasKeyFor(p.id)}
-                  onClick={() => setActiveProvider(p.id)}
-                />
-              ),
-            )}
-            {customEndpoints.length > 0 && (
+            {endpoints.map((ep) => (
               <ProviderPill
-                icon={PlugIcon}
-                title="OpenAI Compatible"
-                active={activeProvider === COMPAT_PROVIDER_ID}
-                onClick={() => setActiveProvider(COMPAT_PROVIDER_ID)}
+                key={ep.id}
+                providerId={detectProviderId(ep.baseURL)}
+                title={ep.name || ep.baseURL || "Endpoint"}
+                active={activeEndpoint === ep.id}
+                onClick={() => setActiveEndpoint(ep.id)}
               />
-            )}
+            ))}
           </div>
 
-          {/* Models list */}
           <div className="min-h-0 flex-1 overflow-y-auto py-1">
-            {activeProvider === COMPAT_PROVIDER_ID && (
-              <div className="flex items-center gap-1.5 px-3 pt-1 pb-1.5 text-[11px] font-medium tracking-tight text-muted-foreground/90">
-                <HugeiconsIcon icon={PlugIcon} size={13} strokeWidth={1.75} />
-                <span>OpenAI Compatible</span>
-              </div>
-            )}
-            {activeProvider !== null &&
-            activeProvider !== COMPAT_PROVIDER_ID ? (
-              <ProviderHeader providerId={activeProvider as ProviderId} />
-            ) : null}
-            {activeProvider !== null &&
-            activeProvider !== COMPAT_PROVIDER_ID &&
-            !hasKeyFor(activeProvider as ProviderId) ? (
-              <ProviderConfigureCTA providerId={activeProvider as ProviderId} />
-            ) : null}
-            {filtered.length === 0 ? (
+            {endpoints.length === 0 ? (
+              <EmptyEndpointCTA />
+            ) : filtered.length === 0 ? (
               <div className="flex items-center justify-center px-4 py-10 text-xs text-muted-foreground/70">
-                {tab === "favorites"
-                  ? "No favorites yet — star a model to pin it here."
-                  : tab === "recent"
-                    ? "No recently-used models."
-                    : "No models match."}
+                {Object.values(loading).some(Boolean)
+                  ? "Loading models…"
+                  : tab === "favorites"
+                    ? "No favorites yet — star a model to pin it here."
+                    : tab === "recent"
+                      ? "No recently-used models."
+                      : "No models match."}
               </div>
             ) : (
-              filtered.map((m) => (
-                <ModelRow
-                  key={m.id}
-                  model={m}
-                  selected={m.id === selected}
-                  hasKey={
-                    isCompatModelId(m.id) ||
-                    hasKeyFor(m.provider)
-                  }
-                  favorite={favoriteIds.includes(m.id)}
-                  showProviderIcon={activeProvider === null}
-                  onPick={() => {
-                    if (!isCompatModelId(m.id) && !hasKeyFor(m.provider)) {
-                      void openSettingsWindow("models");
-                      return;
+              filtered.map(({ endpoint, model }) => {
+                const favoriteKey = modelSelectionKey(endpoint.id, model.id);
+                return (
+                  <ModelRow
+                    key={`${endpoint.id}:${model.id}`}
+                    model={model}
+                    endpoint={endpoint}
+                    selected={favoriteKey === selected}
+                    favorite={favoriteIds.includes(favoriteKey)}
+                    onPick={() => pick(endpoint, model)}
+                    onToggleFavorite={() =>
+                      void toggleFavoriteModel(favoriteKey)
                     }
-                    setSelected(m.id);
-                  }}
-                  onToggleFavorite={() => void toggleFavoriteModel(m.id)}
-                />
-              ))
+                  />
+                );
+              })
             )}
           </div>
         </div>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+function EmptyEndpointCTA() {
+  return (
+    <button
+      type="button"
+      onClick={() => void openSettingsWindow("models")}
+      className="group mx-2 my-2 flex w-[calc(100%-1rem)] items-center gap-2 rounded-md border border-dashed border-border/70 bg-muted/20 px-3 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:border-border hover:bg-accent/40 hover:text-foreground"
+    >
+      <HugeiconsIcon icon={Settings01Icon} size={13} strokeWidth={1.75} />
+      <span className="flex-1 truncate">
+        Add an OpenAI-compatible endpoint to pick a model.
+      </span>
+      <span className="shrink-0 text-[10px] underline-offset-2 group-hover:underline">
+        Open
+      </span>
+    </button>
   );
 }
 
@@ -489,15 +400,15 @@ function TabButton({
 
 function ProviderPill({
   icon,
+  providerId,
   title,
   active,
-  muted,
   onClick,
 }: {
-  icon: typeof AiBookIcon;
+  icon?: typeof AiBookIcon;
+  providerId?: string | null;
   title: string;
   active: boolean;
-  muted?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -509,65 +420,30 @@ function ProviderPill({
         "relative mx-auto flex size-8 items-center justify-center rounded-md transition-colors",
         active
           ? "bg-accent text-foreground after:absolute after:right-0 after:top-1.5 after:bottom-1.5 after:w-[2px] after:rounded-full after:bg-primary after:content-['']"
-          : muted
-            ? "text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground"
-            : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
+          : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
       )}
     >
-      <HugeiconsIcon icon={icon} size={16} strokeWidth={1.5} />
-    </button>
-  );
-}
-
-function ProviderHeader({ providerId }: { providerId: ProviderId }) {
-  const p = PROVIDERS.find((x) => x.id === providerId);
-  if (!p) return null;
-  return (
-    <div className="flex items-center gap-1.5 px-3 pt-1 pb-1.5 text-[11px] font-medium tracking-tight text-muted-foreground/90">
-      <HugeiconsIcon
-        icon={PROVIDER_ICON[p.id]}
-        size={13}
-        strokeWidth={1.75}
-      />
-      <span>{p.label}</span>
-    </div>
-  );
-}
-
-function ProviderConfigureCTA({ providerId }: { providerId: ProviderId }) {
-  const p = PROVIDERS.find((x) => x.id === providerId);
-  if (!p) return null;
-  return (
-    <button
-      type="button"
-      onClick={() => void openSettingsWindow("models")}
-      className="group mx-2 mb-1 flex w-[calc(100%-1rem)] items-center gap-2 rounded-md border border-dashed border-border/70 bg-muted/20 px-3 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:border-border hover:bg-accent/40 hover:text-foreground"
-    >
-      <HugeiconsIcon icon={Settings01Icon} size={13} strokeWidth={1.75} />
-      <span className="flex-1 truncate">
-        Configure {p.label} to use these models.
-      </span>
-      <span className="shrink-0 text-[10px] underline-offset-2 group-hover:underline">
-        Open
-      </span>
+      {icon ? (
+        <HugeiconsIcon icon={icon} size={16} strokeWidth={1.5} />
+      ) : (
+        <ModelLogo providerId={providerId ?? undefined} size={16} />
+      )}
     </button>
   );
 }
 
 function ModelRow({
   model,
+  endpoint,
   selected,
-  hasKey,
   favorite,
-  showProviderIcon,
   onPick,
   onToggleFavorite,
 }: {
-  model: ModelInfo;
+  model: EndpointModel;
+  endpoint: CustomEndpoint;
   selected: boolean;
-  hasKey: boolean;
   favorite: boolean;
-  showProviderIcon: boolean;
   onPick: () => void;
   onToggleFavorite: () => void;
 }) {
@@ -580,7 +456,6 @@ function ModelRow({
       className={cn(
         "group mx-1 my-0.5 flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5",
         selected ? "bg-accent/60 text-foreground" : "text-foreground/85",
-        !hasKey && "opacity-60",
       )}
     >
       <button
@@ -606,25 +481,23 @@ function ModelRow({
         />
       </button>
 
-      {showProviderIcon ? (
-        <HugeiconsIcon
-          icon={PROVIDER_ICON[model.provider]}
-          size={13}
-          strokeWidth={1.5}
-          className="shrink-0 text-muted-foreground/70"
-        />
-      ) : null}
+      <ModelLogo lab={model.lab} />
 
       <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
         <span className="shrink-0 text-[12px] font-medium leading-none">
-          {model.label}
+          {model.id}
         </span>
         <span className="truncate text-[10.5px] leading-none text-muted-foreground">
-          {model.description}
+          {endpoint.name || endpoint.baseURL}
+          {model.contextLimit
+            ? ` · ${Math.round(model.contextLimit / 1000)}k ctx`
+            : ""}
+          {model.reasoning ? " · reasoning" : ""}
+          {model.vision ? " · vision" : ""}
         </span>
       </div>
 
-      <CapabilityBars caps={model.capabilities} />
+      {model.pricing ? <PricingBadge model={model} /> : null}
 
       {selected ? (
         <HugeiconsIcon
@@ -638,53 +511,67 @@ function ModelRow({
   );
 }
 
-function CapabilityBars({ caps }: { caps: ModelCapabilities }) {
-  return (
-    <div className="ml-auto flex items-center gap-1.5">
-      <CapBar icon={BrainIcon} value={caps.intelligence} label="Intelligence" />
-      <CapBar icon={FlashIcon} value={caps.speed} label="Speed" />
-      <CapBar
-        icon={CoinsDollarIcon}
-        value={caps.cost}
-        label="Affordability"
+function ModelLogo({
+  lab,
+  providerId,
+  size = 13,
+}: {
+  lab?: string | null;
+  providerId?: string | null;
+  size?: number;
+}) {
+  const url = labLogoUrl(lab) ?? providerLogoUrl(providerId);
+  if (!url) {
+    return (
+      <HugeiconsIcon
+        icon={PlugIcon}
+        size={size}
+        strokeWidth={1.5}
+        className="shrink-0 text-muted-foreground/70"
       />
-    </div>
+    );
+  }
+  // models.dev logos are single-path `fill="currentColor"` SVGs. Loaded as an
+  // <img> they resolve to black (invisible on dark themes), so mask them and
+  // paint with currentColor instead — the logo then follows the text color.
+  return (
+    <span
+      aria-hidden
+      className="shrink-0 bg-current opacity-80"
+      style={{
+        width: size,
+        height: size,
+        WebkitMaskImage: `url("${url}")`,
+        maskImage: `url("${url}")`,
+        WebkitMaskRepeat: "no-repeat",
+        maskRepeat: "no-repeat",
+        WebkitMaskPosition: "center",
+        maskPosition: "center",
+        WebkitMaskSize: "contain",
+        maskSize: "contain",
+      }}
+    />
   );
 }
 
-function CapBar({
-  icon,
-  value,
-  label,
-}: {
-  icon: typeof AiBookIcon;
-  value: number;
-  label: string;
-}) {
+function PricingBadge({ model }: { model: EndpointModel }) {
+  const p = model.pricing;
+  if (!p) return null;
   return (
     <span
-      className="flex items-center gap-0.5"
-      title={`${label}: ${value}/5`}
+      className="ml-auto shrink-0 tabular-nums text-[10px] text-muted-foreground/80"
+      title={`$${p.input}/M in · $${p.output}/M out`}
     >
-      <HugeiconsIcon
-        icon={icon}
-        size={10}
-        strokeWidth={1.75}
-        className="text-muted-foreground/60"
-      />
-      <span className="flex items-center gap-px">
-        {[1, 2, 3, 4, 5].map((i) => (
-          <span
-            key={i}
-            className={cn(
-              "h-2 w-[2px] rounded-full",
-              i <= value ? "bg-foreground/70" : "bg-foreground/15",
-            )}
-          />
-        ))}
-      </span>
+      ${formatPrice(p.input)}/${formatPrice(p.output)}
     </span>
   );
+}
+
+function formatPrice(v: number): string {
+  if (v === 0) return "0";
+  if (v >= 100) return v.toFixed(0);
+  if (v >= 10) return v.toFixed(1);
+  return v.toFixed(2).replace(/\.?0+$/, "");
 }
 
 function IconBtn({

@@ -1,17 +1,9 @@
 import type { Chat, UIMessage } from "@ai-sdk/react";
 import { create } from "zustand";
-import {
-  DEFAULT_MODEL_ID,
-  endpointIdFromCompatModel,
-  getModel,
-  isCompatModelId,
-  providerNeedsKey,
-  type ModelId,
-  type ProviderId,
-} from "../config";
+import { endpointIdForSelection } from "../config";
 import { useTodosStore } from "./todoStore";
 import type { AgentUsage } from "../lib/agent";
-import { EMPTY_PROVIDER_KEYS, type ProviderKeys, type CustomEndpointKeys } from "../lib/keyring";
+import type { CustomEndpointKeys } from "../lib/keyring";
 import {
   deleteSessionData,
   deriveTitle,
@@ -23,7 +15,6 @@ import {
   saveSessionsList,
   type SessionMeta,
 } from "../lib/sessions";
-import { pushRecentModel } from "../lib/modelPrefs";
 
 export type Live = {
   getCwd: () => string | null;
@@ -87,10 +78,7 @@ export type PendingSelection = {
   source: "terminal" | "editor";
 };
 
-export type ApprovalResponder = (
-  approvalId: string,
-  approved: boolean,
-) => void;
+export type ApprovalResponder = (approvalId: string, approved: boolean) => void;
 
 type StoreState = {
   live: Live;
@@ -104,10 +92,6 @@ type StoreState = {
   approvalResponder: ApprovalResponder | null;
   setApprovalResponder: (fn: ApprovalResponder | null) => void;
   respondToApproval: (approvalId: string, approved: boolean) => void;
-
-  apiKeys: ProviderKeys;
-  setApiKeys: (keys: ProviderKeys) => void;
-  setApiKey: (provider: ProviderId, key: string | null) => void;
 
   customEndpointKeys: CustomEndpointKeys;
   setCustomEndpointKeys: (keys: CustomEndpointKeys) => void;
@@ -219,19 +203,12 @@ export const useChatStore = create<StoreState>((set, get) => ({
     if (fn) fn(approvalId, approved);
   },
 
-  apiKeys: { ...EMPTY_PROVIDER_KEYS },
-  setApiKeys: (keys) => set({ apiKeys: keys }),
-  setApiKey: (provider, key) => {
-    set({ apiKeys: { ...get().apiKeys, [provider]: key } });
-  },
-
   customEndpointKeys: {},
   setCustomEndpointKeys: (keys) => set({ customEndpointKeys: keys }),
 
-  selectedModelId: DEFAULT_MODEL_ID,
+  selectedModelId: "",
   setSelectedModelId: (id) => {
     set({ selectedModelId: id });
-    void pushRecentModel(id);
   },
 
   mini: { open: false },
@@ -266,7 +243,10 @@ export const useChatStore = create<StoreState>((set, get) => ({
     set((s) => ({
       panelOpen: true,
       focusSignal: s.focusSignal + 1,
-      pendingSelections: [...s.pendingSelections, { id, text: trimmed, source }],
+      pendingSelections: [
+        ...s.pendingSelections,
+        { id, text: trimmed, source },
+      ],
     }));
   },
   consumeSelections: () => {
@@ -427,22 +407,14 @@ export function getAgentMeta(): AgentMeta {
   return useChatStore.getState().agentMeta;
 }
 
-export function getActiveProviderKey(): string | null {
-  const { selectedModelId, apiKeys, customEndpointKeys } = useChatStore.getState();
-  if (isCompatModelId(selectedModelId)) {
-    const eid = endpointIdFromCompatModel(selectedModelId);
-    return customEndpointKeys[eid] ?? null;
-  }
-  return apiKeys[getModel(selectedModelId as ModelId).provider] ?? null;
+export function getActiveEndpointKey(): string | null {
+  const { selectedModelId, customEndpointKeys } = useChatStore.getState();
+  return customEndpointKeys[endpointIdForSelection(selectedModelId)] ?? null;
 }
 
-export function hasKeyForModel(modelId: string): boolean {
-  const { apiKeys } = useChatStore.getState();
-  if (isCompatModelId(modelId)) {
-    return true;
-  }
-  const provider = getModel(modelId as ModelId).provider;
-  return providerNeedsKey(provider) ? !!apiKeys[provider] : true;
+/** OpenAI-compatible endpoints never require a key. */
+export function hasKeyForModel(_modelId: string): boolean {
+  return true;
 }
 
 export function getChat(sessionId?: string): Chat<UIMessage> | undefined {

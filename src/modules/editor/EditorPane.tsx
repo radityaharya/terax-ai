@@ -1,5 +1,4 @@
-import { endpointIdFromCompatModel } from "@/modules/ai/config";
-import { getCustomEndpointKey, getKey } from "@/modules/ai/lib/keyring";
+import { getCustomEndpointKey } from "@/modules/ai/lib/keyring";
 import { lspFormatDocument, useLspExtension } from "@/modules/lsp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
@@ -225,23 +224,8 @@ export const EditorPane = memo(
       let cancelled = false;
       const refresh = async () => {
         const s = usePreferencesStore.getState();
-        const provider = s.autocompleteProvider;
-        if (
-          provider === "lmstudio" ||
-          provider === "mlx" ||
-          provider === "ollama"
-        ) {
-          apiKeyRef.current = null;
-          return;
-        }
-        // OpenAI-compatible keys live in a per-endpoint keyring slot.
-        if (provider === "openai-compatible") {
-          const eid = endpointIdFromCompatModel(s.autocompleteModelId);
-          const k = eid ? await getCustomEndpointKey(eid) : null;
-          if (!cancelled) apiKeyRef.current = k;
-          return;
-        }
-        const k = await getKey(provider);
+        const eid = s.autocompleteEndpointId;
+        const k = eid ? await getCustomEndpointKey(eid) : null;
         if (!cancelled) apiKeyRef.current = k;
       };
       void refresh();
@@ -251,10 +235,7 @@ export const EditorPane = memo(
         else unlistenKeys = un;
       });
       const unsubPrefs = usePreferencesStore.subscribe((state, prev) => {
-        if (
-          state.autocompleteProvider !== prev.autocompleteProvider ||
-          state.autocompleteModelId !== prev.autocompleteModelId
-        ) {
+        if (state.autocompleteEndpointId !== prev.autocompleteEndpointId) {
           void refresh();
         }
       });
@@ -431,38 +412,15 @@ export const EditorPane = memo(
         inlineCompletion({
           getPrefs: () => {
             const s = usePreferencesStore.getState();
-            const p = s.autocompleteProvider;
-            // autocompleteModelId holds the compat- id of the chosen endpoint.
-            const compatEp =
-              p === "openai-compatible"
-                ? s.customEndpoints.find(
-                    (e) =>
-                      e.id === endpointIdFromCompatModel(s.autocompleteModelId),
-                  )
-                : undefined;
-            const modelId =
-              p === "lmstudio"
-                ? s.lmstudioModelId
-                : p === "mlx"
-                  ? s.mlxModelId
-                  : p === "ollama"
-                    ? s.ollamaModelId
-                    : p === "openai-compatible"
-                      ? (compatEp?.modelId ?? "")
-                      : p === "openrouter"
-                        ? s.openrouterModelId
-                        : s.autocompleteModelId;
+            const ep = s.customEndpoints.find(
+              (e) => e.id === s.autocompleteEndpointId,
+            );
             return {
               enabled: s.autocompleteEnabled,
               trigger: s.autocompleteTrigger,
-              provider: p,
-              modelId,
+              baseURL: ep?.baseURL ?? "",
+              modelId: s.autocompleteModelId,
               apiKey: apiKeyRef.current,
-              lmstudioBaseURL: s.lmstudioBaseURL,
-              mlxBaseURL: s.mlxBaseURL,
-              ollamaBaseURL: s.ollamaBaseURL,
-              openaiCompatibleBaseURL:
-                compatEp?.baseURL ?? s.openaiCompatibleBaseURL,
             };
           },
           getPath: () => pathRef.current,
@@ -685,8 +643,8 @@ export const EditorPane = memo(
             <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
               <div className="text-sm text-foreground">Remote preview</div>
               <div className="text-xs text-muted-foreground">
-                {ext.toUpperCase()} preview from SSH hosts is not supported
-                yet. Download the file to view it locally.
+                {ext.toUpperCase()} preview from SSH hosts is not supported yet.
+                Download the file to view it locally.
               </div>
             </div>
           );
@@ -736,7 +694,8 @@ export const EditorPane = memo(
         );
       }
 
-      const canForce = doc.status === "toolarge" && doc.size <= FORCE_READ_LIMIT;
+      const canForce =
+        doc.status === "toolarge" && doc.size <= FORCE_READ_LIMIT;
       return (
         <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
           <div className="text-sm text-foreground">

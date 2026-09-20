@@ -1,15 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
-import { useWhisperRecording } from "../hooks/useWhisperRecording";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { getChat, useChatStore } from "../store/chatStore";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
-import { getChat, useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 
@@ -33,8 +26,6 @@ export const MAX_TEXT_INLINE = 200_000;
 export const ACCEPTED_FILES =
   "image/*,.txt,.md,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cpp,.h,.hpp,.html,.css,.csv,.log,.env,.config,.conf,.ini,Dockerfile,.dockerfile";
 
-type Voice = ReturnType<typeof useWhisperRecording>;
-
 type ComposerCtx = {
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   value: string;
@@ -53,7 +44,6 @@ type ComposerCtx = {
   isBusy: boolean;
   submit: () => void;
   stop: () => void;
-  voice: Voice;
   canSend: boolean;
 };
 
@@ -131,9 +121,7 @@ export function AiComposerProvider({ children }: ProviderProps) {
         next.push({
           id: sel.id,
           name:
-            sel.source === "editor"
-              ? "Editor selection"
-              : "Terminal selection",
+            sel.source === "editor" ? "Editor selection" : "Terminal selection",
           kind: "selection",
           mediaType: "text/plain",
           text: sel.text,
@@ -144,13 +132,6 @@ export function AiComposerProvider({ children }: ProviderProps) {
       return next.length ? [...prev, ...next] : prev;
     });
   }, [pendingSelections, consumeSelections]);
-
-  const voice = useWhisperRecording({
-    onResult: (transcript: string) => {
-      setValue((v) => (v ? `${v} ${transcript}` : transcript));
-      requestAnimationFrame(() => textareaRef.current?.focus());
-    },
-  });
 
   const addFiles = async (list: FileList | null) => {
     if (!list) return;
@@ -231,7 +212,11 @@ export function AiComposerProvider({ children }: ProviderProps) {
     let effectiveText = trimmed;
     let commandMarker: string | null = null;
     let commandSource = trimmed;
-    if (pickedCommands.length > 0 && !trimmed.startsWith("/") && !trimmed.startsWith("#")) {
+    if (
+      pickedCommands.length > 0 &&
+      !trimmed.startsWith("/") &&
+      !trimmed.startsWith("#")
+    ) {
       commandSource = `#${pickedCommands[0].name} ${trimmed}`.trim();
     }
     if (commandSource.startsWith("/") || commandSource.startsWith("#")) {
@@ -262,10 +247,8 @@ export function AiComposerProvider({ children }: ProviderProps) {
         (f) =>
           `<selection source="${f.source ?? "terminal"}">\n${f.text ?? ""}\n</selection>`,
       );
-    const { body: bodyAfterTokens, blocks: snippetBlocks } = expandSnippetTokens(
-      effectiveText,
-      useSnippetsStore.getState().snippets,
-    );
+    const { body: bodyAfterTokens, blocks: snippetBlocks } =
+      expandSnippetTokens(effectiveText, useSnippetsStore.getState().snippets);
     const seenHandles = new Set<string>();
     const allSnippetBlocks: string[] = [];
     for (const s of pickedSnippets) {
@@ -351,7 +334,6 @@ export function AiComposerProvider({ children }: ProviderProps) {
     isBusy,
     submit,
     stop,
-    voice,
     canSend,
   };
 

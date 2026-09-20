@@ -1,12 +1,9 @@
 import {
-  type AutocompleteProviderId,
-  DEFAULT_AUTOCOMPLETE_MODEL,
-  LMSTUDIO_DEFAULT_BASE_URL,
   modelSupportsTemperature,
   modelUsesReasoningTokens,
 } from "@/modules/ai/config";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
-import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
+import { lookupModelMetadata } from "@/modules/ai/lib/modelMetadata";
 import { generateText } from "ai";
 import {
   buildUserPrompt,
@@ -15,13 +12,9 @@ import {
 } from "./prompt";
 
 export type CompletionDeps = {
-  provider: AutocompleteProviderId;
+  baseURL: string;
   modelId: string;
   apiKey: string | null;
-  lmstudioBaseURL: string;
-  mlxBaseURL?: string;
-  ollamaBaseURL?: string;
-  openaiCompatibleBaseURL?: string;
 };
 
 const MAX_OUTPUT_TOKENS_DEFAULT = 128;
@@ -35,29 +28,20 @@ export async function requestCompletion(
   deps: CompletionDeps,
   signal: AbortSignal,
 ): Promise<string> {
-  const modelId =
-    deps.modelId.trim() || DEFAULT_AUTOCOMPLETE_MODEL[deps.provider] || "";
-  if (!modelId) {
-    throw new Error(`No autocomplete model id set for ${deps.provider}.`);
+  const modelId = deps.modelId.trim();
+  if (!deps.baseURL.trim()) {
+    throw new Error("No autocomplete endpoint configured.");
   }
-  const keys = { ...EMPTY_PROVIDER_KEYS, [deps.provider]: deps.apiKey };
-  const model = await buildLanguageModel(deps.provider, keys, modelId, {
-    lmstudioBaseURL: deps.lmstudioBaseURL || LMSTUDIO_DEFAULT_BASE_URL,
-    mlxBaseURL: deps.mlxBaseURL,
-    ollamaBaseURL: deps.ollamaBaseURL,
-    openaiCompatibleBaseURL: deps.openaiCompatibleBaseURL,
-  });
+  if (!modelId) {
+    throw new Error("No autocomplete model selected.");
+  }
+  const model = await buildLanguageModel(deps.baseURL, deps.apiKey, modelId);
 
-  const isReasoning = modelUsesReasoningTokens(deps.provider, modelId);
-  const providerOptions = isReasoning
-    ? {
-        anthropic: { effort: "low" },
-        cerebras: { reasoningEffort: "low" },
-        groq: { reasoningEffort: "low" },
-        openai: { reasoningEffort: "low" },
-        xai: { reasoningEffort: "low" },
-      }
-    : undefined;
+  const meta = lookupModelMetadata(deps.baseURL, modelId);
+  const isReasoning = modelUsesReasoningTokens(
+    modelId,
+    meta ? { reasoning: meta.reasoning } : undefined,
+  );
 
   const { text } = await generateText({
     model,
@@ -68,10 +52,12 @@ export async function requestCompletion(
       : MAX_OUTPUT_TOKENS_DEFAULT,
     maxRetries: 0,
     abortSignal: signal,
-    ...(modelSupportsTemperature(deps.provider, modelId)
+    ...(modelSupportsTemperature(
+      modelId,
+      meta ? { supportsTemperature: meta.temperature } : undefined,
+    )
       ? { temperature: 0.1 }
       : {}),
-    ...(providerOptions ? { providerOptions } : {}),
   });
 
   return cleanCompletion(text);

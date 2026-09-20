@@ -29,7 +29,13 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { PresenceState } from "@/lib/usePresence";
 import { useEffect, useMemo } from "react";
-import { estimateCost, getModel, getModelContextLimit, type ModelId } from "../config";
+import {
+  computeCost,
+  endpointIdForSelection,
+  getModelContextLimit,
+  modelIdForSelection,
+} from "../config";
+import { useEndpointCatalog } from "../lib/endpointCatalog";
 import type { ResizeDir } from "../lib/miniWindowGeometry";
 import type { SessionMeta } from "../lib/sessions";
 import { useMiniWindowGeometry } from "../lib/useMiniWindowGeometry";
@@ -153,7 +159,10 @@ function ResizeHandle({
     <div
       data-no-drag
       onPointerDown={onPointerDown}
-      className={cn("absolute z-50 touch-none select-none", RESIZE_HANDLE_CLASS[dir])}
+      className={cn(
+        "absolute z-50 touch-none select-none",
+        RESIZE_HANDLE_CLASS[dir],
+      )}
     />
   );
 }
@@ -338,25 +347,29 @@ function formatTokens(n: number): string {
 }
 
 function ContextIndicator({ messages }: { messages: UIMessage[] }) {
-  const modelId = useChatStore((s) => s.selectedModelId);
+  const selectedModelId = useChatStore((s) => s.selectedModelId);
   const tokens = useChatStore((s) => s.agentMeta.tokens);
   const lastInput = useChatStore((s) => s.agentMeta.lastInputTokens);
   const lastCached = useChatStore((s) => s.agentMeta.lastCachedTokens);
   const estimated = useMemo(() => estimateTokens(messages), [messages]);
   const used = lastInput > 0 ? lastInput : estimated;
   const reported = tokens.inputTokens + tokens.outputTokens;
-  const openaiCompatibleContextLimit = usePreferencesStore(
-    (s) => s.openaiCompatibleContextLimit,
+  const endpoints = usePreferencesStore((s) => s.customEndpoints);
+  const catalog = useEndpointCatalog((s) => s.entries);
+  const endpointId = endpointIdForSelection(selectedModelId);
+  const endpoint = endpoints.find((e) => e.id === endpointId);
+  const selectedModelIdForEndpoint = modelIdForSelection(selectedModelId);
+  const catalogModel = catalog[endpointId]?.models.find(
+    (m) => m.id === selectedModelIdForEndpoint,
   );
-  const max = getModelContextLimit(modelId, openaiCompatibleContextLimit);
-  const modelLabel = useMemo(() => {
-    try {
-      return getModel(modelId as ModelId).label;
-    } catch {
-      return modelId;
-    }
-  }, [modelId]);
-  const cost = estimateCost(modelId, tokens);
+  const max = getModelContextLimit(
+    selectedModelId,
+    endpoints,
+    catalogModel?.contextLimit,
+  );
+  const modelLabel =
+    selectedModelIdForEndpoint || endpoint?.name || "No model selected";
+  const cost = computeCost(catalogModel?.pricing ?? null, tokens);
   const cacheRate =
     tokens.inputTokens > 0
       ? Math.round((tokens.cachedInputTokens / tokens.inputTokens) * 100)
@@ -403,7 +416,9 @@ function ContextIndicator({ messages }: { messages: UIMessage[] }) {
               {tokens.cachedInputTokens > 0 && (
                 <div className="flex items-center justify-between text-muted-foreground">
                   <span>Cache hit</span>
-                  <span className="font-mono text-foreground">{cacheRate}%</span>
+                  <span className="font-mono text-foreground">
+                    {cacheRate}%
+                  </span>
                 </div>
               )}
               {cost != null && (
