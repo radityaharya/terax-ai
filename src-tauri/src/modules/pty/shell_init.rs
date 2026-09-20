@@ -62,6 +62,15 @@ pub struct DockerExecSpec {
     pub attach: bool,
 }
 
+/// Reattach a remote zellij session as the terminal's remote command:
+/// `ssh -t user@host zellij attach <session>`. Session names are validated
+/// (no flag-like or metacharacter names) before the argv is assembled.
+#[derive(Clone, Debug)]
+pub struct ZellijAttachSpec {
+    pub host_id: String,
+    pub session: String,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_command(
     cwd: Option<String>,
@@ -71,6 +80,7 @@ pub fn build_command(
     control: Option<ShellControlEnv>,
     ssh_integration: Option<crate::modules::ssh::integration::SshIntegration>,
     docker_exec: Option<DockerExecSpec>,
+    zellij_attach: Option<ZellijAttachSpec>,
 ) -> Result<CommandBuilder, String> {
     // SSH terminal tabs run on all desktop OSes: the transport is system ssh.
     // Integration is installed in pty_open (which has state access) and
@@ -80,9 +90,13 @@ pub fn build_command(
         if let Some(spec) = docker_exec {
             return build_docker_exec(&spec);
         }
+        if let Some(spec) = zellij_attach {
+            return build_zellij_attach(&spec);
+        }
         return build_ssh(cwd, host_id, ssh_integration, blocks);
     }
     let _ = docker_exec;
+    let _ = zellij_attach;
     let _ = ssh_integration;
     let shell = sanitize_shell_override(shell);
     #[cfg(unix)]
@@ -135,6 +149,35 @@ pub fn build_docker_exec(spec: &DockerExecSpec) -> Result<CommandBuilder, String
         host.hostname,
         spec.container,
         spec.shell
+    );
+    Ok(cmd)
+}
+
+/// Interactive SSH terminal attached to a zellij session:
+/// `ssh -t user@host zellij attach <session>`. The remote command is the
+/// full argv as ONE ssh argument (same quoting discipline as docker exec).
+pub fn build_zellij_attach(spec: &ZellijAttachSpec) -> Result<CommandBuilder, String> {
+    use crate::modules::ssh::integration::host_by_id;
+    let host = host_by_id(&spec.host_id)?;
+    let argv = crate::modules::ssh::zellij::build_attach_argv(&spec.session)?;
+    let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let remote_cmd = argv.iter().map(|a| q(a)).collect::<Vec<_>>().join(" ");
+    let mut cmd = CommandBuilder::new(crate::modules::ssh::ssh_binary());
+    for arg in crate::modules::ssh::session::terminal_args(&host, None) {
+        cmd.arg(arg);
+    }
+    cmd.arg(remote_cmd);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERM_PROGRAM", "terax");
+    cmd.env("TERAX_TERMINAL", "1");
+    cmd.env("TERAX_ZELLIJ_SESSION", &spec.session);
+    cmd.env("TERAX_SESSION_TAG", format!("zellij:{}", spec.session));
+    log::info!(
+        "spawning zellij attach: {}@{} session {}",
+        host.user,
+        host.hostname,
+        spec.session
     );
     Ok(cmd)
 }

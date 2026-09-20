@@ -98,6 +98,7 @@ export function TerminalStack({
               blocks={t.blocks ?? false}
               env={t.env}
               dockerExec={t.dockerExec}
+              zellijAttach={t.zellijAttach}
               onFocusLeaf={(leafId) => onFocusLeaf(t.id, leafId)}
               getBundle={getBundle}
             />

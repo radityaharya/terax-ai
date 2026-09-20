@@ -2,7 +2,7 @@ import { useHostStore } from "@/modules/hosts";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import type { WorkspaceEnv } from "@/modules/workspace";
-import type { DockerExecTarget } from "./lib/pty-bridge";
+import type { DockerExecTarget, ZellijAttachTarget } from "./lib/pty-bridge";
 import { useTheme } from "@/modules/theme";
 import {
   forwardRef,
@@ -42,6 +42,8 @@ export type TerminalPaneProps = {
   env?: WorkspaceEnv;
   /** `docker exec -it` target (overrides the shell spawn). */
   dockerExec?: DockerExecTarget;
+  /** Remote zellij session to reattach (overrides the shell spawn). */
+  zellijAttach?: ZellijAttachTarget;
   /** Enable command-block decorations (OSC 133) for this terminal. */
   blocks?: boolean;
   onSearchReady?: (leafId: number, addon: TerminalSearchController) => void;
@@ -68,6 +70,7 @@ const GhosttyTerminalPane = memo(
       initialCwd,
       env,
       dockerExec,
+      zellijAttach,
       blocks = false,
       onSearchReady,
       onExit,
@@ -91,6 +94,7 @@ const GhosttyTerminalPane = memo(
       initialCwd,
       env,
       dockerExec,
+      zellijAttach,
       blocks,
       onSearchReady: (search) => onSearchReady?.(leafId, search),
       onExit: (code) => onExit?.(leafId, code),
@@ -188,6 +192,17 @@ const GhosttyTerminalPane = memo(
         {!session.error && session.connecting && (
           <ConnectingOverlay env={env} onRetry={session.retry} />
         )}
+        {!session.error &&
+          !session.connecting &&
+          session.shellExited &&
+          (env?.kind === "ssh" || dockerExec || zellijAttach) && (
+            <DisconnectedOverlay
+              env={env}
+              dockerExec={dockerExec}
+              zellijAttach={zellijAttach}
+              onReconnect={session.retry}
+            />
+          )}
         {session.error && (
           <div
             role="alert"
@@ -293,6 +308,55 @@ function ConnectingOverlay({
           </button>
         </>
       )}
+    </div>
+  );
+}
+
+/** Shown when a remote session (SSH / docker exec / zellij attach) drops.
+ *  The tab is kept — unlike a local shell exit, which closes the pane — so
+ *  the user can reconnect without losing their workspace. */
+function DisconnectedOverlay({
+  env,
+  dockerExec,
+  zellijAttach,
+  onReconnect,
+}: {
+  env: WorkspaceEnv | undefined;
+  dockerExec?: DockerExecTarget;
+  zellijAttach?: ZellijAttachTarget;
+  onReconnect: () => void;
+}) {
+  const hostAlias = useHostStore((state) =>
+    env?.kind === "ssh"
+      ? (state.hosts.find((h) => h.id === env.hostId)?.alias ?? env.hostId)
+      : null,
+  );
+  const target = dockerExec
+    ? dockerExec.container.slice(0, 12)
+    : zellijAttach
+      ? `zellij ${zellijAttach.session}`
+      : hostAlias
+        ? hostAlias
+        : null;
+  return (
+    <div
+      role="alert"
+      className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background/95 p-6 text-center text-sm"
+    >
+      <strong>Connection lost</strong>
+      <p className="max-w-md break-words text-muted-foreground">
+        {target
+          ? `The session on ${target} ended.`
+          : "The remote session ended."}{" "}
+        Your tab is still here — reconnect to {zellijAttach ? "reattach" : "start a new session"}.
+      </p>
+      <button
+        type="button"
+        className="rounded-md border px-3 py-1.5 hover:bg-accent focus-visible:outline-2"
+        onClick={onReconnect}
+      >
+        Reconnect
+      </button>
     </div>
   );
 }

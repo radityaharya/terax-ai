@@ -49,6 +49,7 @@ function baseContext(
     openSpacesOverview: noop,
     openHostsPanel: noop,
     openDockerPanel: noop,
+    openZellijPanel: noop,
     newSpace: noop,
     switchSpace: noop,
     ...over,

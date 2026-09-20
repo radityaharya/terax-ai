@@ -1,1 +1,6 @@
-export type SidebarViewId = "explorer" | "source-control" | "hosts" | "docker";
+export type SidebarViewId =
+  | "explorer"
+  | "source-control"
+  | "hosts"
+  | "docker"
+  | "zellij";

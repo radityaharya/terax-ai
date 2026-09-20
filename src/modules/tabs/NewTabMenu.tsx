@@ -39,6 +39,7 @@ type Props = {
   onNewGitGraph: () => void;
   onNewSshHost?: (host: SshHost) => void;
   onNewDockerExec?: (host: SshHost) => void;
+  onNewZellijHost?: (host: SshHost) => void;
   onLaunchAgents: (request: AgentLaunchRequest) => void;
 };
 
@@ -51,6 +52,7 @@ export function NewTabMenu({
   onNewGitGraph,
   onNewSshHost,
   onNewDockerExec,
+  onNewZellijHost,
   onLaunchAgents,
 }: Props) {
   const hosts = useHostStore((s) => s.hosts);
@@ -221,6 +223,29 @@ export function NewTabMenu({
                       />
                       <span className="flex-1 truncate">
                         Exec on {host.alias}…
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                </>
+              )}
+              {onNewZellijHost && hosts.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <div className="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                    Zellij sessions
+                  </div>
+                  {hosts.map((host) => (
+                    <DropdownMenuItem
+                      key={`zellij-${host.id}`}
+                      onSelect={() => onNewZellijHost(host)}
+                    >
+                      <HugeiconsIcon
+                        icon={ComputerTerminal02Icon}
+                        size={14}
+                        strokeWidth={1.75}
+                      />
+                      <span className="flex-1 truncate">
+                        Sessions on {host.alias}…
                       </span>
                     </DropdownMenuItem>
                   ))}

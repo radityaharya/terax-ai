@@ -16,6 +16,21 @@ export function sshRpc<T>(
   return invoke<T>("ssh_rpc", { hostId: id, method, params });
 }
 
+export type ZellijSession = { name: string };
+export type ZellijSessions = {
+  /** False when `zellij` is not installed on the remote host. */
+  available: boolean;
+  sessions: ZellijSession[];
+};
+
+/**
+ * List zellij sessions on an SSH host via a one-shot BatchMode capture.
+ * The host must already be reachable (key auth / agent), like the other probes.
+ */
+export function listZellijSessions(hostId: string): Promise<ZellijSessions> {
+  return invoke<ZellijSessions>("zellij_sessions", { id: hostId });
+}
+
 /**
  * Resolve the host a path/tab belongs to. Tabs stamp their env at open, so
  * background editor tabs read their OWN host, not the active tab's. Reads

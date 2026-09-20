@@ -52,6 +52,15 @@ pub struct DockerExecRequest {
     pub attach: Option<bool>,
 }
 
+/// Remote zellij session to reattach, threaded through pty_open when the
+/// caller passes `zellijAttach`. Validated server-side in build_zellij_attach.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZellijAttachRequest {
+    pub host_id: String,
+    pub session: String,
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn pty_open(
@@ -67,6 +76,7 @@ pub async fn pty_open(
     shell: Option<String>,
     pane_id: Option<u32>,
     docker_exec: Option<DockerExecRequest>,
+    zellij_attach: Option<ZellijAttachRequest>,
     on_data: Channel<Response>,
     on_exit: Channel<i32>,
 ) -> Result<u32, String> {
@@ -79,6 +89,10 @@ pub async fn pty_open(
         container: d.container,
         shell: d.shell,
         attach: d.attach.unwrap_or(false),
+    });
+    let zellij_attach_spec = zellij_attach.map(|z| shell_init::ZellijAttachSpec {
+        host_id: z.host_id,
+        session: z.session,
     });
     // SSH cwds are remote paths: validated host-side, never canonicalized
     // locally. Pass the raw string through; build_ssh applies it remotely.
@@ -127,6 +141,7 @@ pub async fn pty_open(
             control_env,
             ssh_integration,
             docker_exec_spec,
+            zellij_attach_spec,
             on_data,
             on_exit,
         )

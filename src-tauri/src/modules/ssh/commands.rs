@@ -193,6 +193,19 @@ pub async fn ssh_login_shell_for(app: tauri::AppHandle, id: String) -> Result<St
     ssh_login_shell(&host).map_err(err)
 }
 
+/// List zellij sessions on a remote host. A one-shot BatchMode capture:
+/// the host must already be reachable (key auth / agent), same as the
+/// other SSH probes. `available: false` means zellij is not installed.
+#[tauri::command]
+pub async fn zellij_sessions(id: String) -> Result<super::zellij::ZellijSessions, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = super::integration::host_by_id(&id)?;
+        super::zellij::list_sessions(&host)
+    })
+    .await
+    .map_err(|e| format!("zellij_sessions join failed: {e}"))?
+}
+
 #[tauri::command]
 pub async fn ssh_probe_auth(app: tauri::AppHandle, id: String) -> Result<ProbeOutcome, String> {
     validate_host_id(&id)?;

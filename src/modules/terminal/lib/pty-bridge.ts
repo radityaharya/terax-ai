@@ -40,6 +40,11 @@ export type DockerExecTarget = {
   attach?: boolean;
 };
 
+export type ZellijAttachTarget = {
+  hostId: string;
+  session: string;
+};
+
 export type OpenPtyOptions = {
   cwd?: string;
   blocks?: boolean;
@@ -53,6 +58,8 @@ export type OpenPtyOptions = {
   env?: WorkspaceEnv;
   /** `docker exec -it` spawn target (validated server-side). */
   dockerExec?: DockerExecTarget;
+  /** Remote zellij session to reattach (validated server-side). */
+  zellijAttach?: ZellijAttachTarget;
 };
 
 /**
@@ -151,7 +158,15 @@ export async function openPty(
     }
   };
 
-  const { cwd, blocks, shell, paneId, env: spawnEnv, dockerExec } = opts;
+  const {
+    cwd,
+    blocks,
+    shell,
+    paneId,
+    env: spawnEnv,
+    dockerExec,
+    zellijAttach,
+  } = opts;
   try {
     await ensureAgentActivityListener();
     id = await invoke<number>("pty_open", {
@@ -168,6 +183,12 @@ export async function openPty(
             container: dockerExec.container,
             shell: dockerExec.shell,
             attach: dockerExec.attach ?? false,
+          }
+        : null,
+      zellijAttach: zellijAttach
+        ? {
+            hostId: zellijAttach.hostId,
+            session: zellijAttach.session,
           }
         : null,
       onData,

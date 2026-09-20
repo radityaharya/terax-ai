@@ -59,6 +59,12 @@ export type DockerExecAttach = {
   attach: boolean;
 };
 
+/** Remote zellij session a terminal reattaches to. Single-pane by design. */
+export type ZellijAttach = {
+  hostId: string;
+  session: string;
+};
+
 export type TerminalTab = TabBase & {
   id: number;
   kind: "terminal";
@@ -73,6 +79,8 @@ export type TerminalTab = TabBase & {
   customTitle?: string;
   /** docker exec/attach tab identity. Splits are disabled for exec tabs. */
   dockerExec?: DockerExecAttach;
+  /** Remote zellij attach tab identity. Splits are disabled. */
+  zellijAttach?: ZellijAttach;
 };
 
 export type EditorTab = TabBase & {
@@ -934,6 +942,49 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [],
   );
 
+  /**
+   * Opens a terminal tab that reattaches to an existing zellij session on a
+   * host (`ssh -t user@host zellij attach <session>`). Splits are disabled
+   * and a dropped connection shows a reconnect overlay that re-runs the same
+   * attach. Reuses an existing tab for the same session.
+   */
+  const newZellijAttachTab = useCallback(
+    (input: { hostId: string; session: string }) => {
+      const env: WorkspaceEnv = { kind: "ssh", hostId: input.hostId };
+      const curr = tabsRef.current;
+      const existing = curr.find(
+        (t) =>
+          t.kind === "terminal" &&
+          t.zellijAttach?.hostId === input.hostId &&
+          t.zellijAttach?.session === input.session,
+      );
+      if (existing) {
+        setActiveId(existing.id);
+        return existing.id;
+      }
+      const tabId = nextIdRef.current++;
+      const leafId = nextIdRef.current++;
+      const title = `${input.session} ⤷zellij`;
+      setTabs((t) => [
+        ...t,
+        {
+          id: tabId,
+          kind: "terminal",
+          spaceId: activeSpaceIdRef.current,
+          title,
+          customTitle: title,
+          paneTree: { kind: "leaf", id: leafId },
+          activeLeafId: leafId,
+          env,
+          zellijAttach: { hostId: input.hostId, session: input.session },
+        },
+      ]);
+      setActiveId(tabId);
+      return tabId;
+    },
+    [],
+  );
+
   const newAgentGroupTab = useCallback(
     (
       cwd: string | undefined,
@@ -1532,7 +1583,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       setTabs((curr) =>
         curr.map((t) => {
           if (t.id !== tabId || t.kind !== "terminal" || t.blocks) return t;
-          if (t.dockerExec) return t;
+          if (t.dockerExec || t.zellijAttach) return t;
           if (leafIds(t.paneTree).length >= MAX_PANES_PER_TAB) return t;
           const splitId = nextIdRef.current++;
           const leafId = nextIdRef.current++;
@@ -1667,6 +1718,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newAgentGroupTab,
     newPrivateTab,
     newDockerExecTab,
+    newZellijAttachTab,
     openFileTab,
     pinTab,
     newPreviewTab,

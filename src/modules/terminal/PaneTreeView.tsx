@@ -8,7 +8,7 @@ import { Fragment, useCallback, useEffect, useRef } from "react";
 import { useTerminalDropStore } from "./lib/dropStore";
 import { firstLeafSlotId, type PaneNode } from "./lib/panes";
 import type { WorkspaceEnv } from "@/modules/workspace";
-import type { DockerExecTarget } from "./lib/pty-bridge";
+import type { DockerExecTarget, ZellijAttachTarget } from "./lib/pty-bridge";
 import {
   beginTerminalResizeInteraction,
   endTerminalResizeInteraction,
@@ -31,6 +31,8 @@ type Props = {
   env?: WorkspaceEnv;
   /** `docker exec -it` target for the whole tab (exec tabs are single-pane). */
   dockerExec?: DockerExecTarget;
+  /** Remote zellij session the tab reattaches to (single-pane). */
+  zellijAttach?: ZellijAttachTarget;
   onFocusLeaf: (leafId: number) => void;
   getBundle: (leafId: number) => LeafBundle;
 };
@@ -44,6 +46,7 @@ export function PaneTreeView(props: Props) {
       blocks,
       env,
       dockerExec,
+      zellijAttach,
       onFocusLeaf,
       getBundle,
     } = props;
@@ -69,6 +72,7 @@ export function PaneTreeView(props: Props) {
           initialCwd={node.cwd}
           env={env}
           dockerExec={dockerExec}
+          zellijAttach={zellijAttach}
           blocks={blocks}
           ref={b.setRef}
           onSearchReady={b.onSearchReady}

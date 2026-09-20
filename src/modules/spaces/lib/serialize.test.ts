@@ -104,6 +104,26 @@ describe("serializeTabs", () => {
       { kind: "ssh", hostId: "h2" },
     ]);
   });
+
+  it("round-trips a zellij attach target and derives its title", () => {
+    const tabs: Tab[] = [
+      term({
+        id: 1,
+        env: { kind: "ssh", hostId: "h1" },
+        zellijAttach: { hostId: "h1", session: "dev" },
+      }),
+    ];
+    const [s] = serializeTabs(tabs);
+    expect(s).toMatchObject({
+      env: "ssh:h1",
+      zellijAttach: { hostId: "h1", session: "dev" },
+    });
+    const [restored] = hydrateTabs([s], "s1", counter(300));
+    expect(restored.kind).toBe("terminal");
+    if (restored.kind !== "terminal") return;
+    expect(restored.zellijAttach).toEqual({ hostId: "h1", session: "dev" });
+    expect(restored.title).toBe("dev ⤷zellij");
+  });
 });
 
 describe("hydrateTabs", () => {

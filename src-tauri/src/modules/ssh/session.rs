@@ -31,6 +31,15 @@ fn base_args(host: &SshHost, batch: bool) -> Vec<String> {
         "StrictHostKeyChecking=yes".to_string(),
         "-o".to_string(),
         "ConnectTimeout=10".to_string(),
+        // Keep idle sessions alive so a quiet host isn't dropped by a NAT/firewall
+        // idle timeout (the "lost connection" that used to close the tab). The
+        // client sends a probe every 15s and gives up after 4 misses (~60s).
+        "-o".to_string(),
+        "ServerAliveInterval=15".to_string(),
+        "-o".to_string(),
+        "ServerAliveCountMax=4".to_string(),
+        "-o".to_string(),
+        "TCPKeepAlive=yes".to_string(),
     ];
     if batch {
         args.push("-o".to_string());
@@ -98,6 +107,17 @@ fn run_ssh_capture(host: &SshHost, batch: bool, extra: &[String], timeout: Durat
     let out = wait_with_timeout(&mut child, timeout)?;
     let code = out.0;
     Ok((code, out.1, out.2))
+}
+
+/// Run a one-shot, non-interactive remote command and capture its output.
+/// BatchMode: prompts fail instead of hanging; used for capability probes
+/// (e.g. listing zellij sessions) where an absent binary is a valid answer.
+pub fn run_remote_capture(
+    host: &SshHost,
+    extra: &[String],
+    timeout: Duration,
+) -> Result<(i32, String, String), String> {
+    run_ssh_capture(host, true, extra, timeout)
 }
 
 fn wait_with_timeout(

@@ -38,6 +38,10 @@ export type SerializedTab =
         shell: string;
         attach: boolean;
       };
+      zellijAttach?: {
+        hostId: string;
+        session: string;
+      };
     }
   | { kind: "editor"; path: string; env?: string }
   | { kind: "preview"; url: string; env?: string }
@@ -121,6 +125,12 @@ function serializeTab(tab: Tab): SerializedTab | null {
             container: tab.dockerExec.container,
             shell: tab.dockerExec.shell,
             attach: tab.dockerExec.attach,
+          },
+        }),
+        ...(tab.zellijAttach !== undefined && {
+          zellijAttach: {
+            hostId: tab.zellijAttach.hostId,
+            session: tab.zellijAttach.session,
           },
         }),
       };
@@ -214,15 +224,25 @@ function hydrateTab(
           };
         }
       ).dockerExec;
+      const zellijAttach = (
+        s as {
+          zellijAttach?: {
+            hostId: string;
+            session: string;
+          };
+        }
+      ).zellijAttach;
       const title =
         s.customTitle ??
         (dockerExec
           ? `${dockerExec.container.slice(0, 12)}@exec`
-          : firstLeafCwd
-            ? basename(firstLeafCwd)
-            : s.blocks
-              ? "blocks"
-              : "shell");
+          : zellijAttach
+            ? `${zellijAttach.session} ⤷zellij`
+            : firstLeafCwd
+              ? basename(firstLeafCwd)
+              : s.blocks
+                ? "blocks"
+                : "shell");
       return {
         id: allocId(),
         kind: "terminal",
@@ -236,6 +256,7 @@ function hydrateTab(
         ...(s.customTitle !== undefined && { customTitle: s.customTitle }),
         ...hydrateEnv(s.env),
         ...(dockerExec !== undefined && { dockerExec }),
+        ...(zellijAttach !== undefined && { zellijAttach }),
       } satisfies TerminalTab;
     }
     case "editor":

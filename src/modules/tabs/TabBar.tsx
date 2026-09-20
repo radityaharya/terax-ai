@@ -72,6 +72,7 @@ type Props = {
   onNewGitGraph: () => void;
   onNewSshHost?: (host: SshHost) => void;
   onNewDockerExec?: (host: SshHost) => void;
+  onNewZellijHost?: (host: SshHost) => void;
   onLaunchAgents: (request: AgentLaunchRequest) => void;
   onClose: (id: number) => void;
   /** Chrome-style: close every tab to the right of the given tab. */
@@ -100,6 +101,7 @@ export function TabBar({
   onNewGitGraph,
   onNewSshHost,
   onNewDockerExec,
+  onNewZellijHost,
   onLaunchAgents,
   onClose,
   onCloseTabsToRight,
@@ -608,6 +610,7 @@ export function TabBar({
           onNewGitGraph={onNewGitGraph}
           onNewSshHost={onNewSshHost}
           onNewDockerExec={onNewDockerExec}
+          onNewZellijHost={onNewZellijHost}
           onLaunchAgents={onLaunchAgents}
         />
       </div>

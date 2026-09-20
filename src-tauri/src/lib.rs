@@ -335,6 +335,7 @@ pub fn run() {
             ssh::commands::ssh_home_for,
             ssh::commands::ssh_login_shell_for,
             ssh::commands::ssh_probe_auth,
+            ssh::commands::zellij_sessions,
             ssh::commands::ssh_rpc,
             ssh::commands::ssh_disconnect,
             control::control_frontend_ready,

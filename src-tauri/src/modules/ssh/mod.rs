@@ -7,6 +7,7 @@ pub mod integration;
 pub mod known_hosts;
 pub mod rpc;
 pub mod session;
+pub mod zellij;
 
 pub use commands::SshShared;
 pub use session::ssh_binary;

@@ -6,6 +6,7 @@ import {
   FolderTreeIcon,
   ServerStack03Icon,
   Settings01Icon,
+  TerminalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
@@ -83,6 +84,7 @@ export function ActivityBar({
     },
     { id: "hosts", label: "Hosts", renderIcon: huge(ServerStack03Icon) },
     { id: "docker", label: "Docker", renderIcon: dockerMark },
+    { id: "zellij", label: "Zellij sessions", renderIcon: huge(TerminalIcon) },
   ];
 
   return (

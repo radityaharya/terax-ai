@@ -17,7 +17,12 @@ import { useTerminalFont } from "@/modules/terminal/lib/useTerminalFont";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { openPty, type DockerExecTarget, type PtySession } from "../lib/pty-bridge";
+import {
+  openPty,
+  type DockerExecTarget,
+  type PtySession,
+  type ZellijAttachTarget,
+} from "../lib/pty-bridge";
 import { writeTerminalClipboard } from "../lib/terminalClipboard";
 import { LatestClipboardWrite } from "@/modules/terminal/lib/LatestClipboardWrite";
 import { GhosttySemanticEventRouter } from "./core/GhosttySemanticEventRouter";
@@ -71,6 +76,8 @@ type GhosttySession = {
   env: WorkspaceEnv | undefined;
   /** `docker exec -it` target captured at spawn. */
   dockerExec: DockerExecTarget | undefined;
+  /** Remote zellij session to reattach, captured at spawn. */
+  zellijAttach: ZellijAttachTarget | undefined;
   lastCwd: string | null;
   model: GhosttyTerminalModelApi | null;
   surface: GhosttySurface | null;
@@ -127,6 +134,8 @@ type Options = {
   env?: WorkspaceEnv;
   /** `docker exec -it` target (overrides the shell spawn). */
   dockerExec?: DockerExecTarget;
+  /** Remote zellij session to reattach (overrides the shell spawn). */
+  zellijAttach?: ZellijAttachTarget;
   blocks?: boolean;
   onExit?: (code: number) => void;
   onCwd?: (cwd: string) => void;
@@ -142,6 +151,7 @@ export function useGhosttyTerminalSession({
   initialCwd,
   env,
   dockerExec,
+  zellijAttach,
   blocks = false,
   onSearchReady,
   onExit,
@@ -150,6 +160,7 @@ export function useGhosttyTerminalSession({
   const [model, setModel] = useState<GhosttyTerminalModelApi | null>(null);
   const [error, setError] = useState<GhosttySessionFailure | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [shellExited, setShellExited] = useState(false);
   const { fontFamily, fontSize, fontWeight } = useTerminalFont();
   const letterSpacing = usePreferencesStore(
     (state) => state.terminalLetterSpacing,
@@ -174,6 +185,8 @@ export function useGhosttyTerminalSession({
   envRef.current = env;
   const dockerExecRef = useRef(dockerExec);
   dockerExecRef.current = dockerExec;
+  const zellijAttachRef = useRef(zellijAttach);
+  zellijAttachRef.current = zellijAttach;
 
   useEffect(() => {
     const session = ensureSession(
@@ -183,6 +196,7 @@ export function useGhosttyTerminalSession({
       fontRef.current,
       envRef.current,
       dockerExecRef.current,
+      zellijAttachRef.current,
     );
     if (blocks) ensureGhosttyBlocks(leafId);
     const node = container.current;
@@ -193,11 +207,15 @@ export function useGhosttyTerminalSession({
       onError: setError,
       onConnecting: setConnecting,
       onSearchReady: (search) => callbackRef.current.onSearchReady?.(search),
-      onExit: (code) => callbackRef.current.onExit?.(code),
+      onExit: (code) => {
+        setShellExited(true);
+        callbackRef.current.onExit?.(code);
+      },
       onCwd: (cwd) => callbackRef.current.onCwd?.(cwd),
     };
     setError(sessionFailure(session));
     setConnecting(session.connecting);
+    setShellExited(session.shellExited);
     if (session.surface) {
       session.callbacks.onSearchReady?.(session.surface.searchController());
     }
@@ -226,6 +244,7 @@ export function useGhosttyTerminalSession({
       undefined,
       envRef.current,
       dockerExecRef.current,
+      zellijAttachRef.current,
     );
     session.visible = visible;
     session.focused = focused;
@@ -294,6 +313,7 @@ export function useGhosttyTerminalSession({
       retryGhosttyRenderer(session);
       return;
     }
+    setShellExited(false);
     void respawnGhosttySession(leafId).catch((error: unknown) =>
       setError({ kind: "startup", message: toError(error).message }),
     );
@@ -304,6 +324,7 @@ export function useGhosttyTerminalSession({
       error,
       model,
       connecting,
+      shellExited,
       retry,
       write,
       focus,
@@ -321,6 +342,7 @@ export function useGhosttyTerminalSession({
       retry,
       model,
       connecting,
+      shellExited,
     ],
   );
 }
@@ -558,6 +580,7 @@ function ensureSession(
   font?: TerminalFontSpec,
   env?: WorkspaceEnv,
   dockerExec?: DockerExecTarget,
+  zellijAttach?: ZellijAttachTarget,
 ): GhosttySession {
   const existing = sessions.get(leafId);
   if (existing) {
@@ -568,6 +591,7 @@ function ensureSession(
     }
     if (env !== undefined) existing.env = env;
     if (dockerExec !== undefined) existing.dockerExec = dockerExec;
+    if (zellijAttach !== undefined) existing.zellijAttach = zellijAttach;
     return existing;
   }
   const ptyResize = new PtyResizeScheduler((cols, rows) => {
@@ -585,6 +609,7 @@ function ensureSession(
     initialCwd,
     env,
     dockerExec,
+    zellijAttach,
     lastCwd: null,
     model: null,
     surface: null,
@@ -881,6 +906,7 @@ async function initializeSessionGeneration(
         paneId: session.leafId,
         env: session.env,
         dockerExec: session.dockerExec,
+        zellijAttach: session.zellijAttach,
       },
     );
   } finally {

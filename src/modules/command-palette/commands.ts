@@ -49,6 +49,7 @@ export type CommandPaletteActionContext = {
   openGitGraph: () => void;
   openHostsPanel: () => void;
   openDockerPanel: () => void;
+  openZellijPanel: () => void;
   toggleSourceControl: () => void;
   closeActiveTabOrPane: () => void;
   splitPaneRight: () => void;
@@ -329,6 +330,14 @@ export function createCommandItems(
       keywords: ["docker", "containers", "images", "panel"],
       icon: TerminalIcon,
       run: ctx.openDockerPanel,
+    },
+    {
+      id: "zellij.openPanel",
+      title: "Zellij: Attach to a remote session",
+      group: "Zellij",
+      keywords: ["zellij", "session", "multiplexer", "attach", "ssh", "remote"],
+      icon: TerminalIcon,
+      run: ctx.openZellijPanel,
     },
   ];
 }

@@ -1,0 +1,1 @@
+export { ZellijPanel } from "./ZellijPanel";

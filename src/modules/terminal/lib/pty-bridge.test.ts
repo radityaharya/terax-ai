@@ -167,4 +167,28 @@ describe("PTY output flow control", () => {
       bytes: 2,
     });
   });
+
+  it("forwards a zellij attach target to pty_open", async () => {
+    mocks.invoke.mockImplementation((command: string) =>
+      command === "pty_open" ? Promise.resolve(9) : Promise.resolve(),
+    );
+    const session = await openPty(
+      80,
+      24,
+      { onData: vi.fn() },
+      {
+        env: { kind: "ssh", hostId: "h1" },
+        zellijAttach: { hostId: "h1", session: "dev" },
+      },
+    );
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "pty_open",
+      expect.objectContaining({
+        workspace: { kind: "ssh", hostId: "h1" },
+        dockerExec: null,
+        zellijAttach: { hostId: "h1", session: "dev" },
+      }),
+    );
+    await session.close();
+  });
 });

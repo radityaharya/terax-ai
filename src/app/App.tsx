@@ -32,6 +32,7 @@ import { native } from "@/modules/ai/lib/native";
 import { CommandPalette, createCommandItems } from "@/modules/command-palette";
 import { useControlBridge } from "@/modules/control";
 import { DockerNotifications, DockerPanel } from "@/modules/docker";
+import { ZellijPanel } from "@/modules/zellij";
 import {
   type EditorPaneHandle,
   NewEditorDialog,
@@ -103,6 +104,7 @@ import {
   useWorkspaceCwd,
 } from "@/modules/tabs";
 import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
+import { planLeafExit } from "@/modules/tabs/lib/planLeafExit";
 import {
   clearFocusedTerminal,
   disposeSession,
@@ -192,6 +194,7 @@ export default function App() {
     openCommitFileDiffTab,
     openDockerLogsTab,
     newDockerExecTab,
+    newZellijAttachTab,
     closeTab,
     closeTabs,
     updateTab,
@@ -216,6 +219,8 @@ export default function App() {
   openDockerLogsTabRef.current = openDockerLogsTab;
   const newDockerExecTabRef = useRef(newDockerExecTab);
   newDockerExecTabRef.current = newDockerExecTab;
+  const newZellijAttachTabRef = useRef(newZellijAttachTab);
+  newZellijAttachTabRef.current = newZellijAttachTab;
 
   const activeTerminalTab = useMemo(() => {
     const t = tabs.find((x) => x.id === activeId);
@@ -1310,20 +1315,41 @@ export default function App() {
   }, [openPanel, focusInput]);
 
   const handleLeafExit = useCallback(
-    (leafId: number, _code: number) => {
+    (leafId: number, code: number) => {
       const all = tabsRef.current;
       const tab = all.find(
         (t) => t.kind === "terminal" && hasLeaf(t.paneTree, leafId),
       );
       if (!tab || tab.kind !== "terminal") return;
-      // Last pane of the last tab: quit instead of respawning a shell.
+      // Remote tabs (SSH, docker exec, zellij attach) stay open and show a
+      // "Connection lost — Reconnect" overlay instead of closing; a clean
+      // zellij detach (exit 0) is treated as an intentional exit.
+      if (
+        planLeafExit(
+          {
+            env: tabEnv(tab),
+            dockerExec: tab.dockerExec,
+            zellijAttach: tab.zellijAttach,
+          },
+          code,
+        ) === "reconnect"
+      )
+        return;
+      // Last pane of the last tab.
       if (leafIds(tab.paneTree).length === 1 && all.length === 1) {
-        void getCurrentWindow().close();
+        if (tab.zellijAttach) {
+          // Detaching shouldn't quit the app: drop to a normal shell tab.
+          openNewTab();
+          closePaneByLeaf(leafId);
+        } else {
+          // Quit instead of respawning a shell.
+          void getCurrentWindow().close();
+        }
       } else {
         closePaneByLeaf(leafId);
       }
     },
-    [closePaneByLeaf],
+    [closePaneByLeaf, openNewTab],
   );
 
   const handleEditorDirty = useCallback(
@@ -1517,6 +1543,7 @@ export default function App() {
             openGitGraph: openGitGraphFromContext,
             openHostsPanel: () => openSidebarView("hosts"),
             openDockerPanel: () => openSidebarView("docker"),
+            openZellijPanel: () => openSidebarView("zellij"),
             toggleSourceControl,
             closeActiveTabOrPane: handleCloseTabOrPane,
             splitPaneRight: () => splitActivePaneInActiveTab("row"),
@@ -1666,6 +1693,12 @@ export default function App() {
                   openSidebarView("docker"),
                 );
               }}
+              onNewZellijHost={(host) => {
+                // Connect (so the panel reads that host), then list sessions.
+                void handleConnectHostRefForMenu(host).then(() =>
+                  openSidebarView("zellij"),
+                );
+              }}
               onLaunchAgents={launchAgentGroup}
               onClose={handleClose}
               onCloseTabsToRight={handleCloseTabsToRight}
@@ -1752,6 +1785,22 @@ export default function App() {
                           openLogsTabRef={openDockerLogsTabRef}
                           openExecTabRef={newDockerExecTabRef}
                           booted={booted}
+                        />
+                      ) : sidebarView === "zellij" ? (
+                        <ZellijPanel
+                          hostId={activeTabHostId}
+                          hostAlias={
+                            activeTabHostId
+                              ? (useHostStore
+                                  .getState()
+                                  .hosts.find(
+                                    (h: SshHost) => h.id === activeTabHostId,
+                                  )?.alias ?? activeTabHostId)
+                              : null
+                          }
+                          onAttach={(hostId, session) =>
+                            newZellijAttachTabRef.current({ hostId, session })
+                          }
                         />
                       ) : sidebarView === "explorer" ? (
                         <FileExplorer
