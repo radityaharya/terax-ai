@@ -8,6 +8,7 @@ import { Fragment, useCallback, useEffect, useRef } from "react";
 import { useTerminalDropStore } from "./lib/dropStore";
 import { firstLeafSlotId, type PaneNode } from "./lib/panes";
 import type { WorkspaceEnv } from "@/modules/workspace";
+import type { DockerExecTarget } from "./lib/pty-bridge";
 import {
   beginTerminalResizeInteraction,
   endTerminalResizeInteraction,
@@ -28,6 +29,8 @@ type Props = {
   blocks: boolean;
   /** Owning tab's env — every leaf spawns on this host. */
   env?: WorkspaceEnv;
+  /** `docker exec -it` target for the whole tab (exec tabs are single-pane). */
+  dockerExec?: DockerExecTarget;
   onFocusLeaf: (leafId: number) => void;
   getBundle: (leafId: number) => LeafBundle;
 };
@@ -35,8 +38,15 @@ type Props = {
 export function PaneTreeView(props: Props) {
   const { node } = props;
   if (node.kind === "leaf") {
-    const { tabVisible, activeLeafId, blocks, env, onFocusLeaf, getBundle } =
-      props;
+    const {
+      tabVisible,
+      activeLeafId,
+      blocks,
+      env,
+      dockerExec,
+      onFocusLeaf,
+      getBundle,
+    } = props;
     const focused = node.id === activeLeafId;
     const b = getBundle(node.id);
     return (
@@ -58,6 +68,7 @@ export function PaneTreeView(props: Props) {
           focused={focused}
           initialCwd={node.cwd}
           env={env}
+          dockerExec={dockerExec}
           blocks={blocks}
           ref={b.setRef}
           onSearchReady={b.onSearchReady}

@@ -35,6 +35,8 @@ import {
   CheckmarkCircle01Icon,
   Clock01Icon,
   ComputerTerminal02Icon,
+  ContainerTruckIcon,
+  File02Icon,
   GitCompareIcon,
   Globe02Icon,
   IncognitoIcon,
@@ -68,6 +70,7 @@ type Props = {
   onNewEditor: () => void;
   onNewGitGraph: () => void;
   onNewSshHost?: (host: SshHost) => void;
+  onNewDockerExec?: (host: SshHost) => void;
   onLaunchAgents: (request: AgentLaunchRequest) => void;
   onClose: (id: number) => void;
   /** Chrome-style: close every tab to the right of the given tab. */
@@ -95,6 +98,7 @@ export function TabBar({
   onNewEditor,
   onNewGitGraph,
   onNewSshHost,
+  onNewDockerExec,
   onLaunchAgents,
   onClose,
   onCloseTabsToRight,
@@ -602,6 +606,7 @@ export function TabBar({
           onNewEditor={onNewEditor}
           onNewGitGraph={onNewGitGraph}
           onNewSshHost={onNewSshHost}
+          onNewDockerExec={onNewDockerExec}
           onLaunchAgents={onLaunchAgents}
         />
       </div>
@@ -713,6 +718,16 @@ export function TabIcon({ tab }: { tab: Tab }) {
       />
     );
   }
+  if (tab.kind === "terminal" && tab.dockerExec) {
+    return (
+      <HugeiconsIcon
+        icon={ContainerTruckIcon}
+        size={14}
+        strokeWidth={2}
+        className="shrink-0 text-primary"
+      />
+    );
+  }
   if (tab.kind === "git-diff" || tab.kind === "git-commit-file") {
     return (
       <HugeiconsIcon
@@ -727,6 +742,16 @@ export function TabIcon({ tab }: { tab: Tab }) {
     return (
       <HugeiconsIcon
         icon={Clock01Icon}
+        size={14}
+        strokeWidth={2}
+        className="shrink-0"
+      />
+    );
+  }
+  if (tab.kind === "docker-logs") {
+    return (
+      <HugeiconsIcon
+        icon={File02Icon}
         size={14}
         strokeWidth={2}
         className="shrink-0"

@@ -50,6 +50,18 @@ fn fish_init_script() -> &'static str {
     FISH_INIT_SCRIPT
 }
 
+/// Spawn target for `docker exec -it`: an interactive shell inside a
+/// container on an SSH host. The transport stays system ssh; the remote
+/// command is `docker exec -it <container> <shell>`. Container id and
+/// shell come from the fixed allow-list validated in terax-core.
+#[derive(Clone, Debug)]
+pub struct DockerExecSpec {
+    pub host_id: String,
+    pub container: String,
+    pub shell: String,
+    pub attach: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_command(
     cwd: Option<String>,
@@ -58,14 +70,19 @@ pub fn build_command(
     shell: Option<String>,
     control: Option<ShellControlEnv>,
     ssh_integration: Option<crate::modules::ssh::integration::SshIntegration>,
+    docker_exec: Option<DockerExecSpec>,
 ) -> Result<CommandBuilder, String> {
     // SSH terminal tabs run on all desktop OSes: the transport is system ssh.
     // Integration is installed in pty_open (which has state access) and
     // passed through; bare fallback when absent.
     if let WorkspaceEnv::Ssh { host_id } = &workspace {
         let _ = (shell, control);
+        if let Some(spec) = docker_exec {
+            return build_docker_exec(&spec);
+        }
         return build_ssh(cwd, host_id, ssh_integration, blocks);
     }
+    let _ = docker_exec;
     let _ = ssh_integration;
     let shell = sanitize_shell_override(shell);
     #[cfg(unix)]
@@ -77,6 +94,49 @@ pub fn build_command(
     {
         windows::build(cwd, workspace, blocks, shell, control)
     }
+}
+
+/// Interactive `docker exec` terminal on an SSH host:
+/// `ssh -t user@host docker exec -it <container> <shell>` (or
+/// `docker attach [--no-stdin]`). The argv is validated server-side:
+/// container ids match the identifier grammar and the shell comes from
+/// the fixed allow-list; anything else is rejected before spawn.
+pub fn build_docker_exec(spec: &DockerExecSpec) -> Result<CommandBuilder, String> {
+    use crate::modules::ssh::integration::host_by_id;
+    let host = host_by_id(&spec.host_id)?;
+    let argv = if spec.attach {
+        terax_core::docker::containers::build_attach_argv(&spec.container, false)
+    } else {
+        terax_core::docker::containers::build_exec_argv(&spec.container, &spec.shell)
+    }
+    .map_err(|e| e.to_string())?;
+    // argv[0] is always "docker"; the remote command is the full argv as
+    // ONE ssh argument (same quoting discipline as run_ssh_capture).
+    let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let remote_cmd = argv.iter().map(|a| q(a)).collect::<Vec<_>>().join(" ");
+    let mut cmd = CommandBuilder::new(crate::modules::ssh::ssh_binary());
+    for arg in crate::modules::ssh::session::terminal_args(&host, None) {
+        cmd.arg(arg);
+    }
+    cmd.arg(remote_cmd);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERM_PROGRAM", "terax");
+    cmd.env("TERAX_TERMINAL", "1");
+    cmd.env("TERAX_DOCKER_EXEC", &spec.container);
+    // The integration scripts key cwd/title off HOST; inside a container
+    // the hostname differs, so tag the session explicitly. The shell
+    // scripts emit `file://$TERAX_SESSION_TAG/...` when set, letting the
+    // frontend attribute OSC 7 to the exec tab instead of the host.
+    cmd.env("TERAX_SESSION_TAG", format!("docker:{}", spec.container));
+    log::info!(
+        "spawning docker exec: {}@{} container {} ({})",
+        host.user,
+        host.hostname,
+        spec.container,
+        spec.shell
+    );
+    Ok(cmd)
 }
 
 /// Interactive SSH terminal: `ssh -t user@host <remote shell>`. Passwords
@@ -1209,7 +1269,10 @@ mod tests {
 
     use portable_pty::CommandBuilder;
 
-    use super::{apply_common, build_ssh, sanitize_shell_override, ShellControlEnv};
+    use super::{
+        apply_common, build_docker_exec, build_ssh, sanitize_shell_override, DockerExecSpec,
+        ShellControlEnv,
+    };
 
     #[test]
     fn rejects_non_enumerated_override() {
@@ -1402,5 +1465,59 @@ mod tests {
             .collect();
         let joined = argv.join(" ");
         assert!(joined.contains("deploy@10.0.0.5"), "got: {joined}");
+    }
+
+    fn docker_spec(host: &str, container: &str, shell: &str) -> DockerExecSpec {
+        DockerExecSpec {
+            host_id: host.into(),
+            container: container.into(),
+            shell: shell.into(),
+            attach: false,
+        }
+    }
+
+    #[test]
+    fn docker_exec_builds_quoted_remote_argv() {
+        seed_ssh_host("docker-check");
+        let cmd = build_docker_exec(&docker_spec("docker-check", "web-1", "bash")).expect("build");
+        let argv: Vec<_> = cmd
+            .get_argv()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let joined = argv.join(" ");
+        assert!(joined.contains("deploy@10.0.0.5"), "got: {joined}");
+        assert!(joined.contains("docker"), "got: {joined}");
+        assert!(joined.contains("web-1"), "got: {joined}");
+        assert_eq!(cmd.get_env("TERAX_DOCKER_EXEC"), Some(OsStr::new("web-1")));
+    }
+
+    #[test]
+    fn docker_exec_rejects_bad_container() {
+        seed_ssh_host("docker-bad");
+        let err = build_docker_exec(&docker_spec("docker-bad", "a;b", "bash")).expect_err("must fail");
+        assert!(err.contains("invalid docker identifier"), "got: {err}");
+    }
+
+    #[test]
+    fn docker_exec_rejects_bad_shell() {
+        seed_ssh_host("docker-shell");
+        let err = build_docker_exec(&docker_spec("docker-shell", "web-1", "/bin/evil")).expect_err("must fail");
+        assert!(err.contains("not allowed"), "got: {err}");
+    }
+
+    #[test]
+    fn docker_attach_builds_attach_argv() {
+        seed_ssh_host("docker-attach");
+        let mut spec = docker_spec("docker-attach", "web-1", "sh");
+        spec.attach = true;
+        let cmd = build_docker_exec(&spec).expect("build");
+        let joined = cmd
+            .get_argv()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(joined.contains("attach"), "got: {joined}");
     }
 }

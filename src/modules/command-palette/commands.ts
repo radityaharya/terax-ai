@@ -32,6 +32,7 @@ export const COMMAND_GROUPS = [
   "View",
   "AI",
   "SSH",
+  "Docker",
 ] as const;
 
 export type CommandPaletteActionContext = {
@@ -47,6 +48,7 @@ export type CommandPaletteActionContext = {
   openNewPreview: () => void;
   openGitGraph: () => void;
   openHostsPanel: () => void;
+  openDockerPanel: () => void;
   toggleSourceControl: () => void;
   closeActiveTabOrPane: () => void;
   splitPaneRight: () => void;
@@ -319,6 +321,14 @@ export function createCommandItems(
       icon: SparklesIcon,
       shortcutId: "ai.askSelection",
       run: ctx.askAiSelection,
+    },
+    {
+      id: "docker.openPanel",
+      title: "Docker: Open panel",
+      group: "Docker",
+      keywords: ["docker", "containers", "images", "panel"],
+      icon: TerminalIcon,
+      run: ctx.openDockerPanel,
     },
   ];
 }

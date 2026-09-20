@@ -1,4 +1,5 @@
 import { buildManagedAgentTools } from "./agent";
+import { buildDockerTools } from "./docker";
 import { buildEditTools } from "./edit";
 import { buildFsTools } from "./fs";
 import { buildSearchTools } from "./search";
@@ -33,6 +34,7 @@ export function buildTools(ctx: import("./context").ToolContext) {
     ...buildFsTools(ctx),
     ...buildEditTools(ctx),
     ...buildSearchTools(ctx),
+    ...buildDockerTools(ctx),
     ...buildShellTools(ctx),
     ...buildSubagentTools(ctx),
     ...buildTerminalTools(ctx),

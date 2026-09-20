@@ -97,6 +97,7 @@ export function TerminalStack({
               activeLeafId={t.activeLeafId}
               blocks={t.blocks ?? false}
               env={t.env}
+              dockerExec={t.dockerExec}
               onFocusLeaf={(leafId) => onFocusLeaf(t.id, leafId)}
               getBundle={getBundle}
             />

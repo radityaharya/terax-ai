@@ -31,6 +31,9 @@ pub struct BackgroundLogResponse {
     pub dropped: u64,
     pub exited: bool,
     pub exit_code: Option<i32>,
+    /// True when the payload was capped to fit the transport frame; the
+    /// caller must re-poll with the returned `next_offset` for the rest.
+    pub truncated: bool,
 }
 
 #[derive(Serialize)]
@@ -45,7 +48,52 @@ pub struct BackgroundProcInfo {
 
 impl BackgroundProc {
     pub fn read_logs(&self, since: u64) -> BackgroundLogResponse {
-        let (bytes, next_offset, dropped) = self.buffer.lock().unwrap().read_from(since);
+        self.read_logs_capped(since, usize::MAX)
+    }
+
+    /// Floor `bytes` back to the last UTF-8 char boundary (mirrors
+    /// terax-core's: continuation bytes are 0x80..0xC0).
+    fn floor_char_boundary(bytes: &[u8]) -> usize {
+        let mut cut = bytes.len();
+        while cut > 0 && (bytes[cut - 1] & 0xC0) == 0x80 {
+            cut -= 1;
+        }
+        if cut > 0 && (bytes[cut - 1] & 0xC0) == 0xC0 {
+            let lead = bytes[cut - 1];
+            let want = if lead >= 0xF0 {
+                4
+            } else if lead >= 0xE0 {
+                3
+            } else {
+                2
+            };
+            if bytes.len() - (cut - 1) < want {
+                cut -= 1;
+            }
+        }
+        cut
+    }
+
+    /// Bounded variant (mirrors terax-core's): caps the payload so framed
+    /// transports never blow their message cap. Local callers pass
+    /// usize::MAX via read_logs; the SSH agent passes MAX_POLL_BYTES.
+    pub fn read_logs_capped(&self, since: u64, limit: usize) -> BackgroundLogResponse {
+        let guard = self.buffer.lock().unwrap();
+        let (bytes, next_offset, dropped) = guard.read_from_limited(since, limit);
+        let truncated = {
+            let (_, full_next, _) = guard.read_from(since);
+            full_next != next_offset
+        };
+        drop(guard);
+        let cut = Self::floor_char_boundary(&bytes);
+        let (bytes, next_offset) = if cut != bytes.len() {
+            let guard = self.buffer.lock().unwrap();
+            let (_, next, _) = guard.read_from_limited(since, cut);
+            drop(guard);
+            (bytes[..cut].to_vec(), next)
+        } else {
+            (bytes, next_offset)
+        };
         let exited = self.exited.load(Ordering::Acquire);
         let exit_code = if exited && !self.exit_unknown.load(Ordering::Acquire) {
             Some(self.exit_code.load(Ordering::Acquire))
@@ -58,6 +106,7 @@ impl BackgroundProc {
             dropped,
             exited,
             exit_code,
+            truncated,
         }
     }
 

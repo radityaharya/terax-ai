@@ -403,51 +403,9 @@ pub async fn ssh_rpc(
     let host = store
         .get(&host_id)
         .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
-    let allowed = [
-        "fs_read_dir",
-        "fs_read_file",
-        "fs_read_bytes",
-        "fs_write_file",
-        "fs_stat",
-        "fs_search",
-        "fs_grep",
-        "fs_create_file",
-        "fs_create_dir",
-        "fs_rename",
-        "fs_delete",
-        "fs_delete_batch",
-        "fs_move",
-        "fs_copy",
-        "git_panel_snapshot",
-        "git_status",
-        "git_resolve_repo",
-        "git_diff",
-        "git_diff_content",
-        "git_stage",
-        "git_unstage",
-        "git_discard",
-        "git_commit",
-        "git_log",
-        "git_show_commit",
-        "git_commit_files",
-        "git_commit_file_diff",
-        "git_remote_url",
-        "git_fetch",
-        "git_pull_ff_only",
-        "git_push",
-        "git_list_branches",
-        "git_checkout_branch",
-        "shell_run",
-        "shell_session_open",
-        "shell_session_run",
-        "shell_session_close",
-        "shell_bg_spawn",
-        "shell_bg_logs",
-        "shell_bg_kill",
-        "ping",
-        "capabilities",
-    ];
-    if !allowed.contains(&method.as_str()) {
+    // Single source of truth: the protocol registry. Any method not listed
+    // in REMOTE_METHODS is rejected before touching the network.
+    if !terax_control_protocol::REMOTE_METHODS.contains(&method.as_str()) {
         return Err(format!("remote method not allowed: {method}"));
     }
     // Serialize agent ensure per host: the first fan-out (explorer + git

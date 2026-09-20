@@ -19,6 +19,7 @@ import {
   AiBrowserIcon,
   ArrowRight01Icon,
   ComputerTerminal02Icon,
+  ContainerTruckIcon,
   GitBranchIcon,
   Globe02Icon,
   IncognitoIcon,
@@ -37,6 +38,7 @@ type Props = {
   onNewEditor: () => void;
   onNewGitGraph: () => void;
   onNewSshHost?: (host: SshHost) => void;
+  onNewDockerExec?: (host: SshHost) => void;
   onLaunchAgents: (request: AgentLaunchRequest) => void;
 };
 
@@ -48,6 +50,7 @@ export function NewTabMenu({
   onNewEditor,
   onNewGitGraph,
   onNewSshHost,
+  onNewDockerExec,
   onLaunchAgents,
 }: Props) {
   const hosts = useHostStore((s) => s.hosts);
@@ -195,6 +198,29 @@ export function NewTabMenu({
                       />
                       <span className="flex-1 truncate">
                         SSH: {host.alias}
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                </>
+              )}
+              {onNewDockerExec && hosts.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <div className="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                    Docker exec
+                  </div>
+                  {hosts.map((host) => (
+                    <DropdownMenuItem
+                      key={`docker-${host.id}`}
+                      onSelect={() => onNewDockerExec(host)}
+                    >
+                      <HugeiconsIcon
+                        icon={ContainerTruckIcon}
+                        size={14}
+                        strokeWidth={1.75}
+                      />
+                      <span className="flex-1 truncate">
+                        Exec on {host.alias}…
                       </span>
                     </DropdownMenuItem>
                   ))}

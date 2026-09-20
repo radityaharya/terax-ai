@@ -48,6 +48,23 @@ impl BoundedRingBuffer {
         self.buf.extend(data);
     }
 
+    /// Bounded variant (mirrors terax-core): at most `limit` bytes, with
+    /// the follow offset derived from the kept prefix so chunked reads
+    /// chain losslessly.
+    pub fn read_from_limited(&self, since: u64, limit: usize) -> (Vec<u8>, u64, u64) {
+        let (mut bytes, _, dropped) = self.read_from(since);
+        if bytes.len() > limit {
+            bytes.truncate(limit);
+        }
+        let next = self.offset_after(since, bytes.len());
+        (bytes, next, dropped)
+    }
+
+    fn offset_after(&self, since: u64, len: usize) -> u64 {
+        let oldest = self.next_offset.saturating_sub(self.buf.len() as u64);
+        since.max(oldest).saturating_add(len as u64)
+    }
+
     pub fn read_from(&self, since: u64) -> (Vec<u8>, u64, u64) {
         let oldest = self.next_offset.saturating_sub(self.buf.len() as u64);
         let start = since.max(oldest);
@@ -110,6 +127,21 @@ mod tests {
         let (bytes2, _, _) = buf.read_from(99);
         assert_eq!(bytes, b"efghijkl");
         assert!(bytes2.is_empty());
+    }
+
+    #[test]
+    fn limited_read_chains_without_gaps_or_repeats() {
+        let mut buf = BoundedRingBuffer::new(64);
+        buf.push(b"0123456789abcdef");
+        let (a, off_a, _) = buf.read_from_limited(0, 6);
+        assert_eq!(a, b"012345");
+        assert_eq!(off_a, 6);
+        let (b, off_b, _) = buf.read_from_limited(off_a, 6);
+        assert_eq!(b, b"6789ab");
+        assert_eq!(off_b, 12);
+        let (c, off_c, _) = buf.read_from_limited(off_b, 6);
+        assert_eq!(c, b"cdef");
+        assert_eq!(off_c, 16);
     }
 
     #[test]

@@ -4,6 +4,7 @@ import {
   type SplitDir,
 } from "@/modules/terminal/lib/panes";
 import type {
+  DockerLogsTab,
   EditorTab,
   MarkdownTab,
   PreviewTab,
@@ -31,10 +32,23 @@ export type SerializedTab =
       blocks?: boolean;
       customTitle?: string;
       env?: string;
+      dockerExec?: {
+        hostId: string;
+        container: string;
+        shell: string;
+        attach: boolean;
+      };
     }
   | { kind: "editor"; path: string; env?: string }
   | { kind: "preview"; url: string; env?: string }
-  | { kind: "markdown"; path: string; env?: string };
+  | { kind: "markdown"; path: string; env?: string }
+  | {
+      kind: "docker-logs";
+      targetKind: "container" | "service";
+      targetId: string;
+      title?: string;
+      env?: string;
+    };
 
 /** Serialize only when non-local — keeps old payloads small and readable. */
 function serializeEnv(env: WorkspaceEnv | undefined): { env?: string } {
@@ -84,6 +98,7 @@ export function isSerializableTab(tab: Tab): boolean {
     case "editor":
     case "preview":
     case "markdown":
+    case "docker-logs":
       return true;
     default:
       return false;
@@ -100,6 +115,14 @@ function serializeTab(tab: Tab): SerializedTab | null {
         ...(tab.blocks && { blocks: true }),
         ...(tab.customTitle !== undefined && { customTitle: tab.customTitle }),
         ...serializeEnv(tab.env),
+        ...(tab.dockerExec !== undefined && {
+          dockerExec: {
+            hostId: tab.dockerExec.hostId,
+            container: tab.dockerExec.container,
+            shell: tab.dockerExec.shell,
+            attach: tab.dockerExec.attach,
+          },
+        }),
       };
     case "editor":
       return { kind: "editor", path: tab.path, ...serializeEnv(tab.env) };
@@ -107,6 +130,14 @@ function serializeTab(tab: Tab): SerializedTab | null {
       return { kind: "preview", url: tab.url, ...serializeEnv(tab.env) };
     case "markdown":
       return { kind: "markdown", path: tab.path, ...serializeEnv(tab.env) };
+    case "docker-logs":
+      return {
+        kind: "docker-logs",
+        targetKind: tab.targetKind,
+        targetId: tab.targetId,
+        title: tab.title,
+        ...serializeEnv(tab.env),
+      };
     default:
       return null;
   }
@@ -173,9 +204,25 @@ function hydrateTab(
   switch (s.kind) {
     case "terminal": {
       const { tree, activeLeafId, firstLeafCwd } = hydrateTree(s.tree, allocId);
+      const dockerExec = (
+        s as {
+          dockerExec?: {
+            hostId: string;
+            container: string;
+            shell: string;
+            attach: boolean;
+          };
+        }
+      ).dockerExec;
       const title =
         s.customTitle ??
-        (firstLeafCwd ? basename(firstLeafCwd) : s.blocks ? "blocks" : "shell");
+        (dockerExec
+          ? `${dockerExec.container.slice(0, 12)}@exec`
+          : firstLeafCwd
+            ? basename(firstLeafCwd)
+            : s.blocks
+              ? "blocks"
+              : "shell");
       return {
         id: allocId(),
         kind: "terminal",
@@ -188,6 +235,7 @@ function hydrateTab(
         ...(s.blocks && { blocks: true }),
         ...(s.customTitle !== undefined && { customTitle: s.customTitle }),
         ...hydrateEnv(s.env),
+        ...(dockerExec !== undefined && { dockerExec }),
       } satisfies TerminalTab;
     }
     case "editor":
@@ -222,6 +270,17 @@ function hydrateTab(
         path: s.path,
         ...hydrateEnv(s.env),
       } satisfies MarkdownTab;
+    case "docker-logs":
+      return {
+        id: allocId(),
+        kind: "docker-logs",
+        spaceId,
+        cold: true,
+        title: s.title ?? `${s.targetId} logs`,
+        targetKind: s.targetKind,
+        targetId: s.targetId,
+        ...hydrateEnv(s.env),
+      } satisfies DockerLogsTab;
     default:
       return null;
   }

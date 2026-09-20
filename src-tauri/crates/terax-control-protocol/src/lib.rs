@@ -4,8 +4,23 @@ use serde_json::Value;
 pub const PROTOCOL_VERSION: u16 = 1;
 /// Protocol version spoken by terax-remote agents. Additive over v1: the
 /// local control server stays v1, remote agents advertise v2 capabilities.
-pub const REMOTE_PROTOCOL_VERSION: u16 = 2;
+///
+/// v3 (backwards-compatible framing upgrade, negotiated per connection):
+/// - requests may carry `lane` (u8): the agent binds the request's
+///   background-handle namespace to that lane, so spawn/poll/kill stay on
+///   one agent process even when the desktop round-robins pipes. Lanes are
+///   process-local namespaces, not global routing — any pipe serves any
+///   lane, and state lazily materializes where first used.
+/// - responses to `*_poll` may carry `truncated: true` when the payload was
+///   capped to fit `MAX_MESSAGE_BYTES`: the client must re-poll with an
+///   explicit `limit`/`sinceOffset` window instead of assuming completeness.
+/// - `*_poll` accepts `limit` (max bytes): lets the client bound each
+///   chunk under the frame cap without trial and error.
+pub const REMOTE_PROTOCOL_VERSION: u16 = 3;
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+/// Max log/event bytes returned per poll response. Kept well under
+/// MAX_MESSAGE_BYTES so JSON escaping overhead can never blow the frame.
+pub const MAX_POLL_BYTES: usize = 32 * 1024;
 pub const METHOD_PING: &str = "ping";
 pub const METHOD_CAPABILITIES: &str = "capabilities";
 pub const METHOD_IDENTIFY: &str = "identify";
@@ -59,6 +74,89 @@ pub const REMOTE_METHOD_SHELL_BG_SPAWN: &str = "shell_bg_spawn";
 pub const REMOTE_METHOD_SHELL_BG_LOGS: &str = "shell_bg_logs";
 pub const REMOTE_METHOD_SHELL_BG_KILL: &str = "shell_bg_kill";
 
+// Docker capabilities / daemon: version, compose v2/v1, swarm state,
+// server version, rootless/socket, context.
+pub const REMOTE_METHOD_DOCKER_CAPABILITIES: &str = "docker_capabilities";
+// Docker disk usage + stats/events via background procs.
+pub const REMOTE_METHOD_DOCKER_SYSTEM_DF: &str = "docker_system_df";
+pub const REMOTE_METHOD_DOCKER_STATS: &str = "docker_stats";
+pub const REMOTE_METHOD_DOCKER_EVENTS_SPAWN: &str = "docker_events_spawn";
+pub const REMOTE_METHOD_DOCKER_EVENTS_POLL: &str = "docker_events_poll";
+pub const REMOTE_METHOD_DOCKER_EVENTS_KILL: &str = "docker_events_kill";
+// Docker containers.
+pub const REMOTE_METHOD_DOCKER_PS: &str = "docker_ps";
+pub const REMOTE_METHOD_DOCKER_INSPECT: &str = "docker_inspect";
+pub const REMOTE_METHOD_DOCKER_START: &str = "docker_start";
+pub const REMOTE_METHOD_DOCKER_STOP: &str = "docker_stop";
+pub const REMOTE_METHOD_DOCKER_RESTART: &str = "docker_restart";
+pub const REMOTE_METHOD_DOCKER_KILL: &str = "docker_kill";
+pub const REMOTE_METHOD_DOCKER_RM: &str = "docker_rm";
+pub const REMOTE_METHOD_DOCKER_PRUNE: &str = "docker_prune";
+pub const REMOTE_METHOD_DOCKER_CONTAINER_SHELL_PROBE: &str = "docker_container_shell_probe";
+pub const REMOTE_METHOD_DOCKER_CP_TO: &str = "docker_cp_to";
+pub const REMOTE_METHOD_DOCKER_CP_FROM: &str = "docker_cp_from";
+// Docker images / registry.
+pub const REMOTE_METHOD_DOCKER_IMAGES: &str = "docker_images";
+pub const REMOTE_METHOD_DOCKER_PULL: &str = "docker_pull";
+pub const REMOTE_METHOD_DOCKER_RMI: &str = "docker_rmi";
+pub const REMOTE_METHOD_DOCKER_IMAGE_UPDATE_CHECK: &str = "docker_image_update_check";
+pub const REMOTE_METHOD_DOCKER_IMAGE_TAG: &str = "docker_image_tag";
+pub const REMOTE_METHOD_DOCKER_IMAGE_PUSH: &str = "docker_image_push";
+pub const REMOTE_METHOD_DOCKER_IMAGE_HISTORY: &str = "docker_image_history";
+pub const REMOTE_METHOD_DOCKER_IMAGE_DIFF: &str = "docker_image_diff";
+pub const REMOTE_METHOD_DOCKER_BUILD: &str = "docker_build";
+pub const REMOTE_METHOD_DOCKER_REGISTRY_LOGIN: &str = "docker_registry_login";
+pub const REMOTE_METHOD_DOCKER_REGISTRY_LOGOUT: &str = "docker_registry_logout";
+pub const REMOTE_METHOD_DOCKER_REGISTRY_LIST: &str = "docker_registry_list";
+// Docker volumes / networks.
+pub const REMOTE_METHOD_DOCKER_VOLUMES_LS: &str = "docker_volumes_ls";
+pub const REMOTE_METHOD_DOCKER_VOLUME_RM: &str = "docker_volume_rm";
+pub const REMOTE_METHOD_DOCKER_NETWORKS_LS: &str = "docker_networks_ls";
+pub const REMOTE_METHOD_DOCKER_NETWORK_RM: &str = "docker_network_rm";
+// Docker logs via background procs.
+pub const REMOTE_METHOD_DOCKER_LOGS_SPAWN: &str = "docker_logs_spawn";
+pub const REMOTE_METHOD_DOCKER_LOGS_POLL: &str = "docker_logs_poll";
+pub const REMOTE_METHOD_DOCKER_LOGS_KILL: &str = "docker_logs_kill";
+// Docker compose.
+pub const REMOTE_METHOD_DOCKER_COMPOSE_DETECT: &str = "docker_compose_detect";
+pub const REMOTE_METHOD_DOCKER_COMPOSE_PS: &str = "docker_compose_ps";
+pub const REMOTE_METHOD_DOCKER_COMPOSE_CONFIG: &str = "docker_compose_config";
+pub const REMOTE_METHOD_DOCKER_COMPOSE_UP: &str = "docker_compose_up";
+pub const REMOTE_METHOD_DOCKER_COMPOSE_DOWN: &str = "docker_compose_down";
+pub const REMOTE_METHOD_DOCKER_COMPOSE_RESTART: &str = "docker_compose_restart";
+pub const REMOTE_METHOD_DOCKER_COMPOSE_PULL: &str = "docker_compose_pull";
+pub const REMOTE_METHOD_DOCKER_COMPOSE_LOGS: &str = "docker_compose_logs";
+pub const REMOTE_METHOD_DOCKER_COMPOSE_BUILD: &str = "docker_compose_build";
+// Docker swarm / service / stack.
+pub const REMOTE_METHOD_DOCKER_SWARM_INFO: &str = "docker_swarm_info";
+pub const REMOTE_METHOD_DOCKER_NODE_LS: &str = "docker_node_ls";
+pub const REMOTE_METHOD_DOCKER_NODE_UPDATE: &str = "docker_node_update";
+pub const REMOTE_METHOD_DOCKER_NODE_PROMOTE: &str = "docker_node_promote";
+pub const REMOTE_METHOD_DOCKER_NODE_DEMOTE: &str = "docker_node_demote";
+pub const REMOTE_METHOD_DOCKER_SWARM_INIT: &str = "docker_swarm_init";
+pub const REMOTE_METHOD_DOCKER_SWARM_JOIN: &str = "docker_swarm_join";
+pub const REMOTE_METHOD_DOCKER_SWARM_LEAVE: &str = "docker_swarm_leave";
+pub const REMOTE_METHOD_DOCKER_SERVICE_LS: &str = "docker_service_ls";
+pub const REMOTE_METHOD_DOCKER_SERVICE_INSPECT: &str = "docker_service_inspect";
+pub const REMOTE_METHOD_DOCKER_SERVICE_PS: &str = "docker_service_ps";
+pub const REMOTE_METHOD_DOCKER_SERVICE_SCALE: &str = "docker_service_scale";
+pub const REMOTE_METHOD_DOCKER_SERVICE_UPDATE: &str = "docker_service_update";
+pub const REMOTE_METHOD_DOCKER_SERVICE_RM: &str = "docker_service_rm";
+pub const REMOTE_METHOD_DOCKER_SERVICE_ROLLBACK: &str = "docker_service_rollback";
+pub const REMOTE_METHOD_DOCKER_SERVICE_LOGS: &str = "docker_service_logs";
+pub const REMOTE_METHOD_DOCKER_STACK_LS: &str = "docker_stack_ls";
+pub const REMOTE_METHOD_DOCKER_STACK_SERVICES: &str = "docker_stack_services";
+pub const REMOTE_METHOD_DOCKER_STACK_PS: &str = "docker_stack_ps";
+pub const REMOTE_METHOD_DOCKER_STACK_DEPLOY: &str = "docker_stack_deploy";
+pub const REMOTE_METHOD_DOCKER_STACK_RM: &str = "docker_stack_rm";
+// Docker swarm secrets / configs.
+pub const REMOTE_METHOD_DOCKER_SECRET_LS: &str = "docker_secret_ls";
+pub const REMOTE_METHOD_DOCKER_SECRET_CREATE: &str = "docker_secret_create";
+pub const REMOTE_METHOD_DOCKER_SECRET_RM: &str = "docker_secret_rm";
+pub const REMOTE_METHOD_DOCKER_CONFIG_LS: &str = "docker_config_ls";
+pub const REMOTE_METHOD_DOCKER_CONFIG_CREATE: &str = "docker_config_create";
+pub const REMOTE_METHOD_DOCKER_CONFIG_RM: &str = "docker_config_rm";
+
 pub const REMOTE_METHODS: &[&str] = &[
     METHOD_PING,
     METHOD_CAPABILITIES,
@@ -102,7 +200,181 @@ pub const REMOTE_METHODS: &[&str] = &[
     REMOTE_METHOD_SHELL_BG_SPAWN,
     REMOTE_METHOD_SHELL_BG_LOGS,
     REMOTE_METHOD_SHELL_BG_KILL,
+    REMOTE_METHOD_DOCKER_CAPABILITIES,
+    REMOTE_METHOD_DOCKER_SYSTEM_DF,
+    REMOTE_METHOD_DOCKER_STATS,
+    REMOTE_METHOD_DOCKER_EVENTS_SPAWN,
+    REMOTE_METHOD_DOCKER_EVENTS_POLL,
+    REMOTE_METHOD_DOCKER_EVENTS_KILL,
+    REMOTE_METHOD_DOCKER_PS,
+    REMOTE_METHOD_DOCKER_INSPECT,
+    REMOTE_METHOD_DOCKER_START,
+    REMOTE_METHOD_DOCKER_STOP,
+    REMOTE_METHOD_DOCKER_RESTART,
+    REMOTE_METHOD_DOCKER_KILL,
+    REMOTE_METHOD_DOCKER_RM,
+    REMOTE_METHOD_DOCKER_PRUNE,
+    REMOTE_METHOD_DOCKER_CONTAINER_SHELL_PROBE,
+    REMOTE_METHOD_DOCKER_CP_TO,
+    REMOTE_METHOD_DOCKER_CP_FROM,
+    REMOTE_METHOD_DOCKER_IMAGES,
+    REMOTE_METHOD_DOCKER_PULL,
+    REMOTE_METHOD_DOCKER_RMI,
+    REMOTE_METHOD_DOCKER_IMAGE_UPDATE_CHECK,
+    REMOTE_METHOD_DOCKER_IMAGE_TAG,
+    REMOTE_METHOD_DOCKER_IMAGE_PUSH,
+    REMOTE_METHOD_DOCKER_IMAGE_HISTORY,
+    REMOTE_METHOD_DOCKER_IMAGE_DIFF,
+    REMOTE_METHOD_DOCKER_BUILD,
+    REMOTE_METHOD_DOCKER_REGISTRY_LOGIN,
+    REMOTE_METHOD_DOCKER_REGISTRY_LOGOUT,
+    REMOTE_METHOD_DOCKER_REGISTRY_LIST,
+    REMOTE_METHOD_DOCKER_VOLUMES_LS,
+    REMOTE_METHOD_DOCKER_VOLUME_RM,
+    REMOTE_METHOD_DOCKER_NETWORKS_LS,
+    REMOTE_METHOD_DOCKER_NETWORK_RM,
+    REMOTE_METHOD_DOCKER_LOGS_SPAWN,
+    REMOTE_METHOD_DOCKER_LOGS_POLL,
+    REMOTE_METHOD_DOCKER_LOGS_KILL,
+    REMOTE_METHOD_DOCKER_COMPOSE_DETECT,
+    REMOTE_METHOD_DOCKER_COMPOSE_PS,
+    REMOTE_METHOD_DOCKER_COMPOSE_CONFIG,
+    REMOTE_METHOD_DOCKER_COMPOSE_UP,
+    REMOTE_METHOD_DOCKER_COMPOSE_DOWN,
+    REMOTE_METHOD_DOCKER_COMPOSE_RESTART,
+    REMOTE_METHOD_DOCKER_COMPOSE_PULL,
+    REMOTE_METHOD_DOCKER_COMPOSE_LOGS,
+    REMOTE_METHOD_DOCKER_COMPOSE_BUILD,
+    REMOTE_METHOD_DOCKER_SWARM_INFO,
+    REMOTE_METHOD_DOCKER_NODE_LS,
+    REMOTE_METHOD_DOCKER_NODE_UPDATE,
+    REMOTE_METHOD_DOCKER_NODE_PROMOTE,
+    REMOTE_METHOD_DOCKER_NODE_DEMOTE,
+    REMOTE_METHOD_DOCKER_SWARM_INIT,
+    REMOTE_METHOD_DOCKER_SWARM_JOIN,
+    REMOTE_METHOD_DOCKER_SWARM_LEAVE,
+    REMOTE_METHOD_DOCKER_SERVICE_LS,
+    REMOTE_METHOD_DOCKER_SERVICE_INSPECT,
+    REMOTE_METHOD_DOCKER_SERVICE_PS,
+    REMOTE_METHOD_DOCKER_SERVICE_SCALE,
+    REMOTE_METHOD_DOCKER_SERVICE_UPDATE,
+    REMOTE_METHOD_DOCKER_SERVICE_RM,
+    REMOTE_METHOD_DOCKER_SERVICE_ROLLBACK,
+    REMOTE_METHOD_DOCKER_SERVICE_LOGS,
+    REMOTE_METHOD_DOCKER_STACK_LS,
+    REMOTE_METHOD_DOCKER_STACK_SERVICES,
+    REMOTE_METHOD_DOCKER_STACK_PS,
+    REMOTE_METHOD_DOCKER_STACK_DEPLOY,
+    REMOTE_METHOD_DOCKER_STACK_RM,
+    REMOTE_METHOD_DOCKER_SECRET_LS,
+    REMOTE_METHOD_DOCKER_SECRET_CREATE,
+    REMOTE_METHOD_DOCKER_SECRET_RM,
+    REMOTE_METHOD_DOCKER_CONFIG_LS,
+    REMOTE_METHOD_DOCKER_CONFIG_CREATE,
+    REMOTE_METHOD_DOCKER_CONFIG_RM,
 ];
+
+#[cfg(test)]
+mod docker_registry_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn docker_method_names_are_unique() {
+        let docker: Vec<&str> = REMOTE_METHODS
+            .iter()
+            .copied()
+            .filter(|m| m.starts_with("docker_"))
+            .collect();
+        assert!(!docker.is_empty(), "expected docker methods in registry");
+        let set: HashSet<&str> = docker.iter().copied().collect();
+        assert_eq!(set.len(), docker.len(), "duplicate docker method name");
+    }
+
+    #[test]
+    fn registry_contains_all_docker_consts() {
+        let expected = [
+            REMOTE_METHOD_DOCKER_CAPABILITIES,
+            REMOTE_METHOD_DOCKER_SYSTEM_DF,
+            REMOTE_METHOD_DOCKER_STATS,
+            REMOTE_METHOD_DOCKER_EVENTS_SPAWN,
+            REMOTE_METHOD_DOCKER_EVENTS_POLL,
+            REMOTE_METHOD_DOCKER_EVENTS_KILL,
+            REMOTE_METHOD_DOCKER_PS,
+            REMOTE_METHOD_DOCKER_INSPECT,
+            REMOTE_METHOD_DOCKER_START,
+            REMOTE_METHOD_DOCKER_STOP,
+            REMOTE_METHOD_DOCKER_RESTART,
+            REMOTE_METHOD_DOCKER_KILL,
+            REMOTE_METHOD_DOCKER_RM,
+            REMOTE_METHOD_DOCKER_PRUNE,
+            REMOTE_METHOD_DOCKER_CONTAINER_SHELL_PROBE,
+            REMOTE_METHOD_DOCKER_CP_TO,
+            REMOTE_METHOD_DOCKER_CP_FROM,
+            REMOTE_METHOD_DOCKER_IMAGES,
+            REMOTE_METHOD_DOCKER_PULL,
+            REMOTE_METHOD_DOCKER_RMI,
+            REMOTE_METHOD_DOCKER_IMAGE_UPDATE_CHECK,
+            REMOTE_METHOD_DOCKER_IMAGE_TAG,
+            REMOTE_METHOD_DOCKER_IMAGE_PUSH,
+            REMOTE_METHOD_DOCKER_IMAGE_HISTORY,
+            REMOTE_METHOD_DOCKER_IMAGE_DIFF,
+            REMOTE_METHOD_DOCKER_BUILD,
+            REMOTE_METHOD_DOCKER_REGISTRY_LOGIN,
+            REMOTE_METHOD_DOCKER_REGISTRY_LOGOUT,
+            REMOTE_METHOD_DOCKER_REGISTRY_LIST,
+            REMOTE_METHOD_DOCKER_VOLUMES_LS,
+            REMOTE_METHOD_DOCKER_VOLUME_RM,
+            REMOTE_METHOD_DOCKER_NETWORKS_LS,
+            REMOTE_METHOD_DOCKER_NETWORK_RM,
+            REMOTE_METHOD_DOCKER_LOGS_SPAWN,
+            REMOTE_METHOD_DOCKER_LOGS_POLL,
+            REMOTE_METHOD_DOCKER_LOGS_KILL,
+            REMOTE_METHOD_DOCKER_COMPOSE_DETECT,
+            REMOTE_METHOD_DOCKER_COMPOSE_PS,
+            REMOTE_METHOD_DOCKER_COMPOSE_CONFIG,
+            REMOTE_METHOD_DOCKER_COMPOSE_UP,
+            REMOTE_METHOD_DOCKER_COMPOSE_DOWN,
+            REMOTE_METHOD_DOCKER_COMPOSE_RESTART,
+            REMOTE_METHOD_DOCKER_COMPOSE_PULL,
+            REMOTE_METHOD_DOCKER_COMPOSE_LOGS,
+            REMOTE_METHOD_DOCKER_COMPOSE_BUILD,
+            REMOTE_METHOD_DOCKER_SWARM_INFO,
+            REMOTE_METHOD_DOCKER_NODE_LS,
+            REMOTE_METHOD_DOCKER_NODE_UPDATE,
+            REMOTE_METHOD_DOCKER_NODE_PROMOTE,
+            REMOTE_METHOD_DOCKER_NODE_DEMOTE,
+            REMOTE_METHOD_DOCKER_SWARM_INIT,
+            REMOTE_METHOD_DOCKER_SWARM_JOIN,
+            REMOTE_METHOD_DOCKER_SWARM_LEAVE,
+            REMOTE_METHOD_DOCKER_SERVICE_LS,
+            REMOTE_METHOD_DOCKER_SERVICE_INSPECT,
+            REMOTE_METHOD_DOCKER_SERVICE_PS,
+            REMOTE_METHOD_DOCKER_SERVICE_SCALE,
+            REMOTE_METHOD_DOCKER_SERVICE_UPDATE,
+            REMOTE_METHOD_DOCKER_SERVICE_RM,
+            REMOTE_METHOD_DOCKER_SERVICE_ROLLBACK,
+            REMOTE_METHOD_DOCKER_SERVICE_LOGS,
+            REMOTE_METHOD_DOCKER_STACK_LS,
+            REMOTE_METHOD_DOCKER_STACK_SERVICES,
+            REMOTE_METHOD_DOCKER_STACK_PS,
+            REMOTE_METHOD_DOCKER_STACK_DEPLOY,
+            REMOTE_METHOD_DOCKER_STACK_RM,
+            REMOTE_METHOD_DOCKER_SECRET_LS,
+            REMOTE_METHOD_DOCKER_SECRET_CREATE,
+            REMOTE_METHOD_DOCKER_SECRET_RM,
+            REMOTE_METHOD_DOCKER_CONFIG_LS,
+            REMOTE_METHOD_DOCKER_CONFIG_CREATE,
+            REMOTE_METHOD_DOCKER_CONFIG_RM,
+        ];
+        for name in expected {
+            assert!(
+                REMOTE_METHODS.contains(&name),
+                "registry missing docker method {name}"
+            );
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct CallerContext {
@@ -120,6 +392,10 @@ pub struct ControlRequest {
     pub params: Value,
     #[serde(default)]
     pub caller: CallerContext,
+    /// v3 lane affinity: background-handle namespace for this request.
+    /// Absent = default lane 0. Agents that predate v3 ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

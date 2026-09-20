@@ -79,6 +79,24 @@ The short version:
   checks are a pre-filter only.
 - Remote OSC 7 paths never enter the local workspace registry.
 
+## Docker management
+
+Docker on SSH hosts rides the same agent channel (`docs/architecture/docker.md`).
+The short version:
+
+- The frontend sends structured params only; the agent builds every
+  `docker` argv. Identifiers validated, exec shells allow-listed, prune
+  targets enumerated, `service update` limited to `--image`.
+- Path-scoped ops (compose, stack deploy, cp, build, config create)
+  pass the agent's `authorized()` gate. Document socket = host root.
+- Registry passwords, swarm join tokens, and swarm secret values travel
+  the token-authenticated RPC channel into stdin server-side, never argv,
+  never logs. Registry credentials persist in the keychain scoped
+  `docker-registry:<host-id>:<registry>`; stores hold login state only.
+- `docker exec` tabs never let container-internal cwds drive the
+  explorer root or the auth registry; inspect-rendered env values mask
+  secret-looking vars in the UI.
+
 ## Secret storage
 
 API keys are stored via `secrets_*` commands (`src-tauri/src/modules/secrets.rs`):
@@ -113,3 +131,4 @@ The agent detector (`src-tauri/src/modules/pty/agent_detect.rs`) is armed by `OS
 - [`docs/README.md`](../README.md) - index of contributor guides
 - [Two-process model](two-process-model.md) - IPC boundary and command catalog
 - [AI subsystem](ai-subsystem.md) - tools, approval flow, and provider handling
+- [Docker management](docker.md) - remote Docker surface

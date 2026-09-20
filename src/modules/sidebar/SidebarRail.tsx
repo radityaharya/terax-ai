@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import {
+  ContainerTruckIcon,
   FolderGitTwoIcon,
   FolderTreeIcon,
   ServerStack03Icon,
@@ -32,6 +33,7 @@ export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
       badge: changedCount,
     },
     { id: "hosts", label: "Hosts", icon: ServerStack03Icon },
+    { id: "docker", label: "Docker", icon: ContainerTruckIcon },
   ];
 
   return (

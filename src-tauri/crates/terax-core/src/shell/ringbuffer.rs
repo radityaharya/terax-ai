@@ -48,6 +48,26 @@ impl BoundedRingBuffer {
         self.buf.extend(data);
     }
 
+    /// Bounded variant: returns at most `limit` bytes. The offset always
+    /// advances past the bytes actually returned, so `read_from_limited`
+    /// chains losslessly: `next == since + out.len()` unless clamped to
+    /// `oldest` (overflow) or the buffer end.
+    pub fn read_from_limited(&self, since: u64, limit: usize) -> (Vec<u8>, u64, u64) {
+        let (mut bytes, _, dropped) = self.read_from(since);
+        if bytes.len() > limit {
+            bytes.truncate(limit);
+        }
+        let next = self.offset_after(since, bytes.len());
+        (bytes, next, dropped)
+    }
+
+    /// Offset that follows `len` bytes read starting at `since`, honoring
+    /// the oldest-resident clamp applied by `read_from`.
+    fn offset_after(&self, since: u64, len: usize) -> u64 {
+        let oldest = self.next_offset.saturating_sub(self.buf.len() as u64);
+        since.max(oldest).saturating_add(len as u64)
+    }
+
     pub fn read_from(&self, since: u64) -> (Vec<u8>, u64, u64) {
         let oldest = self.next_offset.saturating_sub(self.buf.len() as u64);
         let start = since.max(oldest);
@@ -70,6 +90,33 @@ impl BoundedRingBuffer {
 #[cfg(test)]
 mod tests {
     use super::BoundedRingBuffer;
+
+    #[test]
+    fn limited_read_chains_without_gaps_or_repeats() {
+        let mut buf = BoundedRingBuffer::new(64);
+        buf.push(b"0123456789abcdef");
+        let (a, off_a, _) = buf.read_from_limited(0, 6);
+        assert_eq!(a, b"012345");
+        assert_eq!(off_a, 6);
+        let (b, off_b, _) = buf.read_from_limited(off_a, 6);
+        assert_eq!(b, b"6789ab");
+        assert_eq!(off_b, 12);
+        let (c, off_c, _) = buf.read_from_limited(off_b, 6);
+        assert_eq!(c, b"cdef");
+        assert_eq!(off_c, 16);
+    }
+
+    #[test]
+    fn limited_read_clamps_to_oldest_like_unlimited() {
+        let mut buf = BoundedRingBuffer::new(8);
+        buf.push(b"abcdefgh");
+        buf.push(b"ijkl");
+        // Oldest resident is offset 4; a stale cursor clamps forward.
+        let (bytes, off, dropped) = buf.read_from_limited(0, 4);
+        assert_eq!(bytes, b"efgh");
+        assert_eq!(off, 8);
+        assert_eq!(dropped, 4);
+    }
 
     #[test]
     fn read_from_returns_all_when_within_cap() {
