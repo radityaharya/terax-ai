@@ -74,7 +74,15 @@ impl Agent {}
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("terax-remote {}", env!("CARGO_PKG_VERSION"));
+        // The `protocol=` token is load-bearing: the desktop compares it
+        // before reusing an installed agent, so a contract change re-uploads
+        // even when the crate version is unchanged. Keep this in lockstep
+        // with `remote_protocol_tag()` — both derive from REMOTE_PROTOCOL_VERSION.
+        println!(
+            "terax-remote {} {}",
+            env!("CARGO_PKG_VERSION"),
+            terax_control_protocol::remote_protocol_tag()
+        );
         return;
     }
     let mut root: Option<String> = None;

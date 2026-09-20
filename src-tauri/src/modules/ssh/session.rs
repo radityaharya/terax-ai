@@ -161,20 +161,35 @@ pub fn run_ssh_capture_version(host: &SshHost, remote_bin: &str) -> Result<Strin
     }
 }
 
-/// Uploads a local file to the remote via stdin redirect:
-/// `ssh host 'mkdir -p ~/.cache/terax && cat > <remote> && chmod +x <remote>'`.
-/// No scp dependency; works everywhere system ssh works. Writes in chunks
+/// Remote shell script that installs an uploaded agent at `remote`.
+///
+/// Writes to a sibling temp file and `mv -f`s it into place rather than
+/// `cat >`-ing the destination directly. Renaming over a file that is
+/// currently being executed is allowed on Linux, but opening it for write
+/// (what `cat >` does) fails with ETXTBSY. That is precisely the
+/// agent-upgrade case: an older `terax-remote serve` may still be running
+/// from a previous connection while the new build deploys. The temp file
+/// name carries the remote shell's `$$` (PID) so concurrent deploys to the
+/// same host cannot collide. `mkdir -p ~/.cache/terax` keeps `~` bare on
+/// purpose so the remote shell expands it — quoting would create a literal
+/// `~` directory.
+fn agent_upload_script(remote: &str) -> String {
+    let dest = shell_quote(remote);
+    let tmp = format!("{dest}.tmp.$$");
+    format!(
+        "mkdir -p ~/.cache/terax && cat > {tmp} && chmod +x {tmp} && mv -f {tmp} {dest}"
+    )
+}
+
+/// Uploads a local file to the remote via stdin redirect, installing it
+/// with `agent_upload_script`. No scp dependency; works everywhere system
+/// ssh works. Writes in chunks
 /// with a liveness check: if ssh exits early (auth failure, remote error)
 /// the write fails fast with the remote stderr instead of a bare broken
 /// pipe.
 pub fn upload_file(host: &SshHost, local: &std::path::Path, remote: &str) -> Result<(), String> {
     let bytes = std::fs::read(local).map_err(|e| format!("read local agent: {e}"))?;
-    // Quote the destination: it is interpolated into a remote shell script.
-    let script = format!(
-        "mkdir -p ~/.cache/terax && cat > {} && chmod +x {}",
-        shell_quote(remote),
-        shell_quote(remote)
-    );
+    let script = agent_upload_script(remote);
     let mut cmd = Command::new(ssh_binary());
     for arg in base_args(host, true) {
         cmd.arg(arg);
@@ -376,5 +391,29 @@ pub fn auth_hint_for_ui(hint: &AuthHint) -> &'static str {
         AuthHint::PublicKeyDenied => "key",
         AuthHint::PasswordRequired => "password",
         AuthHint::KeyboardInteractive => "terminal-2fa",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upload_script_installs_via_temp_then_rename() {
+        let script = agent_upload_script("~/.cache/terax/terax-remote");
+        // Never target the live path with `cat >` (ETXTBSY when it is the
+        // running agent); write a temp sibling and rename over it.
+        assert!(!script.contains("cat > ~/.cache/terax/terax-remote "));
+        assert!(script.contains("cat > ~/.cache/terax/terax-remote.tmp.$$"));
+        assert!(script.contains("mv -f ~/.cache/terax/terax-remote.tmp.$$ ~/.cache/terax/terax-remote"));
+        // `~` must stay bare so the remote shell expands it.
+        assert!(!script.contains("'~"));
+    }
+
+    #[test]
+    fn upload_script_quotes_paths_with_shell_metacharacters() {
+        let script = agent_upload_script("/tmp/a b/agent");
+        assert!(script.contains("'/tmp/a b/agent'"));
+        assert!(script.contains("'/tmp/a b/agent'.tmp.$$"));
     }
 }

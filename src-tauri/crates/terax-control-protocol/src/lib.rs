@@ -17,6 +17,29 @@ pub const PROTOCOL_VERSION: u16 = 1;
 /// - `*_poll` accepts `limit` (max bytes): lets the client bound each
 ///   chunk under the frame cap without trial and error.
 pub const REMOTE_PROTOCOL_VERSION: u16 = 3;
+/// Token `terax-remote --version` must include and the desktop must match
+/// before it may reuse an installed agent. The app version alone is not
+/// enough: the wire contract can change (v1 -> v3 lanes) without the crate
+/// version moving, so a stale agent on a host would truthfully report the
+/// same app version and be reused forever, breaking `*_poll`/lane handling.
+/// Emitting the protocol number makes the sentinel track the contract that
+/// actually matters, and both sides build this string from this one source.
+pub fn remote_protocol_tag() -> String {
+    format!("protocol={REMOTE_PROTOCOL_VERSION}")
+}
+
+/// True when `terax-remote --version` output is compatible with this build.
+///
+/// Only the protocol tag is compared, deliberately. It is the actual
+/// compatibility contract (method set + framing), and both sides derive it
+/// from `REMOTE_PROTOCOL_VERSION`, so it cannot drift. Comparing the crate
+/// version too would re-upload on every version bump for no compatibility
+/// reason, and is unreliable anyway: the app crate's version is set
+/// independently of the workspace version the remote crate inherits.
+pub fn remote_agent_matches(version_output: &str) -> bool {
+    let want = remote_protocol_tag();
+    version_output.split_whitespace().any(|token| token == want)
+}
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 /// Max log/event bytes returned per poll response. Kept well under
 /// MAX_MESSAGE_BYTES so JSON escaping overhead can never blow the frame.
@@ -528,5 +551,28 @@ mod tests {
         let params: OpenParams =
             serde_json::from_value(json!({ "path": "/tmp/a" })).expect("deserialize open params");
         assert!(params.focus);
+    }
+
+    #[test]
+    fn agent_version_tag_matches_current_protocol() {
+        let output = format!("terax-remote 0.9.0-beta {}", remote_protocol_tag());
+        assert!(remote_agent_matches(&output));
+    }
+
+    #[test]
+    fn agent_version_tag_rejects_same_app_version_older_protocol() {
+        // The regression this sentinel exists for: a pre-v3 agent reports
+        // the same crate version, so only the protocol token can tell them
+        // apart. It must NOT be treated as current.
+        let stale = format!("terax-remote 0.9.0-beta protocol={}", REMOTE_PROTOCOL_VERSION - 1);
+        assert!(!remote_agent_matches(&stale));
+    }
+
+    #[test]
+    fn agent_version_tag_rejects_empty_and_missing_probe() {
+        assert!(!remote_agent_matches(""));
+        assert!(!remote_agent_matches("terax-remote 0.9.0-beta"));
+        // Substring must not satisfy a token-prefix collision.
+        assert!(!remote_agent_matches("terax-remote 0.9.0-beta protocol=30"));
     }
 }

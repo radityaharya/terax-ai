@@ -305,6 +305,11 @@ impl Default for SshShared {
 
 /// Version reported by the bundled agent binary. The remote must match or
 /// the RPC channel is refused: mixed versions corrupt the method contract.
+///
+/// This is the app version only for display/logging; the compatibility gate
+/// is the remote protocol tag (see `remote_agent_matches`). The app version
+/// alone let a stale pre-v3 agent satisfy the reuse check, because the v3
+/// wire change did not move the crate version.
 pub const REMOTE_AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// RAII per-host serialization for agent ensure. Concurrent first-use
@@ -376,7 +381,7 @@ pub fn ensure_remote_agent(host: &SshHost, session: Option<&SessionCache>) -> Re
         .ok_or_else(|| "remote agent binary not built yet (run pnpm build:remote)".to_string())?;
     // Version check first: reuse the installed agent when it matches.
     let probe = super::session::run_ssh_capture_version(host, remote_path)?;
-    if probe.trim().ends_with(REMOTE_AGENT_VERSION) {
+    if terax_control_protocol::remote_agent_matches(probe.trim()) {
         if let Some(cache) = session {
             cache.mark_agent_verified(&host.id);
         }
