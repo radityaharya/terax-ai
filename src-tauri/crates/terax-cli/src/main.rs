@@ -97,6 +97,9 @@ fn run(args: Vec<OsString>) -> Result<(), CliError> {
                 method: method.to_string(),
                 params,
                 caller: CallerContext { pane_id: caller },
+                // The local CLI speaks v1: no lane affinity. Lane routing
+                // is an SSH-remote (v2/v3 agent) concern only.
+                lane: None,
             };
             let response = send_request(&endpoint.address, &request)?;
             if !response.ok {
@@ -699,6 +702,7 @@ mod tests {
             method: METHOD_PING.into(),
             params: json!({}),
             caller: CallerContext::default(),
+            lane: None,
         };
         let response = ControlResponse::success(request.id.clone(), json!({ "pong": true }));
         let mut bytes = serde_json::to_vec(&response).expect("encode response");
@@ -716,6 +720,7 @@ mod tests {
             method: METHOD_PING.into(),
             params: json!({}),
             caller: CallerContext::default(),
+            lane: None,
         };
         let bytes = vec![b'x'; MAX_MESSAGE_BYTES + 1];
         let error = read_response(&mut Cursor::new(bytes), &request).expect_err("reject response");
@@ -731,6 +736,7 @@ mod tests {
             method: METHOD_PING.into(),
             params: json!({}),
             caller: CallerContext::default(),
+            lane: None,
         };
         let response = ControlResponse::failure(SERVER_RESPONSE_ID, "server_busy", "busy");
         let mut bytes = serde_json::to_vec(&response).expect("encode response");
