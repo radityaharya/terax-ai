@@ -104,6 +104,9 @@ export type PullJob = {
   events: import("./types").PullProgressEvent[];
   digest: string | null;
   error: string | null;
+  /** Self-heal budget: respawns left after the agent loses our handle
+   *  (lane death). Reset on every successful spawn. */
+  healsLeft: number;
 };
 
 export type LogViewOptions = {
@@ -123,6 +126,9 @@ export type LogFollowState = {
   exitCode: number | null;
   error: string | null;
   options: LogViewOptions;
+  /** Self-heal budget: respawns left after the agent loses our handle
+   *  (lane death). Reset on every successful spawn. */
+  healsLeft: number;
 };
 
 export type DockerEvent = {
@@ -142,6 +148,11 @@ export type EventsFeedState = {
   offset: number;
   dropped: number;
   error: string | null;
+  /** Self-heal budget: respawns left after the agent loses our handle
+   *  (lane death). Reset on every successful spawn. */
+  healsLeft: number;
+  /** Spawn filter (respawn must replay it). */
+  filter: string;
 };
 
 export type NotifyRule =
@@ -318,6 +329,8 @@ type State = {
     opts?: { platform?: string; quiet?: boolean },
   ) => string;
   pollPull: (hostId: string, jobId: string) => Promise<void>;
+  /** Re-issue the spawn for a stale pull (self-heal). Internal. */
+  respawnPull: (hostId: string, jobId: string) => Promise<void>;
   cancelPull: (hostId: string, jobId: string) => Promise<void>;
   dismissPull: (hostId: string, jobId: string) => void;
   registryLogin: (
@@ -334,6 +347,8 @@ type State = {
     options?: Partial<LogViewOptions>,
   ) => string;
   pollLogFollow: (hostId: string, followId: string) => Promise<void>;
+  /** Re-issue the spawn for a stale follow (self-heal). Internal. */
+  respawnLogFollow: (hostId: string, followId: string) => Promise<void>;
   stopLogFollow: (hostId: string, followId: string) => Promise<void>;
   setLogOptions: (
     hostId: string,
@@ -342,6 +357,8 @@ type State = {
   ) => void;
   startEventsFeed: (hostId: string, filter?: string) => Promise<void>;
   pollEventsFeed: (hostId: string) => Promise<void>;
+  /** Re-issue the spawn for a stale feed (self-heal). Internal. */
+  respawnEventsFeed: (hostId: string) => Promise<void>;
   stopEventsFeed: (hostId: string) => Promise<void>;
   setRuleMuted: (hostId: string, rule: string, muted: boolean) => void;
   isRuleMuted: (hostId: string, rule: string) => boolean;
@@ -404,6 +421,25 @@ const followRefs = new Map<string, number>();
 
 export function retainLogFollow(followId: string): void {
   followRefs.set(followId, (followRefs.get(followId) ?? 0) + 1);
+}
+
+/**
+ * Self-heal budget for background follows. When the agent loses our handle
+ * (lane death: pool respawn, agent restart), the next poll fails with
+ * `no_handle`. Instead of parking the UI in error, each follow respawns
+ * its lane transparently — up to MAX_HEALS times per follow lifetime, then
+ * it surfaces the error for real. The budget resets on every successful
+ * spawn, so a flapping lane heals indefinitely while a truly dead daemon
+ * still fails visibly after 3 attempts.
+ */
+export const MAX_HEALS = 3;
+
+/** True when an ssh_rpc failure means "the agent has no such handle"
+ *  (lane died or never saw the spawn) as opposed to a real error. The
+ *  agent's code is `no_handle`; match the message too for old agents. */
+export function isStaleHandleError(e: unknown): boolean {
+  const msg = String(e);
+  return msg.includes("no_handle") || msg.includes("no background handle");
 }
 
 function classifyDaemonError(e: unknown): DockerDaemonState {
@@ -803,6 +839,7 @@ export const useDockerStore = create<State>((set) => ({
       events: [],
       digest: null,
       error: null,
+      healsLeft: MAX_HEALS,
     };
     patch(set, hostId, (h) => ({
       ...h,
@@ -823,7 +860,12 @@ export const useDockerStore = create<State>((set) => ({
           ...h,
           pulls: {
             ...h.pulls,
-            [jobId]: { ...(h.pulls[jobId] ?? job), handle: info.handle, phase: "pulling" },
+            [jobId]: {
+              ...(h.pulls[jobId] ?? job),
+              handle: info.handle,
+              phase: "pulling",
+              healsLeft: MAX_HEALS,
+            },
           },
         }));
         await useDockerStore.getState().pollPull(hostId, jobId);
@@ -868,7 +910,30 @@ export const useDockerStore = create<State>((set) => ({
           { handle: cur.handle, sinceOffset: cur.offset },
           hostId,
         );
+        if (!res || typeof res !== "object") {
+          res = { bytes: "", dropped: 0, exited: false } as typeof res;
+        }
       } catch (e) {
+        // Lane death: the agent lost our handle (pool respawn / restart).
+        // Respawn the pull transparently while budget remains — the new
+        // `docker pull` resumes completed layers, so this is cheap.
+        if (isStaleHandleError(e) && cur.healsLeft > 0) {
+          patch(set, hostId, (h) => ({
+            ...h,
+            pulls: {
+              ...h.pulls,
+              [jobId]: {
+                ...(h.pulls[jobId] ?? job),
+                handle: null,
+                phase: "starting",
+                healsLeft: cur.healsLeft - 1,
+                error: null,
+              },
+            },
+          }));
+          await useDockerStore.getState().respawnPull(hostId, jobId);
+          return;
+        }
         patch(set, hostId, (h) => ({
           ...h,
           pulls: {
@@ -909,6 +974,47 @@ export const useDockerStore = create<State>((set) => ({
     const after = useDockerStore.getState().byHost[hostId]?.pulls[jobId];
     if (after && after.phase === "done") {
       await useDockerStore.getState().refreshImages(hostId);
+    }
+  },
+
+  respawnPull: async (hostId, jobId) => {
+    const job = useDockerStore.getState().byHost[hostId]?.pulls[jobId];
+    // Guard on phase only: the heal path sets handle=null + starting, and
+    // the stale handle value is meaningless once the lane died.
+    if (job?.phase !== "starting") return;
+    try {
+      const info = await sshRpc<{ handle: number }>(
+        "docker_pull",
+        {
+          reference: job.reference,
+          ...(job.platform ? { platform: job.platform } : {}),
+          ...(job.quiet ? { quiet: true } : {}),
+        },
+        hostId,
+      );
+      patch(set, hostId, (h) => ({
+        ...h,
+        pulls: {
+          ...h.pulls,
+          [jobId]: {
+            ...(h.pulls[jobId] ?? job),
+            handle: info.handle,
+            phase: "pulling",
+            // Offset resets: the new lane's ring starts empty. Progress
+            // replays from the daemon (completed layers are instant).
+            offset: 0,
+          },
+        },
+      }));
+      await useDockerStore.getState().pollPull(hostId, jobId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        pulls: {
+          ...h.pulls,
+          [jobId]: { ...(h.pulls[jobId] ?? job), phase: "error", error: String(e) },
+        },
+      }));
     }
   },
 
@@ -1041,6 +1147,7 @@ export const useDockerStore = create<State>((set) => ({
       exitCode: null,
       error: null,
       options: opts,
+      healsLeft: MAX_HEALS,
     };
     patch(set, hostId, (h) => ({
       ...h,
@@ -1107,6 +1214,7 @@ export const useDockerStore = create<State>((set) => ({
                 ? []
                 : String(info.output ?? "").split("\n"),
             exited: kind !== "container",
+            healsLeft: MAX_HEALS,
           },
         },
       }));
@@ -1147,7 +1255,32 @@ export const useDockerStore = create<State>((set) => ({
           { handle: cur0.handle, sinceOffset: cur0.offset },
           hostId,
         );
+        // A resolving-but-empty transport (mock default, proxy hiccup)
+        // must not crash the drain loop — treat as an empty clean chunk.
+        if (!res || typeof res !== "object") {
+          res = { bytes: "", dropped: 0, exited: false } as typeof res;
+        }
       } catch (e) {
+        // Lane death: the agent lost our handle. Respawn transparently
+        // while budget remains — the new `docker logs -f --tail` replays
+        // the tail, so the view backfills instead of erroring.
+        if (isStaleHandleError(e) && cur0.healsLeft > 0) {
+          patch(set, hostId, (h) => ({
+            ...h,
+            logFollows: {
+              ...h.logFollows,
+              [followId]: {
+                ...(h.logFollows[followId] ?? follow),
+                handle: null,
+                phase: "starting",
+                healsLeft: cur0.healsLeft - 1,
+                error: null,
+              },
+            },
+          }));
+          await useDockerStore.getState().respawnLogFollow(hostId, followId);
+          return;
+        }
         patch(set, hostId, (h) => ({
           ...h,
           logFollows: {
@@ -1177,6 +1310,50 @@ export const useDockerStore = create<State>((set) => ({
         return { ...h, logFollows: { ...h.logFollows, [followId]: next } };
       });
       if (!res.truncated || exited) break;
+    }
+  },
+
+  respawnLogFollow: async (hostId, followId) => {
+    const cur = useDockerStore.getState().byHost[hostId]?.logFollows[followId];
+    // Guard on phase only (see respawnPull): the handle is stale by
+    // definition on this path.
+    if (cur?.phase !== "starting") return;
+    const sep = followId.indexOf(":");
+    const kind = followId.startsWith("service:") ? ("service" as const) : ("container" as const);
+    const id = followId.slice(sep + 1);
+    if (kind !== "container") return;
+    try {
+      const info = await sshRpc<{ handle?: number }>(
+        "docker_logs_spawn",
+        {
+          container: id,
+          timestamps: cur.options.timestamps,
+          tail: cur.options.tail,
+          ...(cur.options.since ? { since: cur.options.since } : {}),
+        },
+        hostId,
+      );
+      if (typeof info.handle !== "number") throw new Error("agent did not return a log handle");
+      patch(set, hostId, (h) => ({
+        ...h,
+        logFollows: {
+          ...h.logFollows,
+          [followId]: {
+            ...(h.logFollows[followId] ?? cur),
+            handle: info.handle ?? null,
+            phase: "following",
+          },
+        },
+      }));
+      await useDockerStore.getState().pollLogFollow(hostId, followId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        logFollows: {
+          ...h.logFollows,
+          [followId]: { ...(h.logFollows[followId] ?? cur), phase: "error", error: String(e) },
+        },
+      }));
     }
   },
 
@@ -1223,7 +1400,16 @@ export const useDockerStore = create<State>((set) => ({
     if (cur && (cur.phase === "streaming" || cur.phase === "starting")) return;
     patch(set, hostId, (h) => ({
       ...h,
-      eventsFeed: { handle: null, phase: "starting", events: [], offset: 0, dropped: 0, error: null },
+      eventsFeed: {
+        handle: null,
+        phase: "starting",
+        events: [],
+        offset: 0,
+        dropped: 0,
+        error: null,
+        healsLeft: MAX_HEALS,
+        filter: filter ?? "",
+      },
     }));
     try {
       const info = await sshRpc<{ handle: number }>(
@@ -1233,13 +1419,36 @@ export const useDockerStore = create<State>((set) => ({
       );
       patch(set, hostId, (h) => ({
         ...h,
-        eventsFeed: { ...(h.eventsFeed ?? { handle: null, phase: "starting" as const, events: [], offset: 0, dropped: 0, error: null }), handle: info.handle, phase: "streaming" },
+        eventsFeed: {
+          ...(h.eventsFeed ?? {
+            handle: null,
+            phase: "starting" as const,
+            events: [],
+            offset: 0,
+            dropped: 0,
+            error: null,
+            healsLeft: MAX_HEALS,
+            filter: filter ?? "",
+          }),
+          handle: info.handle,
+          phase: "streaming",
+          healsLeft: MAX_HEALS,
+        },
       }));
       await useDockerStore.getState().pollEventsFeed(hostId);
     } catch (e) {
       patch(set, hostId, (h) => ({
         ...h,
-        eventsFeed: { handle: null, phase: "error", events: [], offset: 0, dropped: 0, error: String(e) },
+        eventsFeed: {
+          handle: null,
+          phase: "error",
+          events: [],
+          offset: 0,
+          dropped: 0,
+          error: String(e),
+          healsLeft: MAX_HEALS,
+          filter: filter ?? "",
+        },
       }));
     }
   },
@@ -1266,7 +1475,27 @@ export const useDockerStore = create<State>((set) => ({
           { handle: cur0.handle, sinceOffset: cur0.offset },
           hostId,
         );
+        if (!res || typeof res !== "object") {
+          res = { bytes: "", dropped: 0, exited: false } as typeof res;
+        }
       } catch (e) {
+        // Lane death: respawn the feed transparently while budget remains.
+        // `docker events` is a live tail — history during the gap is lost,
+        // but the feed resumes instead of parking in error.
+        if (isStaleHandleError(e) && cur0.healsLeft > 0) {
+          patch(set, hostId, (h) => ({
+            ...h,
+            eventsFeed: {
+              ...(h.eventsFeed ?? feed),
+              handle: null,
+              phase: "starting",
+              healsLeft: cur0.healsLeft - 1,
+              error: null,
+            },
+          }));
+          await useDockerStore.getState().respawnEventsFeed(hostId);
+          return;
+        }
         patch(set, hostId, (h) => ({
           ...h,
           eventsFeed: { ...(h.eventsFeed ?? feed), phase: "error", error: String(e) },
@@ -1311,6 +1540,35 @@ export const useDockerStore = create<State>((set) => ({
         };
       });
       if (!res.truncated || done) break;
+    }
+  },
+
+  respawnEventsFeed: async (hostId) => {
+    const cur = useDockerStore.getState().byHost[hostId]?.eventsFeed;
+    // Guard on phase only (see respawnPull).
+    if (cur?.phase !== "starting") return;
+    try {
+      const info = await sshRpc<{ handle: number }>(
+        "docker_events_spawn",
+        cur.filter ? { filter: cur.filter } : {},
+        hostId,
+      );
+      patch(set, hostId, (h) => ({
+        ...h,
+        eventsFeed: {
+          ...(h.eventsFeed ?? cur),
+          handle: info.handle,
+          phase: "streaming",
+          // Offset resets: the new lane's ring starts empty.
+          offset: 0,
+        },
+      }));
+      await useDockerStore.getState().pollEventsFeed(hostId);
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        eventsFeed: { ...(h.eventsFeed ?? cur), phase: "error", error: String(e) },
+      }));
     }
   },
 

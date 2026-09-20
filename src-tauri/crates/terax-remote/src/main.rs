@@ -740,3 +740,171 @@ fn opt_str(params: &Value, key: &str) -> Option<String> {
 fn opt_num(params: &Value, key: &str, default: u32) -> u32 {
     params.get(key).and_then(Value::as_u64).map(|v| v as u32).unwrap_or(default)
 }
+
+#[cfg(test)]
+mod lane_harness_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// Build an agent rooted at the OS temp dir (shell bg needs no
+    /// authorized paths when cwd is absent).
+    fn test_agent() -> Agent {
+        let dir = std::env::temp_dir();
+        let registry = WorkspaceRegistry::default();
+        let root = registry.authorize(&dir).expect("temp dir authorizable");
+        Agent {
+            registry,
+            root,
+            sessions: Mutex::new(HashMap::new()),
+            bg_lanes: Mutex::new(HashMap::new()),
+            next_session: AtomicU32::new(1),
+            docker: docker::DockerShared::default(),
+        }
+    }
+
+    fn req(method: &str, params: Value, lane: Option<u8>) -> ControlRequest {
+        ControlRequest {
+            protocol: REMOTE_PROTOCOL_VERSION,
+            id: "t".into(),
+            token: "unused-in-route".into(),
+            method: method.into(),
+            params,
+            caller: Default::default(),
+            lane,
+        }
+    }
+
+    /// Spawn a shell bg proc, bypassing the shell: insert a pre-filled
+    /// test proc directly into the agent's lane namespace. The agent is
+    /// Linux-only in production but harness tests run on Windows CI too,
+    /// and terax-core's shell spawn is `/bin/sh` (unix-only) — so routing
+    /// through `shell_bg_spawn` would fail on Windows for reasons that
+    /// have nothing to do with lane isolation.
+    fn spawn_bg(agent: &Agent, lane: Option<u8>) -> u32 {
+        let proc = terax_core::shell::background::BackgroundProc::for_test(b"lane-probe");
+        let mut lanes = agent.bg_lanes.lock().unwrap();
+        lanes.entry(lane.unwrap_or(0)).or_default().spawn(proc)
+    }
+
+    fn poll_bg(agent: &Agent, handle: u32, lane: Option<u8>) -> ControlResponse {
+        agent.route(req(
+            "shell_bg_logs",
+            json!({ "handle": handle, "sinceOffset": 0 }),
+            lane,
+        ))
+    }
+
+    #[test]
+    fn lanes_isolate_shell_bg_namespaces() {
+        let agent = test_agent();
+        let h3 = spawn_bg(&agent, Some(3));
+        // Same numeric handle in another lane does not exist...
+        let miss = poll_bg(&agent, h3, Some(4));
+        assert!(!miss.ok);
+        assert_eq!(miss.error.map(|e| e.code), Some("no_handle".to_string()));
+        // ...nor in the legacy default lane.
+        let miss0 = poll_bg(&agent, h3, None);
+        assert!(!miss0.ok);
+        // ...but the owning lane reads fine.
+        let hit = poll_bg(&agent, h3, Some(3));
+        assert!(hit.ok, "owning lane poll failed: {:?}", hit.error);
+    }
+
+    #[test]
+    fn legacy_lane_keeps_shared_behavior() {
+        let agent = test_agent();
+        // Pre-v3 client: no lane on either call — spawn and poll meet in
+        // the shared default namespace exactly like before v3.
+        let h = spawn_bg(&agent, None);
+        let hit = poll_bg(&agent, h, None);
+        assert!(hit.ok, "legacy poll failed: {:?}", hit.error);
+        // Explicit lane 0 is the same namespace as absent.
+        let hit0 = poll_bg(&agent, h, Some(0));
+        assert!(hit0.ok, "lane-0 poll failed: {:?}", hit0.error);
+    }
+
+    #[test]
+    fn capped_poll_truncates_and_chains() {
+        use terax_core::shell::background::BackgroundProc;
+        // Bypass the agent: unit-cover the exact chaining contract the
+        // frontend drain loops depend on (offsets advance past kept bytes
+        // only; truncated flags until the tail chunk).
+        let proc = BackgroundProc::for_test(b"0123456789abcdef");
+        let a = proc.read_logs_capped(0, 6);
+        assert_eq!(a.bytes, "012345");
+        assert_eq!(a.next_offset, 6);
+        assert!(a.truncated);
+        let b = proc.read_logs_capped(a.next_offset, 6);
+        assert_eq!(b.bytes, "6789ab");
+        assert_eq!(b.next_offset, 12);
+        assert!(b.truncated);
+        let c = proc.read_logs_capped(b.next_offset, 6);
+        assert_eq!(c.bytes, "cdef");
+        assert_eq!(c.next_offset, 16);
+        assert!(!c.truncated);
+    }
+
+    /// Insert a pre-filled test proc into the docker events map of a lane
+    /// (same Windows-CI rationale as spawn_bg: no docker daemon needed).
+    fn spawn_docker_events(agent: &Agent, lane: Option<u8>) -> u32 {
+        let proc = terax_core::shell::background::BackgroundProc::for_test(
+            b"{\"Type\":\"container\",\"Action\":\"die\"}\n",
+        );
+        agent.docker.lane_insert(lane, false, proc)
+    }
+
+    #[test]
+    fn docker_lanes_isolate_by_tag() {
+        let agent = test_agent();
+        // Proc in the events map under tag 4...
+        let handle = spawn_docker_events(&agent, Some(4));
+        // ...is invisible to the logs tag's namespace (different map)...
+        let miss = agent.route(req(
+            "docker_logs_poll",
+            json!({ "handle": handle, "sinceOffset": 0 }),
+            Some(3),
+        ));
+        assert!(!miss.ok);
+        // ...and to the legacy namespace...
+        let miss0 = agent.route(req(
+            "docker_events_poll",
+            json!({ "handle": handle, "sinceOffset": 0 }),
+            None,
+        ));
+        assert!(!miss0.ok);
+        // ...but polls fine under its own tag (and yields the seeded line).
+        let hit = agent.route(req(
+            "docker_events_poll",
+            json!({ "handle": handle, "sinceOffset": 0 }),
+            Some(4),
+        ));
+        assert!(hit.ok, "owning tag poll failed: {:?}", hit.error);
+        let bytes = hit
+            .result
+            .as_ref()
+            .and_then(|r| r.get("bytes"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        assert!(bytes.contains("\"Action\":\"die\""), "unexpected bytes: {bytes}");
+    }
+
+    #[test]
+    fn docker_kill_is_lane_scoped() {
+        let agent = test_agent();
+        let handle = spawn_docker_events(&agent, Some(4));
+        // Kill under the WRONG tag is a silent no-op (kill never errors)...
+        let kill = agent.route(req(
+            "docker_events_kill",
+            json!({ "handle": handle }),
+            Some(3),
+        ));
+        assert!(kill.ok);
+        // ...so the proc is still pollable under the right tag.
+        let hit = agent.route(req(
+            "docker_events_poll",
+            json!({ "handle": handle, "sinceOffset": 0 }),
+            Some(4),
+        ));
+        assert!(hit.ok, "proc died from cross-lane kill: {:?}", hit.error);
+    }
+}

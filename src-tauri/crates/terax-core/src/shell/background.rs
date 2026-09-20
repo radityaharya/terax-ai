@@ -153,6 +153,30 @@ impl Drop for BackgroundProc {
     }
 }
 
+impl BackgroundProc {
+    /// Test-only constructor: a proc with pre-filled ring content backed by
+    /// an instantly-exiting child. Lets harness tests cover the
+    /// poll-chaining contract without depending on shells or pipe timing.
+    ///
+    /// NOT #[cfg(test)]-gated: terax-remote's harness tests (a downstream
+    /// crate) use it, and cfg(test) only compiles for the defining crate's
+    /// own tests. The name marks it test-only by convention.
+    pub fn for_test(content: &[u8]) -> Arc<Self> {
+        let cmd = if cfg!(windows) {
+            let mut c = std::process::Command::new("cmd");
+            c.arg("/c").arg("exit").arg("0");
+            c
+        } else {
+            std::process::Command::new("true")
+        };
+        // spawn_with applies hide_console (CREATE_NO_WINDOW on Windows), so
+        // tests never flash consoles.
+        let proc = spawn_with(cmd, "for_test".into(), None).expect("test spawn works");
+        proc.buffer.lock().unwrap().push(content);
+        proc
+    }
+}
+
 pub fn spawn(command: String, cwd: Option<String>) -> Result<Arc<BackgroundProc>, String> {
     let trimmed = command.trim().to_string();
     if trimmed.is_empty() {
