@@ -198,7 +198,7 @@ export function Header({
         <div data-tauri-drag-region className="h-full min-w-2 flex-1" />
       </div>
 
-      <SearchInline ref={searchRef} target={searchTarget} compact={compact} />
+      <SearchInline ref={searchRef} target={searchTarget} />
 
       {IS_MAC && (
         <>

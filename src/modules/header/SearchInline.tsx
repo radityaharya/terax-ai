@@ -38,16 +38,15 @@ export type SearchInlineHandle = { focus: () => void };
 
 type Props = {
   target: SearchTarget;
-  /** When true, collapse to an icon-only button until the user opens it. */
-  compact?: boolean;
 };
 
+/** Collapsed by default: the header shows an icon-only button that expands
+ *  into the field on click, on `focus()` (the `search.focus` shortcut), and
+ *  collapses again on Escape or on blur while empty. */
 export const SearchInline = forwardRef<SearchInlineHandle, Props>(
-  function SearchInline({ target, compact }, ref) {
+  function SearchInline({ target }, ref) {
     const [q, setQ] = useState("");
-    // In compact mode the field is hidden behind an icon until activated.
-    // In normal mode the field is always present.
-    const [openInCompact, setOpenInCompact] = useState(false);
+    const [open, setOpen] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
     const pendingFocusRef = useRef(false);
     const setInputRef = useCallback((el: HTMLInputElement | null) => {
@@ -78,14 +77,20 @@ export const SearchInline = forwardRef<SearchInlineHandle, Props>(
       return shortcutText ? `${baseLabel} (${shortcutText})` : baseLabel;
     }, [baseLabel, shortcutText]);
 
-    const expanded = !compact || openInCompact;
+    const expanded = open;
 
     const focus = useCallback(() => {
+      // Already expanded: the input is mounted, so focus (and select) it
+      // directly. Otherwise expand and let the callback ref focus it once
+      // React mounts the field.
+      if (inputRef.current) {
+        inputRef.current.focus();
+        inputRef.current.select();
+        return;
+      }
       pendingFocusRef.current = true;
-      if (compact) setOpenInCompact(true);
-      else inputRef.current?.focus();
-      if (inputRef.current) pendingFocusRef.current = false;
-    }, [compact]);
+      setOpen(true);
+    }, []);
 
     useImperativeHandle(ref, () => ({ focus }), [focus]);
 
@@ -156,7 +161,9 @@ export const SearchInline = forwardRef<SearchInlineHandle, Props>(
                 applyIncremental(next);
               }}
               onBlur={() => {
-                if (compact && !q) setOpenInCompact(false);
+                // Keep the field open while a query is live so the active
+                // highlighting isn't hidden behind an icon.
+                if (!q) setOpen(false);
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
@@ -166,9 +173,7 @@ export const SearchInline = forwardRef<SearchInlineHandle, Props>(
                   e.preventDefault();
                   clearTarget();
                   setQ("");
-                  if (compact) {
-                    setOpenInCompact(false);
-                  }
+                  setOpen(false);
                   restoreTargetFocus();
                 }
               }}
