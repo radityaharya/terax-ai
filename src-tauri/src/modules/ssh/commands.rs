@@ -206,6 +206,61 @@ pub async fn zellij_sessions(id: String) -> Result<super::zellij::ZellijSessions
     .map_err(|e| format!("zellij_sessions join failed: {e}"))?
 }
 
+/// Rename a zellij session. Aimed at `from` through zellij's global
+/// `--session` flag, so it never renames whichever session happens to be
+/// current. Both names are validated before they reach the remote argv.
+#[tauri::command]
+pub async fn zellij_rename_session(id: String, from: String, to: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = super::integration::host_by_id(&id)?;
+        super::zellij::rename_session(&host, &from, &to)
+    })
+    .await
+    .map_err(|e| format!("zellij_rename_session join failed: {e}"))?
+}
+
+/// Stop a zellij session but leave it on disk for `attach` to resurrect.
+#[tauri::command]
+pub async fn zellij_kill_session(id: String, session: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = super::integration::host_by_id(&id)?;
+        super::zellij::kill_session(&host, &session)
+    })
+    .await
+    .map_err(|e| format!("zellij_kill_session join failed: {e}"))?
+}
+
+/// Remove a zellij session permanently (force-killed first when running).
+#[tauri::command]
+pub async fn zellij_delete_session(id: String, session: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = super::integration::host_by_id(&id)?;
+        super::zellij::delete_session(&host, &session)
+    })
+    .await
+    .map_err(|e| format!("zellij_delete_session join failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn zellij_kill_all_sessions(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = super::integration::host_by_id(&id)?;
+        super::zellij::kill_all_sessions(&host)
+    })
+    .await
+    .map_err(|e| format!("zellij_kill_all_sessions join failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn zellij_delete_all_sessions(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = super::integration::host_by_id(&id)?;
+        super::zellij::delete_all_sessions(&host)
+    })
+    .await
+    .map_err(|e| format!("zellij_delete_all_sessions join failed: {e}"))?
+}
+
 #[tauri::command]
 pub async fn ssh_probe_auth(app: tauri::AppHandle, id: String) -> Result<ProbeOutcome, String> {
     validate_host_id(&id)?;

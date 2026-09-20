@@ -16,7 +16,11 @@ export function sshRpc<T>(
   return invoke<T>("ssh_rpc", { hostId: id, method, params });
 }
 
-export type ZellijSession = { name: string };
+export type ZellijSession = {
+  name: string;
+  /** Kept on disk but not running ("EXITED - attach to resurrect"). */
+  exited: boolean;
+};
 export type ZellijSessions = {
   /** False when `zellij` is not installed on the remote host. */
   available: boolean;
@@ -29,6 +33,42 @@ export type ZellijSessions = {
  */
 export function listZellijSessions(hostId: string): Promise<ZellijSessions> {
   return invoke<ZellijSessions>("zellij_sessions", { id: hostId });
+}
+
+/**
+ * Rename a zellij session. Aimed at `from` through zellij's global
+ * `--session` flag, so it never renames whichever session is current.
+ */
+export function renameZellijSession(
+  hostId: string,
+  from: string,
+  to: string,
+): Promise<void> {
+  return invoke("zellij_rename_session", { id: hostId, from, to });
+}
+
+/** Stop a session but leave it on disk for `attach` to resurrect. */
+export function killZellijSession(
+  hostId: string,
+  session: string,
+): Promise<void> {
+  return invoke("zellij_kill_session", { id: hostId, session });
+}
+
+/** Remove a session for good (force-killed first when running). */
+export function deleteZellijSession(
+  hostId: string,
+  session: string,
+): Promise<void> {
+  return invoke("zellij_delete_session", { id: hostId, session });
+}
+
+export function killAllZellijSessions(hostId: string): Promise<void> {
+  return invoke("zellij_kill_all_sessions", { id: hostId });
+}
+
+export function deleteAllZellijSessions(hostId: string): Promise<void> {
+  return invoke("zellij_delete_all_sessions", { id: hostId });
 }
 
 /**

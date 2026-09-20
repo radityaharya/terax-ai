@@ -159,7 +159,11 @@ pub fn build_docker_exec(spec: &DockerExecSpec) -> Result<CommandBuilder, String
 pub fn build_zellij_attach(spec: &ZellijAttachSpec) -> Result<CommandBuilder, String> {
     use crate::modules::ssh::integration::host_by_id;
     let host = host_by_id(&spec.host_id)?;
-    let argv = crate::modules::ssh::zellij::build_attach_argv(&spec.session)?;
+    // Resolve the binary rather than calling bare `zellij`: the remote
+    // command runs the login shell non-interactively, which never reads the
+    // interactive rc that puts a Linuxbrew/cargo install on PATH.
+    let bin = crate::modules::ssh::zellij::zellij_binary(&host);
+    let argv = crate::modules::ssh::zellij::build_attach_argv(&bin, &spec.session)?;
     let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     let remote_cmd = argv.iter().map(|a| q(a)).collect::<Vec<_>>().join(" ");
     let mut cmd = CommandBuilder::new(crate::modules::ssh::ssh_binary());
