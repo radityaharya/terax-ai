@@ -843,8 +843,13 @@ export const useDockerStore = create<State>((set) => ({
   pollPull: async (hostId, jobId) => {
     const job = useDockerStore.getState().byHost[hostId]?.pulls[jobId];
     if (!job || job.handle === null || job.phase === "done" || job.phase === "error") return;
-    try {
-      const res = await sshRpc<{
+    // Drain loop: the agent caps each poll chunk (truncated=true) so the
+    // frame never blows the transport cap. Keep polling with the advanced
+    // offset until a non-truncated chunk arrives — one UI tick per drain.
+    for (let i = 0; i < 8; i++) {
+      const cur = useDockerStore.getState().byHost[hostId]?.pulls[jobId];
+      if (!cur || cur.handle === null || cur.phase === "done" || cur.phase === "error") return;
+      let res: {
         bytes: string;
         nextOffset?: number;
         next_offset?: number;
@@ -852,19 +857,36 @@ export const useDockerStore = create<State>((set) => ({
         exited: boolean;
         exitCode?: number | null;
         exit_code?: number | null;
+        truncated?: boolean;
         events?: import("./types").PullProgressEvent[];
-      // Pull procs live in the agent's events map (not logs) — poll with
-      // docker_events_poll so the progress parser runs server-side.
-      }>("docker_events_poll", { handle: job.handle, sinceOffset: job.offset }, hostId);
+      };
+      try {
+        res = await sshRpc(
+          // Pull procs live in the agent's events map (not logs) — poll with
+          // docker_events_poll so the progress parser runs server-side.
+          "docker_events_poll",
+          { handle: cur.handle, sinceOffset: cur.offset },
+          hostId,
+        );
+      } catch (e) {
+        patch(set, hostId, (h) => ({
+          ...h,
+          pulls: {
+            ...h.pulls,
+            [jobId]: { ...(h.pulls[jobId] ?? job), phase: "error", error: String(e) },
+          },
+        }));
+        return;
+      }
       patch(set, hostId, (h) => {
-        const cur = h.pulls[jobId] ?? job;
+        const prev = h.pulls[jobId] ?? job;
         const exitCode = res.exitCode ?? res.exit_code ?? null;
         const next: PullJob = {
-          ...cur,
-          output: cur.output + (res.bytes ?? ""),
-          offset: res.nextOffset ?? res.next_offset ?? cur.offset,
-          dropped: (res.dropped ?? 0) > cur.dropped ? (res.dropped ?? 0) : cur.dropped,
-          events: [...cur.events, ...(res.events ?? [])].slice(-200),
+          ...prev,
+          output: prev.output + (res.bytes ?? ""),
+          offset: res.nextOffset ?? res.next_offset ?? prev.offset,
+          dropped: (res.dropped ?? 0) > prev.dropped ? (res.dropped ?? 0) : prev.dropped,
+          events: [...prev.events, ...(res.events ?? [])].slice(-200),
         };
         for (const ev of res.events ?? []) {
           if (ev.kind === "digest" && ev.digest) next.digest = ev.digest;
@@ -882,18 +904,11 @@ export const useDockerStore = create<State>((set) => ({
         }
         return { ...h, pulls: { ...h.pulls, [jobId]: next } };
       });
-      const after = useDockerStore.getState().byHost[hostId]?.pulls[jobId];
-      if (after && after.phase === "done") {
-        await useDockerStore.getState().refreshImages(hostId);
-      }
-    } catch (e) {
-      patch(set, hostId, (h) => ({
-        ...h,
-        pulls: {
-          ...h.pulls,
-          [jobId]: { ...(h.pulls[jobId] ?? job), phase: "error", error: String(e) },
-        },
-      }));
+      if (!res.truncated) break;
+    }
+    const after = useDockerStore.getState().byHost[hostId]?.pulls[jobId];
+    if (after && after.phase === "done") {
+      await useDockerStore.getState().refreshImages(hostId);
     }
   },
 
@@ -1107,8 +1122,16 @@ export const useDockerStore = create<State>((set) => ({
     if (!follow || follow.handle === null || follow.phase === "done" || follow.phase === "error") {
       return;
     }
-    try {
-      const res = await sshRpc<{
+    // Drain loop: the agent caps each chunk (truncated=true) under the
+    // frame cap. A chatty container can out-produce one chunk per 1.5s
+    // tick; draining up to 8 chunks per tick keeps the view live without
+    // extra timers. Each iteration resumes from the advanced offset, so
+    // chunks chain losslessly.
+    let exited = false;
+    for (let i = 0; i < 8; i++) {
+      const cur0 = useDockerStore.getState().byHost[hostId]?.logFollows[followId];
+      if (!cur0 || cur0.handle === null || cur0.phase === "done" || cur0.phase === "error") return;
+      let res: {
         bytes: string;
         nextOffset?: number;
         next_offset?: number;
@@ -1116,12 +1139,30 @@ export const useDockerStore = create<State>((set) => ({
         exited: boolean;
         exitCode?: number | null;
         exit_code?: number | null;
-      }>("docker_logs_poll", { handle: follow.handle, sinceOffset: follow.offset }, hostId);
+        truncated?: boolean;
+      };
+      try {
+        res = await sshRpc(
+          "docker_logs_poll",
+          { handle: cur0.handle, sinceOffset: cur0.offset },
+          hostId,
+        );
+      } catch (e) {
+        patch(set, hostId, (h) => ({
+          ...h,
+          logFollows: {
+            ...h.logFollows,
+            [followId]: { ...(h.logFollows[followId] ?? follow), phase: "error", error: String(e) },
+          },
+        }));
+        return;
+      }
       patch(set, hostId, (h) => {
         const cur = h.logFollows[followId] ?? follow;
         const chunk = res.bytes ?? "";
         const nextOffset = res.nextOffset ?? res.next_offset ?? cur.offset;
         const exitCode = res.exitCode ?? res.exit_code ?? null;
+        exited = res.exited;
         const next: LogFollowState = {
           ...cur,
           lines: chunk
@@ -1135,14 +1176,7 @@ export const useDockerStore = create<State>((set) => ({
         };
         return { ...h, logFollows: { ...h.logFollows, [followId]: next } };
       });
-    } catch (e) {
-      patch(set, hostId, (h) => ({
-        ...h,
-        logFollows: {
-          ...h.logFollows,
-          [followId]: { ...(h.logFollows[followId] ?? follow), phase: "error", error: String(e) },
-        },
-      }));
+      if (!res.truncated || exited) break;
     }
   },
 
@@ -1213,17 +1247,40 @@ export const useDockerStore = create<State>((set) => ({
   pollEventsFeed: async (hostId) => {
     const feed = useDockerStore.getState().byHost[hostId]?.eventsFeed;
     if (!feed || feed.handle === null || feed.phase === "done" || feed.phase === "error") return;
-    try {
-      const res = await sshRpc<{
+    // Drain loop (same rationale as pollLogFollow): a burst of daemon
+    // events can exceed one capped chunk per tick.
+    for (let i = 0; i < 8; i++) {
+      const cur0 = useDockerStore.getState().byHost[hostId]?.eventsFeed;
+      if (!cur0 || cur0.handle === null || cur0.phase === "done" || cur0.phase === "error") return;
+      let res: {
         bytes: string;
         nextOffset?: number;
         next_offset?: number;
         dropped: number;
         exited: boolean;
-        exitCode?: number | null;
-        exit_code?: number | null;
-      }>("docker_events_poll", { handle: feed.handle, sinceOffset: feed.offset }, hostId);
-      const fresh: DockerEvent[] = String(res.bytes ?? "")
+        truncated?: boolean;
+      };
+      try {
+        res = await sshRpc(
+          "docker_events_poll",
+          { handle: cur0.handle, sinceOffset: cur0.offset },
+          hostId,
+        );
+      } catch (e) {
+        patch(set, hostId, (h) => ({
+          ...h,
+          eventsFeed: { ...(h.eventsFeed ?? feed), phase: "error", error: String(e) },
+        }));
+        return;
+      }
+      // A capped chunk may split a JSON line mid-object; only the trailing
+      // fragment can be partial (offsets are byte-exact), so hold it back
+      // and prepend it to the next chunk.
+      const raw = String(res.bytes ?? "");
+      const endsClean = raw === "" || raw.endsWith("\n");
+      const complete = endsClean ? raw : raw.slice(0, raw.lastIndexOf("\n") + 1);
+      const carry = endsClean ? "" : raw.slice(raw.lastIndexOf("\n") + 1);
+      const fresh: DockerEvent[] = complete
         .split("\n")
         .map((l) => l.trim())
         .filter(Boolean)
@@ -1235,24 +1292,25 @@ export const useDockerStore = create<State>((set) => ({
           }
         })
         .filter((e): e is DockerEvent => e !== null);
+      const carryBytes = new TextEncoder().encode(carry).length;
+      let done = false;
       patch(set, hostId, (h) => {
         const curFeed = h.eventsFeed ?? feed;
+        done = res.exited;
         return {
           ...h,
           eventsFeed: {
             ...curFeed,
             events: [...curFeed.events, ...fresh].slice(-500),
-            offset: res.nextOffset ?? res.next_offset ?? curFeed.offset,
+            // Rewind past the held-back fragment so the next poll re-reads
+            // it whole; complete lines still advance exactly once.
+            offset: (res.nextOffset ?? res.next_offset ?? curFeed.offset) - carryBytes,
             dropped: Math.max(curFeed.dropped, res.dropped ?? 0),
             phase: res.exited ? "done" : "streaming",
           },
         };
       });
-    } catch (e) {
-      patch(set, hostId, (h) => ({
-        ...h,
-        eventsFeed: { ...(h.eventsFeed ?? feed), phase: "error", error: String(e) },
-      }));
+      if (!res.truncated || done) break;
     }
   },
 

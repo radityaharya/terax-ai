@@ -32,6 +32,11 @@ pub struct BackgroundLogResponse {
     pub dropped: u64,
     pub exited: bool,
     pub exit_code: Option<i32>,
+    /// True when the payload was capped to fit the transport frame; the
+    /// caller must re-poll with the returned `next_offset` for the rest.
+    /// Defaults false for old serialized payloads.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,7 +51,64 @@ pub struct BackgroundProcInfo {
 
 impl BackgroundProc {
     pub fn read_logs(&self, since: u64) -> BackgroundLogResponse {
-        let (bytes, next_offset, dropped) = self.buffer.lock().unwrap().read_from(since);
+        self.read_logs_capped(since, usize::MAX)
+    }
+
+    /// Bounded variant: caps the returned payload at `limit` bytes so the
+    /// JSON frame can never exceed the transport cap. `truncated` tells the
+    /// caller to re-poll for the remainder; `next_offset` always advances
+    /// past the bytes actually returned, so no data is skipped or repeated.
+    /// Floor `bytes` back to the last UTF-8 char boundary (UTF-8
+    /// continuation bytes are 0x80..0xC0; a cut inside a multi-byte sequence
+    /// ends with 1-3 of them after the lead byte).
+    fn floor_char_boundary(bytes: &[u8]) -> usize {
+        let mut cut = bytes.len();
+        while cut > 0 && (bytes[cut - 1] & 0xC0) == 0x80 {
+            cut -= 1;
+        }
+        // If we backed past the lead byte entirely, the whole tail is a
+        // partial sequence — drop it (the bytes stay buffered; the next
+        // poll re-reads them whole once the lead byte arrives).
+        if cut > 0 && (bytes[cut - 1] & 0xC0) == 0xC0 {
+            let lead = bytes[cut - 1];
+            let want = if lead >= 0xF0 {
+                4
+            } else if lead >= 0xE0 {
+                3
+            } else {
+                2
+            };
+            if bytes.len() - (cut - 1) < want {
+                cut -= 1;
+            }
+        }
+        cut
+    }
+
+    pub fn read_logs_capped(&self, since: u64, limit: usize) -> BackgroundLogResponse {
+        let guard = self.buffer.lock().unwrap();
+        // Single authoritative read: the limited variant both truncates and
+        // derives the follow offset from the kept prefix, so chunk N+1
+        // resumes exactly where chunk N stopped — no gaps, no repeats.
+        let (bytes, next_offset, dropped) = guard.read_from_limited(since, limit);
+        let truncated = {
+            let (_, full_next, _) = guard.read_from(since);
+            full_next != next_offset
+        };
+        drop(guard);
+        // Floor the cut to a UTF-8 boundary so from_utf8 never fails
+        // mid-codepoint; re-derive the offset for the shortened prefix.
+        // (Lossy conversion would hide the split but corrupt the offset
+        // chain — flooring keeps offsets byte-exact.)
+        let cut = Self::floor_char_boundary(&bytes);
+        let (bytes, next_offset) = if cut != bytes.len() {
+            let guard = self.buffer.lock().unwrap();
+            let (_, next, _) = guard.read_from_limited(since, cut);
+            drop(guard);
+            (bytes[..cut].to_vec(), next)
+        } else {
+            (bytes, next_offset)
+        };
         let exited = self.exited.load(Ordering::Acquire);
         let exit_code = if exited && !self.exit_unknown.load(Ordering::Acquire) {
             Some(self.exit_code.load(Ordering::Acquire))
@@ -59,6 +121,7 @@ impl BackgroundProc {
             dropped,
             exited,
             exit_code,
+            truncated,
         }
     }
 

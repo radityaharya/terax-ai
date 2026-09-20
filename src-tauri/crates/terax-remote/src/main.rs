@@ -28,15 +28,48 @@ use terax_core::workspace::{WorkspaceEnv, WorkspaceRegistry};
 mod auth;
 mod docker;
 
+/// One background-handle namespace: an isolated handle map plus its own
+/// counter, so two follows in different lanes never share handle ids.
+/// Lanes are append-only (created on first use, never removed).
+struct LaneBg {
+    map: Mutex<HashMap<u32, Arc<terax_core::shell::background::BackgroundProc>>>,
+    next: AtomicU32,
+}
+
+impl Default for LaneBg {
+    fn default() -> Self {
+        Self {
+            map: Mutex::new(HashMap::new()),
+            next: AtomicU32::new(1),
+        }
+    }
+}
+
+impl LaneBg {
+    fn spawn(&self, proc: Arc<terax_core::shell::background::BackgroundProc>) -> u32 {
+        let handle = self.next.fetch_add(1, Ordering::Relaxed);
+        self.map.lock().unwrap().insert(handle, proc);
+        handle
+    }
+
+    fn get(&self, handle: u32) -> Option<Arc<terax_core::shell::background::BackgroundProc>> {
+        self.map.lock().unwrap().get(&handle).cloned()
+    }
+}
+
 struct Agent {
     registry: WorkspaceRegistry,
     root: PathBuf,
     sessions: Mutex<HashMap<u32, Arc<terax_core::shell::session::ShellSession>>>,
-    bg: Mutex<HashMap<u32, Arc<terax_core::shell::background::BackgroundProc>>>,
+    /// v3 lane namespaces for shell bg procs. Lane 0 is the legacy default:
+    /// pre-v3 clients that send no lane resolve here, preserving the old
+    /// shared-map behavior exactly.
+    bg_lanes: Mutex<HashMap<u8, LaneBg>>,
     next_session: AtomicU32,
-    next_bg: AtomicU32,
     docker: docker::DockerShared,
 }
+
+impl Agent {}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -82,9 +115,8 @@ fn serve_root(root: String, token: String) {
         registry,
         root: canonical,
         sessions: Mutex::new(HashMap::new()),
-        bg: Mutex::new(HashMap::new()),
+        bg_lanes: Mutex::new(HashMap::new()),
         next_session: AtomicU32::new(1),
-        next_bg: AtomicU32::new(1),
         docker: docker::DockerShared::default(),
     };
     auth::expect_token(&token);
@@ -146,7 +178,8 @@ impl Agent {
         if request.method.starts_with("docker_") {
             let authorized = |p: &PathBuf| self.authorized(p);
             let id = request.id.clone();
-            if let Some(resp) = docker::handle_docker(&self.docker, &request.method, id, &params, authorized) {
+            let lane = request.lane;
+            if let Some(resp) = docker::handle_docker(&self.docker, &request.method, id, &params, authorized, lane) {
                 return resp;
             }
             return ControlResponse::failure(request.id, "unknown_method", "unknown remote method");
@@ -505,9 +538,13 @@ impl Agent {
                 }
                 match terax_core::shell::background::spawn(str_param("command"), cwd) {
                     Ok(proc) => {
-                        let handle = self.next_bg.fetch_add(1, Ordering::Relaxed);
+                        // Hold the lanes lock only for namespace lookup;
+                        // spawn inserts under the lane's own map lock.
+                        let handle = {
+                            let mut lanes = self.bg_lanes.lock().unwrap();
+                            lanes.entry(request.lane.unwrap_or(0)).or_default().spawn(proc.clone())
+                        };
                         let info = proc.info(handle);
-                        self.bg.lock().unwrap().insert(handle, proc);
                         ControlResponse::success(request.id, json!(info))
                     }
                     Err(e) => ControlResponse::failure(request.id, "shell_error", e),
@@ -515,16 +552,34 @@ impl Agent {
             }
             REMOTE_METHOD_SHELL_BG_LOGS => {
                 let handle = num_param(&params, "handle", 0) as u32;
-                let proc = self.bg.lock().unwrap().get(&handle).cloned();
+                let proc = {
+                    let mut lanes = self.bg_lanes.lock().unwrap();
+                    lanes
+                        .entry(request.lane.unwrap_or(0))
+                        .or_default()
+                        .get(handle)
+                };
                 let Some(proc) = proc else {
                     return ControlResponse::failure(request.id, "no_handle", "no background handle");
                 };
                 let since = params.get("sinceOffset").and_then(Value::as_u64).unwrap_or(0);
-                ControlResponse::success(request.id, json!(proc.read_logs(since)))
+                let limit = params
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .map(|l| (l as usize).clamp(1024, terax_control_protocol::MAX_POLL_BYTES))
+                    .unwrap_or(terax_control_protocol::MAX_POLL_BYTES);
+                ControlResponse::success(request.id, json!(proc.read_logs_capped(since, limit)))
             }
             REMOTE_METHOD_SHELL_BG_KILL => {
                 let handle = num_param(&params, "handle", 0) as u32;
-                if let Some(proc) = self.bg.lock().unwrap().get(&handle).cloned() {
+                let proc = {
+                    let mut lanes = self.bg_lanes.lock().unwrap();
+                    lanes
+                        .entry(request.lane.unwrap_or(0))
+                        .or_default()
+                        .get(handle)
+                };
+                if let Some(proc) = proc {
                     proc.kill();
                 }
                 ControlResponse::success(request.id, json!(null))

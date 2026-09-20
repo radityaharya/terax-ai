@@ -4,8 +4,23 @@ use serde_json::Value;
 pub const PROTOCOL_VERSION: u16 = 1;
 /// Protocol version spoken by terax-remote agents. Additive over v1: the
 /// local control server stays v1, remote agents advertise v2 capabilities.
-pub const REMOTE_PROTOCOL_VERSION: u16 = 2;
+///
+/// v3 (backwards-compatible framing upgrade, negotiated per connection):
+/// - requests may carry `lane` (u8): the agent binds the request's
+///   background-handle namespace to that lane, so spawn/poll/kill stay on
+///   one agent process even when the desktop round-robins pipes. Lanes are
+///   process-local namespaces, not global routing — any pipe serves any
+///   lane, and state lazily materializes where first used.
+/// - responses to `*_poll` may carry `truncated: true` when the payload was
+///   capped to fit `MAX_MESSAGE_BYTES`: the client must re-poll with an
+///   explicit `limit`/`sinceOffset` window instead of assuming completeness.
+/// - `*_poll` accepts `limit` (max bytes): lets the client bound each
+///   chunk under the frame cap without trial and error.
+pub const REMOTE_PROTOCOL_VERSION: u16 = 3;
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+/// Max log/event bytes returned per poll response. Kept well under
+/// MAX_MESSAGE_BYTES so JSON escaping overhead can never blow the frame.
+pub const MAX_POLL_BYTES: usize = 32 * 1024;
 pub const METHOD_PING: &str = "ping";
 pub const METHOD_CAPABILITIES: &str = "capabilities";
 pub const METHOD_IDENTIFY: &str = "identify";
@@ -377,6 +392,10 @@ pub struct ControlRequest {
     pub params: Value,
     #[serde(default)]
     pub caller: CallerContext,
+    /// v3 lane affinity: background-handle namespace for this request.
+    /// Absent = default lane 0. Agents that predate v3 ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

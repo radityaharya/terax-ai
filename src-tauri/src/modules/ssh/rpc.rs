@@ -26,6 +26,11 @@ struct RpcChild {
 struct RpcConnection {
     rpc: Mutex<RpcChild>,
     token: String,
+    /// Highest agent protocol the far end advertised (from the ping
+    /// handshake). Gates v3 envelope fields like `lane`: never send a v3
+    /// field to a v2 agent — unknown fields are ignored today, but version
+    /// gating keeps that a deliberate choice per field, not an accident.
+    protocol: u16,
 }
 
 /// Independent stdio pipes to the same host's agent. The agent protocol
@@ -97,6 +102,7 @@ fn is_stateful_method(method: &str) -> bool {
             | "docker_events_spawn"
             | "docker_events_poll"
             | "docker_events_kill"
+            | "docker_compose_logs"
             | "docker_service_logs_spawn"
             | "docker_service_logs_poll"
             | "docker_service_logs_kill"
@@ -111,9 +117,49 @@ fn is_stateful_method(method: &str) -> bool {
 /// background handle on the wrong agent process.
 const STATEFUL_LANE: usize = 0;
 
+/// v3 affinity lanes for stateful namespaces. One u8 tag per follow class:
+/// the desktop pins each spawn/poll/kill sequence to its tag, and the agent
+/// resolves the tag to an isolated handle map. Tags are stable wire values
+/// (do not renumber): future transports relocate namespaces by tag.
+pub const AFFINITY_DEFAULT: u8 = 0;
+pub const AFFINITY_SHELL_BG: u8 = 1;
+pub const AFFINITY_SHELL_SESSION: u8 = 2;
+pub const AFFINITY_DOCKER_LOGS: u8 = 3;
+pub const AFFINITY_DOCKER_EVENTS: u8 = 4;
+pub const AFFINITY_DOCKER_PULL: u8 = 5;
+pub const AFFINITY_COMPOSE_LOGS: u8 = 6;
+
+/// Stateful method -> its v3 affinity tag. None = stateless (any pipe
+/// serves it; requests carry full params).
+fn affinity_for(method: &str) -> Option<u8> {
+    Some(match method {
+        "shell_bg_spawn" | "shell_bg_logs" | "shell_bg_kill" => AFFINITY_SHELL_BG,
+        "shell_session_open" | "shell_session_run" | "shell_session_close" => {
+            AFFINITY_SHELL_SESSION
+        }
+        "docker_logs_spawn" | "docker_logs_poll" | "docker_logs_kill" => AFFINITY_DOCKER_LOGS,
+        "docker_events_spawn" | "docker_events_poll" | "docker_events_kill" => {
+            AFFINITY_DOCKER_EVENTS
+        }
+        "docker_pull" => AFFINITY_DOCKER_PULL,
+        "docker_compose_logs" | "docker_service_logs_spawn" | "docker_service_logs_poll"
+        | "docker_service_logs_kill" | "docker_compose_logs_spawn" | "docker_compose_logs_poll"
+        | "docker_compose_logs_kill" => AFFINITY_COMPOSE_LOGS,
+        _ => return None,
+    })
+}
+
 impl SshRpcManager {
     /// Sends a request to the host agent, spawning the channel on first use.
     /// The agent binary path on the remote is resolved at connect time.
+    ///
+    /// Routing: stateless methods round-robin the pool (any pipe serves
+    /// any request). Stateful methods pin to the reserved pipe AND carry
+    /// their v3 affinity tag, so the agent resolves them in an isolated
+    /// handle namespace. Belt and suspenders: the pin keeps today's
+    /// process-local maps correct; the tag keeps it correct when state
+    /// moves out-of-process (socket daemon) or when a lane dies and the
+    /// pool respawns elsewhere.
     pub fn request(
         &self,
         host_id: &str,
@@ -123,11 +169,14 @@ impl SshRpcManager {
         remote_root: &str,
     ) -> Result<Value, String> {
         validate_host_id(host_id).map_err(|m| m)?;
-        let conn = if is_stateful_method(method) {
-            self.pinned_connection(host_id, remote_bin, remote_root, STATEFUL_LANE)?
-        } else {
-            self.connection(host_id, remote_bin, remote_root)?
-        };
+        if let Some(affinity) = affinity_for(method) {
+            let conn = self.pinned_connection(host_id, remote_bin, remote_root, STATEFUL_LANE)?;
+            // Pull procs live in the events map but spawn under the pull
+            // tag; poll/kill must resolve the SAME tag or the handle lookup
+            // misses. The agent maps AFFINITY_DOCKER_PULL -> events map.
+            return self.call_with_lane(&conn, host_id, method, params, Some(affinity));
+        }
+        let conn = self.connection(host_id, remote_bin, remote_root)?;
         self.call(&conn, host_id, method, params)
     }
 
@@ -164,20 +213,34 @@ impl SshRpcManager {
         let mut child = cmd.spawn().map_err(|e| format!("spawn ssh rpc: {e}"))?;
         let stdin = child.stdin.take().ok_or("no rpc stdin")?;
         let stdout = child.stdout.take().ok_or("no rpc stdout")?;
-        let conn = Arc::new(RpcConnection {
+        let mut conn = RpcConnection {
             rpc: Mutex::new(RpcChild {
                 child,
                 stdin,
                 reader: BufReader::new(stdout),
             }),
             token,
-        });
-        // Verify the channel before caching: ping must succeed.
-        let ping = self.call_raw(&conn, "ping", serde_json::json!({}))?;
+            // Pessimistic until the handshake below proves otherwise.
+            protocol: 2,
+        };
+        // Verify the channel before caching: ping must succeed. The ping
+        // response carries the agent's protocol version — that gates v3
+        // envelope fields (lane affinity) per connection. `conn` is still
+        // uniquely owned here (not yet published to the pool), so plain
+        // field writes are race-free; wrap in Arc only at the end.
+        let staged = Arc::new(conn);
+        let ping = self.call_raw(&staged, "ping", serde_json::json!({}))?;
         if !ping.get("ok").and_then(Value::as_bool).unwrap_or(false) {
             return Err("remote agent ping failed".into());
         }
-        Ok(conn)
+        let advertised = ping
+            .get("result")
+            .and_then(|r| r.get("protocol"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(2) as u16;
+        let mut conn = Arc::try_unwrap(staged).map_err(|_| "rpc lane uniquely owned".to_string())?;
+        conn.protocol = advertised.max(2);
+        Ok(Arc::new(conn))
     }
 
     /// Round-robin a lane from the host's pool, growing it lazily to
@@ -269,6 +332,21 @@ impl SshRpcManager {
         Ok(conn)
     }
 
+    /// Stateful call: carries the v3 lane affinity through to the agent so
+    /// the request resolves in the pinned handle namespace. Stateless
+    /// callers use `call` (no lane = legacy shared namespace).
+    fn call_with_lane(
+        &self,
+        conn: &Arc<RpcConnection>,
+        host_id: &str,
+        method: &str,
+        params: Value,
+        lane: Option<u8>,
+    ) -> Result<Value, String> {
+        let response = self.call_raw_with_lane(conn, method, params, lane)?;
+        return self.finish_call(conn, host_id, response);
+    }
+
     fn call(
         &self,
         conn: &Arc<RpcConnection>,
@@ -277,6 +355,18 @@ impl SshRpcManager {
         params: Value,
     ) -> Result<Value, String> {
         let response = self.call_raw(conn, method, params)?;
+        return self.finish_call(conn, host_id, response);
+    }
+
+    fn finish_call(
+        &self,
+        _conn: &Arc<RpcConnection>,
+        host_id: &str,
+        response: Value,
+    ) -> Result<Value, String> {
+        // Version learning happens only at spawn (ping handshake): pooled
+        // lanes are shared through cloned Arcs, so per-response upgrades
+        // would need interior mutability for zero benefit.
         if response.get("ok").and_then(Value::as_bool).unwrap_or(false) {
             return Ok(response.get("result").cloned().unwrap_or(Value::Null));
         }
@@ -299,16 +389,34 @@ impl SshRpcManager {
         method: &str,
         params: Value,
     ) -> Result<Value, String> {
+        self.call_raw_with_lane(conn, method, params, None)
+    }
+
+    /// Raw call carrying an optional v3 lane affinity. The lane is only
+    /// sent when the far end advertised protocol >= 3; older agents get
+    /// the v2 envelope and resolve to the legacy shared namespace.
+    fn call_raw_with_lane(
+        &self,
+        conn: &Arc<RpcConnection>,
+        method: &str,
+        params: Value,
+        lane: Option<u8>,
+    ) -> Result<Value, String> {
         let id = request_id();
         let token = conn.token.clone();
-        let line = serde_json::to_string(&serde_json::json!({
+        let mut envelope = serde_json::json!({
             "protocol": terax_control_protocol::REMOTE_PROTOCOL_VERSION,
             "id": id,
             "token": token,
             "method": method,
             "params": params,
-        }))
-        .map_err(|e| e.to_string())?;
+        });
+        if conn.protocol >= 3 {
+            if let Some(l) = lane {
+                envelope["lane"] = serde_json::json!(l);
+            }
+        }
+        let line = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
         // Hold the lock for the whole round-trip: stdio is a single stream
         // and interleaved requests would corrupt framing.
         let mut rpc = conn.rpc.lock().map_err(|_| "rpc lock poisoned".to_string())?;
@@ -377,23 +485,35 @@ mod tests {
 
     #[test]
     fn stateful_methods_are_pinned() {
-        for m in [
-            "shell_session_open",
-            "shell_session_run",
-            "shell_session_close",
-            "shell_bg_spawn",
-            "shell_bg_logs",
-            "shell_bg_kill",
-            "docker_pull",
-            "docker_logs_spawn",
-            "docker_logs_poll",
-            "docker_logs_kill",
-            "docker_events_spawn",
-            "docker_events_poll",
-            "docker_events_kill",
+        for (m, lane) in [
+            ("shell_session_open", AFFINITY_SHELL_SESSION),
+            ("shell_session_run", AFFINITY_SHELL_SESSION),
+            ("shell_session_close", AFFINITY_SHELL_SESSION),
+            ("shell_bg_spawn", AFFINITY_SHELL_BG),
+            ("shell_bg_logs", AFFINITY_SHELL_BG),
+            ("shell_bg_kill", AFFINITY_SHELL_BG),
+            ("docker_pull", AFFINITY_DOCKER_PULL),
+            ("docker_logs_spawn", AFFINITY_DOCKER_LOGS),
+            ("docker_logs_poll", AFFINITY_DOCKER_LOGS),
+            ("docker_logs_kill", AFFINITY_DOCKER_LOGS),
+            ("docker_events_spawn", AFFINITY_DOCKER_EVENTS),
+            ("docker_events_poll", AFFINITY_DOCKER_EVENTS),
+            ("docker_events_kill", AFFINITY_DOCKER_EVENTS),
+            ("docker_compose_logs", AFFINITY_COMPOSE_LOGS),
         ] {
             assert!(is_stateful_method(m), "{m} must pin to the stateful lane");
+            assert_eq!(affinity_for(m), Some(lane), "{m} must carry lane {lane}");
         }
+    }
+
+    #[test]
+    fn spawn_poll_kill_share_one_affinity() {
+        // The invariant that actually prevents no_handle: every verb of a
+        // sequence resolves to the same namespace.
+        assert_eq!(affinity_for("docker_logs_spawn"), affinity_for("docker_logs_poll"));
+        assert_eq!(affinity_for("docker_logs_poll"), affinity_for("docker_logs_kill"));
+        assert_eq!(affinity_for("docker_events_spawn"), affinity_for("docker_events_poll"));
+        assert_eq!(affinity_for("docker_events_poll"), affinity_for("docker_events_kill"));
     }
 
     #[test]
@@ -408,6 +528,7 @@ mod tests {
             "shell_exec",
         ] {
             assert!(!is_stateful_method(m), "{m} must not pin to the stateful lane");
+            assert_eq!(affinity_for(m), None, "{m} must not carry affinity");
         }
     }
 

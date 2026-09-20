@@ -20,23 +20,93 @@ fn now_ms() -> u64 {
 }
 
 /// Per-agent Docker state: log/event background handles plus short-lived
-/// caches. All values are keyed per call — the agent is stateless across
-/// RPC lanes except for these explicitly tracked handles.
-pub struct DockerShared {
+/// caches. Handles are namespaced by v3 lane (process-local today, same as
+/// the shell bg maps in main.rs): lane 0 / absent is the legacy shared
+/// namespace; nonzero lanes isolate follows so a relocated transport can
+/// move namespaces without wire changes.
+pub struct DockerLane {
     pub logs: Mutex<HashMap<u32, Arc<terax_core::shell::background::BackgroundProc>>>,
     pub events: Mutex<HashMap<u32, Arc<terax_core::shell::background::BackgroundProc>>>,
     pub next_handle: AtomicU32,
+}
+
+impl Default for DockerLane {
+    fn default() -> Self {
+        Self {
+            logs: Mutex::new(HashMap::new()),
+            events: Mutex::new(HashMap::new()),
+            next_handle: AtomicU32::new(1),
+        }
+    }
+}
+
+pub struct DockerShared {
+    pub lanes: Mutex<HashMap<u8, DockerLane>>,
     pub capabilities: Mutex<HashMap<String, (u64, Value)>>,
 }
 
 impl Default for DockerShared {
     fn default() -> Self {
         Self {
-            logs: Mutex::new(HashMap::new()),
-            events: Mutex::new(HashMap::new()),
-            next_handle: AtomicU32::new(1),
+            lanes: Mutex::new(HashMap::new()),
             capabilities: Mutex::new(HashMap::new()),
         }
+    }
+}
+
+/// Desktop affinity tags (must match rpc.rs AFFINITY_*). Documented here
+/// for debuggability — the agent treats lane ids as opaque namespaces.
+/// Pull procs live in the events map regardless of tag; the tag only
+/// isolates namespaces.
+#[allow(dead_code)]
+pub const AFFINITY_DOCKER_LOGS: u8 = 3;
+#[allow(dead_code)]
+pub const AFFINITY_DOCKER_EVENTS: u8 = 4;
+#[allow(dead_code)]
+pub const AFFINITY_DOCKER_PULL: u8 = 5;
+#[allow(dead_code)]
+pub const AFFINITY_COMPOSE_LOGS: u8 = 6;
+
+impl DockerShared {
+    /// Resolve (logs map, events map, handle counter) for a v3 lane.
+    /// Lane 0 / absent = legacy shared namespace (pre-v3 clients).
+    ///
+    /// Tag mapping: LOGS + COMPOSE_LOGS -> logs map of their own lane;
+    /// EVENTS + PULL -> events map of their own lane (pull procs live in
+    /// events — poll/kill with the pull tag must hit the same map the
+    /// spawn used, which is exactly what this mapping guarantees).
+    /// Snapshot one proc out of a lane namespace. Holds the outer lanes
+    /// lock only for map lookup; the proc itself is refcounted so the
+    /// ring-buffer read below runs lock-free.
+    pub fn lane_get(
+        &self,
+        lane: Option<u8>,
+        is_logs: bool,
+        handle: u32,
+    ) -> Option<Arc<terax_core::shell::background::BackgroundProc>> {
+        let lanes = self.lanes.lock().unwrap();
+        lanes
+            .get(&lane.unwrap_or(0))
+            .and_then(|state| {
+                let map = if is_logs { &state.logs } else { &state.events };
+                map.lock().unwrap().get(&handle).cloned()
+            })
+    }
+
+    /// Insert one proc into a lane namespace, materializing the lane on
+    /// first use. Returns the lane-local handle.
+    pub fn lane_insert(
+        &self,
+        lane: Option<u8>,
+        is_logs: bool,
+        proc: Arc<terax_core::shell::background::BackgroundProc>,
+    ) -> u32 {
+        let mut lanes = self.lanes.lock().unwrap();
+        let state = lanes.entry(lane.unwrap_or(0)).or_default();
+        let handle = state.next_handle.fetch_add(1, Ordering::Relaxed);
+        let map = if is_logs { &state.logs } else { &state.events };
+        map.lock().unwrap().insert(handle, proc);
+        handle
     }
 }
 
@@ -142,6 +212,7 @@ pub fn handle_docker(
     id: String,
     params: &Value,
     authorized: impl Fn(&PathBuf) -> bool,
+    lane: Option<u8>,
 ) -> Option<ControlResponse> {
     if !method.starts_with("docker_") {
         return None;
@@ -500,10 +571,10 @@ pub fn handle_docker(
             }
         }
         "docker_pull" => {
-            return Some(docker_bg_spawn(state, id, params, "pull"));
+            return Some(docker_bg_spawn(state, id, params, "pull", lane));
         }
         "docker_build" => {
-            return Some(docker_bg_spawn(state, id, params, "build"));
+            return Some(docker_bg_spawn(state, id, params, "build", lane));
         }
         "docker_image_update_check" => {
             let target = str_param(params, "reference");
@@ -551,13 +622,13 @@ pub fn handle_docker(
             )
         }
         "docker_logs_spawn" => {
-            return Some(docker_bg_spawn(state, id, params, "logs"));
+            return Some(docker_bg_spawn(state, id, params, "logs", lane));
         }
         "docker_logs_poll" => {
-            return Some(docker_bg_poll(state, id, params, true));
+            return Some(docker_bg_poll(state, id, params, true, lane));
         }
         "docker_logs_kill" => {
-            return Some(docker_bg_kill(state, id, params, true));
+            return Some(docker_bg_kill(state, id, params, true, lane));
         }
         "docker_service_logs" => {
             // One-shot `service logs` (no follow) — follow mode uses logs_spawn via bg.
@@ -576,13 +647,13 @@ pub fn handle_docker(
             }
         }
         "docker_events_spawn" => {
-            return Some(docker_bg_spawn(state, id, params, "events"));
+            return Some(docker_bg_spawn(state, id, params, "events", lane));
         }
         "docker_events_poll" => {
-            return Some(docker_bg_poll(state, id, params, false));
+            return Some(docker_bg_poll(state, id, params, false, lane));
         }
         "docker_events_kill" => {
-            return Some(docker_bg_kill(state, id, params, false));
+            return Some(docker_bg_kill(state, id, params, false, lane));
         }
         "docker_compose_detect" => {
             let dir = str_param(params, "dir");
@@ -678,7 +749,7 @@ pub fn handle_docker(
             }
         }
         "docker_compose_logs" => {
-            return Some(docker_bg_spawn(state, id, params, "compose-logs"));
+            return Some(docker_bg_spawn(state, id, params, "compose-logs", lane));
         }
         "docker_swarm_info" => {
             match run(vec!["docker".into(), "info".into(), "--format".into(), "json".into()], None) {
@@ -1044,8 +1115,15 @@ fn compose_ctx(
 }
 
 /// Spawn a background docker proc (pull / build / logs -f / events / compose
-/// logs) into the ring buffer; the frontend polls by handle.
-fn docker_bg_spawn(state: &DockerShared, id: String, params: &Value, kind: &str) -> ControlResponse {
+/// logs) into the ring buffer; the frontend polls by handle within the
+/// request's v3 lane namespace.
+fn docker_bg_spawn(
+    state: &DockerShared,
+    id: String,
+    params: &Value,
+    kind: &str,
+    lane: Option<u8>,
+) -> ControlResponse {
     let argv: Vec<String> = match kind {
         "pull" => {
             let reference = str_param(params, "reference");
@@ -1109,28 +1187,33 @@ fn docker_bg_spawn(state: &DockerShared, id: String, params: &Value, kind: &str)
     };
     match terax_core::shell::background::spawn_argv(argv, None) {
         Ok(proc) => {
-            let handle = state.next_handle.fetch_add(1, Ordering::Relaxed);
+            let is_logs = kind == "logs" || kind == "compose-logs" || kind == "events";
+            let handle = state.lane_insert(lane, is_logs, proc.clone());
             let info = proc.info(handle);
-            if kind == "logs" || kind == "compose-logs" || kind == "events" {
-                state.logs.lock().unwrap().insert(handle, proc);
-            } else {
-                state.events.lock().unwrap().insert(handle, proc);
-            }
             ok(id, json!(info))
         }
         Err(e) => failure(id, "docker_error", e),
     }
 }
 
-fn docker_bg_poll(state: &DockerShared, id: String, params: &Value, is_logs: bool) -> ControlResponse {
+fn docker_bg_poll(
+    state: &DockerShared,
+    id: String,
+    params: &Value,
+    is_logs: bool,
+    lane: Option<u8>,
+) -> ControlResponse {
     let handle = params.get("handle").and_then(Value::as_u64).unwrap_or(0) as u32;
-    let map = if is_logs { &state.logs } else { &state.events };
-    let proc = map.lock().unwrap().get(&handle).cloned();
-    let Some(proc) = proc else {
+    let Some(proc) = state.lane_get(lane, is_logs, handle) else {
         return failure(id, "no_handle", "no background handle".to_string());
     };
     let since = params.get("sinceOffset").and_then(Value::as_u64).unwrap_or(0);
-    let mut resp = json!(proc.read_logs(since));
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|l| (l as usize).clamp(1024, terax_control_protocol::MAX_POLL_BYTES))
+        .unwrap_or(terax_control_protocol::MAX_POLL_BYTES);
+    let mut resp = json!(proc.read_logs_capped(since, limit));
     // Parse pull progress lines server-side so the UI gets structured events.
     // (Pull procs live in the events map; logs keep the raw ring buffer.)
     if !is_logs {
@@ -1145,10 +1228,15 @@ fn docker_bg_poll(state: &DockerShared, id: String, params: &Value, is_logs: boo
     ok(id, resp)
 }
 
-fn docker_bg_kill(state: &DockerShared, id: String, params: &Value, is_logs: bool) -> ControlResponse {
+fn docker_bg_kill(
+    state: &DockerShared,
+    id: String,
+    params: &Value,
+    is_logs: bool,
+    lane: Option<u8>,
+) -> ControlResponse {
     let handle = params.get("handle").and_then(Value::as_u64).unwrap_or(0) as u32;
-    let map = if is_logs { &state.logs } else { &state.events };
-    if let Some(proc) = map.lock().unwrap().get(&handle).cloned() {
+    if let Some(proc) = state.lane_get(lane, is_logs, handle) {
         proc.kill();
     }
     ok(id, json!(null))
