@@ -1,17 +1,15 @@
-import { useEffect } from "react";
 import { cn } from "@/lib/utils";
 import type { DockerLogsTab, Tab } from "@/modules/tabs";
 import { DockerLogsPane } from "./DockerLogsPane";
-import { useDockerStore } from "./lib/dockerStore";
 
 type Props = {
   tabs: Tab[];
   activeId: number;
 };
 
-/** Tab-surface wrapper: owns the follow lifecycle so it survives even if
- *  the pane unmounts briefly (unlike the drawer pane, which stops its
- *  follow on unmount). Mounts DockerLogsPane inline. */
+/** Tab-surface wrapper: the inner inline DockerLogsPane owns the follow
+ *  lifecycle (shared refcounted lane with any drawer for the same
+ *  container), so this wrapper only mounts the pane. */
 function DockerLogsTabPane({
   hostId,
   kind,
@@ -23,17 +21,6 @@ function DockerLogsTabPane({
   id: string;
   title: string;
 }) {
-  const startLogFollow = useDockerStore((s) => s.startLogFollow);
-  const stopLogFollow = useDockerStore((s) => s.stopLogFollow);
-  const followId = `${kind}:${id}`;
-  useEffect(() => {
-    startLogFollow(hostId, kind, id);
-    return () => {
-      void stopLogFollow(hostId, followId);
-    };
-    // One follow per mounted tab surface.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostId, kind, id]);
   return (
     <DockerLogsPane
       hostId={hostId}
