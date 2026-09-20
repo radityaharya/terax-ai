@@ -80,38 +80,6 @@ fn generate_token() -> Result<String, SshError> {
     Ok(token)
 }
 
-/// Methods whose agent-side state lives in the serving **process**:
-/// background procs (`bg` / `docker.logs` / `docker.events` maps, keyed by
-/// numeric handle) and PTY-backed shell sessions. A spawn on lane N must be
-/// followed by poll/kill on the same lane or the handle lookup fails with
-/// `no_handle`. Every other method is stateless (each request carries its
-/// full path + token) and stays on the round-robin pool.
-fn is_stateful_method(method: &str) -> bool {
-    matches!(
-        method,
-        "shell_session_open"
-            | "shell_session_run"
-            | "shell_session_close"
-            | "shell_bg_spawn"
-            | "shell_bg_logs"
-            | "shell_bg_kill"
-            | "docker_pull"
-            | "docker_logs_spawn"
-            | "docker_logs_poll"
-            | "docker_logs_kill"
-            | "docker_events_spawn"
-            | "docker_events_poll"
-            | "docker_events_kill"
-            | "docker_compose_logs"
-            | "docker_service_logs_spawn"
-            | "docker_service_logs_poll"
-            | "docker_service_logs_kill"
-            | "docker_compose_logs_spawn"
-            | "docker_compose_logs_poll"
-            | "docker_compose_logs_kill"
-    )
-}
-
 /// Lane reserved for stateful calls. It never advances the round-robin
 /// cursor, so stateless traffic cannot steal it mid-sequence and strand a
 /// background handle on the wrong agent process.
@@ -213,7 +181,7 @@ impl SshRpcManager {
         let mut child = cmd.spawn().map_err(|e| format!("spawn ssh rpc: {e}"))?;
         let stdin = child.stdin.take().ok_or("no rpc stdin")?;
         let stdout = child.stdout.take().ok_or("no rpc stdout")?;
-        let mut conn = RpcConnection {
+        let conn = RpcConnection {
             rpc: Mutex::new(RpcChild {
                 child,
                 stdin,
@@ -501,7 +469,6 @@ mod tests {
             ("docker_events_kill", AFFINITY_DOCKER_EVENTS),
             ("docker_compose_logs", AFFINITY_COMPOSE_LOGS),
         ] {
-            assert!(is_stateful_method(m), "{m} must pin to the stateful lane");
             assert_eq!(affinity_for(m), Some(lane), "{m} must carry lane {lane}");
         }
     }
@@ -527,7 +494,6 @@ mod tests {
             "docker_compose_ps",
             "shell_exec",
         ] {
-            assert!(!is_stateful_method(m), "{m} must not pin to the stateful lane");
             assert_eq!(affinity_for(m), None, "{m} must not carry affinity");
         }
     }
