@@ -1743,6 +1743,7 @@ export default function App() {
                                 (h: SshHost) => h.id === activeTabHostId,
                               )?.alias ?? activeTabHostId
                           }
+                          cwd={effectiveExplorerRoot}
                           openLogsTabRef={openDockerLogsTabRef}
                           openExecTabRef={newDockerExecTabRef}
                           booted={booted}

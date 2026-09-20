@@ -204,6 +204,44 @@ fn str_list(params: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Swam `stack ps --format json` emits one object per task with
+/// `CurrentState` ("Running", "Shutdown", "Failed", "Rejected", "Pending",
+/// "Preparing", "Complete", ...). A task counts as healthy for the stack
+/// rollup when the daemon is actively hosting it.
+fn task_healthy(task: &Value) -> bool {
+    task.get("CurrentState")
+        .and_then(Value::as_str)
+        .map(|s| {
+            let s = s.to_ascii_lowercase();
+            s.starts_with("running") || s.starts_with("complete")
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod task_health_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn running_and_complete_count_as_healthy() {
+        assert!(task_healthy(&json!({ "CurrentState": "Running" })));
+        assert!(task_healthy(&json!({ "CurrentState": "Running 3 minutes ago" })));
+        assert!(task_healthy(&json!({ "CurrentState": "Complete" })));
+    }
+
+    #[test]
+    fn failed_shutdown_rejected_pending_are_not_healthy() {
+        for state in ["Failed", "Shutdown", "Rejected", "Pending", "Preparing", "New", ""] {
+            assert!(
+                !task_healthy(&json!({ "CurrentState": state })),
+                "{state} must not count as healthy"
+            );
+        }
+        assert!(!task_healthy(&json!({})));
+    }
+}
+
 /// Dispatch one docker_* route. `authorized` gates path-scoped ops,
 /// `is_authorized_path` is the agent's root check passed in from main.
 pub fn handle_docker(
@@ -700,6 +738,32 @@ pub fn handle_docker(
                 Err(e) => failure(id, "docker_error", e),
             }
         }
+        "docker_compose_profiles" => {
+            let (files_res, project_dir, use_v2) = compose_ctx(params, &authorized, &denied, &id);
+            let files = match files_res {
+                Ok(f) => f,
+                Err(resp) => return Some(resp),
+            };
+            let mut argv = with_files(compose_prefix(use_v2), &files);
+            if !project_dir.is_empty() {
+                argv.push("--project-directory".into());
+                argv.push(project_dir);
+            }
+            argv.extend(["config".into(), "--profiles".into()]);
+            match run(argv, None) {
+                Ok(o) if o.exit_code == Some(0) => {
+                    let profiles = o
+                        .stdout
+                        .lines()
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty())
+                        .collect::<Vec<_>>();
+                    ok(id, json!({ "profiles": profiles }))
+                }
+                Ok(o) => docker_err(id, &o),
+                Err(e) => failure(id, "docker_error", e),
+            }
+        }
         "docker_compose_up" | "docker_compose_down" | "docker_compose_restart" | "docker_compose_pull" | "docker_compose_build" => {
             let (files_res, project_dir, use_v2) = compose_ctx(params, &authorized, &denied, &id);
             let files = match files_res {
@@ -710,6 +774,19 @@ pub fn handle_docker(
             if !project_dir.is_empty() {
                 argv.push("--project-directory".into());
                 argv.push(project_dir);
+            }
+            // Profiles are a deny-by-default config gate: only enable the
+            // ones the desktop explicitly selected. Unvalidated profile
+            // strings must never reach argv.
+            for p in &str_list(params, "profiles") {
+                if p.is_empty()
+                    || p.len() > 64
+                    || !p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+                {
+                    return Some(failure(id, "invalid_profile", format!("bad profile name: {p}")));
+                }
+                argv.push("--profile".into());
+                argv.push(p.clone());
             }
             match method {
                 "docker_compose_up" => {
@@ -893,17 +970,27 @@ pub fn handle_docker(
                 return Some(failure(id, "invalid_id", e));
             }
             let image = str_param(params, "image");
-            // Only --image updates are supported remotely (bounded surface).
-            if image.is_empty() {
-                return Some(failure(id, "invalid_arg", "image required".into()));
-            }
-            if let Err(e) = validate_container_id(&image) {
-                return Some(failure(id, "invalid_id", e));
-            }
-            match run(vec!["docker".into(), "service".into(), "update".into(), "--image".into(), image, service], None) {
-                Ok(o) if o.exit_code == Some(0) => ok(id, json!(o.stdout)),
-                Ok(o) => docker_err(id, &o),
-                Err(e) => failure(id, "docker_error", e),
+            // Bounded surface: image swaps and force re-pulls. A force
+            // update (`--force`, no spec change) restarts every replica —
+            // the swarm equivalent of a rolling container restart.
+            if bool_param(params, "force") {
+                match run(vec!["docker".into(), "service".into(), "update".into(), "--force".into(), service], None) {
+                    Ok(o) if o.exit_code == Some(0) => ok(id, json!(o.stdout)),
+                    Ok(o) => docker_err(id, &o),
+                    Err(e) => failure(id, "docker_error", e),
+                }
+            } else {
+                if image.is_empty() {
+                    return Some(failure(id, "invalid_arg", "image required".into()));
+                }
+                if let Err(e) = validate_container_id(&image) {
+                    return Some(failure(id, "invalid_id", e));
+                }
+                match run(vec!["docker".into(), "service".into(), "update".into(), "--image".into(), image, service], None) {
+                    Ok(o) if o.exit_code == Some(0) => ok(id, json!(o.stdout)),
+                    Ok(o) => docker_err(id, &o),
+                    Err(e) => failure(id, "docker_error", e),
+                }
             }
         }
         "docker_service_rm" => {
@@ -942,6 +1029,26 @@ pub fn handle_docker(
             }
             match run(vec!["docker".into(), "stack".into(), "services".into(), "--format".into(), "json".into(), stack], None) {
                 Ok(o) if o.exit_code == Some(0) => ok(id, json!(terax_core::docker::parse_json_lines(&o.stdout))),
+                Ok(o) => docker_err(id, &o),
+                Err(e) => failure(id, "docker_error", e),
+            }
+        }
+        "docker_stack_tasks" => {
+            let stack = str_param(params, "stack");
+            if stack.is_empty() || stack.len() > 128 || !stack.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) {
+                return Some(failure(id, "invalid_id", format!("bad stack name: {stack}")));
+            }
+            match run(vec!["docker".into(), "stack".into(), "ps".into(), "--format".into(), "json".into(), "--no-trunc".into(), stack], None) {
+                Ok(o) if o.exit_code == Some(0) => {
+                    let mut tasks = terax_core::docker::parse_json_lines(&o.stdout);
+                    // Annotate task health server-side so a stack card gets a
+                    // full picture from one RPC: current state per task plus
+                    // per-service running/desired rollup.
+                    for t in &mut tasks {
+                        t["taskHealthy"] = json!(task_healthy(t));
+                    }
+                    ok(id, json!(tasks))
+                }
                 Ok(o) => docker_err(id, &o),
                 Err(e) => failure(id, "docker_error", e),
             }

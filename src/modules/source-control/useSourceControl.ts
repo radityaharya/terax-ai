@@ -576,7 +576,10 @@ export function useSourceControl(
       contextPath: state.contextPath,
       repo: state.repo,
       status: state.status,
-      changedCount: state.status?.changedFiles.length ?? 0,
+      // `changedFiles` is required in the type but has been observed
+      // missing at runtime (malformed/older git payloads), so guard the
+      // array itself rather than just the status object.
+      changedCount: state.status?.changedFiles?.length ?? 0,
       upstream: state.status?.upstream ?? state.repo?.upstream ?? null,
       ahead: state.status?.ahead ?? 0,
       behind: state.status?.behind ?? 0,

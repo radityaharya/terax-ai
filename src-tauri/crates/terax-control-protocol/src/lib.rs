@@ -144,6 +144,7 @@ pub const REMOTE_METHOD_DOCKER_LOGS_KILL: &str = "docker_logs_kill";
 pub const REMOTE_METHOD_DOCKER_COMPOSE_DETECT: &str = "docker_compose_detect";
 pub const REMOTE_METHOD_DOCKER_COMPOSE_PS: &str = "docker_compose_ps";
 pub const REMOTE_METHOD_DOCKER_COMPOSE_CONFIG: &str = "docker_compose_config";
+pub const REMOTE_METHOD_DOCKER_COMPOSE_PROFILES: &str = "docker_compose_profiles";
 pub const REMOTE_METHOD_DOCKER_COMPOSE_UP: &str = "docker_compose_up";
 pub const REMOTE_METHOD_DOCKER_COMPOSE_DOWN: &str = "docker_compose_down";
 pub const REMOTE_METHOD_DOCKER_COMPOSE_RESTART: &str = "docker_compose_restart";
@@ -168,6 +169,7 @@ pub const REMOTE_METHOD_DOCKER_SERVICE_RM: &str = "docker_service_rm";
 pub const REMOTE_METHOD_DOCKER_SERVICE_ROLLBACK: &str = "docker_service_rollback";
 pub const REMOTE_METHOD_DOCKER_SERVICE_LOGS: &str = "docker_service_logs";
 pub const REMOTE_METHOD_DOCKER_STACK_LS: &str = "docker_stack_ls";
+pub const REMOTE_METHOD_DOCKER_STACK_TASKS: &str = "docker_stack_tasks";
 pub const REMOTE_METHOD_DOCKER_STACK_SERVICES: &str = "docker_stack_services";
 pub const REMOTE_METHOD_DOCKER_STACK_PS: &str = "docker_stack_ps";
 pub const REMOTE_METHOD_DOCKER_STACK_DEPLOY: &str = "docker_stack_deploy";
@@ -262,6 +264,7 @@ pub const REMOTE_METHODS: &[&str] = &[
     REMOTE_METHOD_DOCKER_COMPOSE_DETECT,
     REMOTE_METHOD_DOCKER_COMPOSE_PS,
     REMOTE_METHOD_DOCKER_COMPOSE_CONFIG,
+    REMOTE_METHOD_DOCKER_COMPOSE_PROFILES,
     REMOTE_METHOD_DOCKER_COMPOSE_UP,
     REMOTE_METHOD_DOCKER_COMPOSE_DOWN,
     REMOTE_METHOD_DOCKER_COMPOSE_RESTART,
@@ -287,6 +290,7 @@ pub const REMOTE_METHODS: &[&str] = &[
     REMOTE_METHOD_DOCKER_STACK_LS,
     REMOTE_METHOD_DOCKER_STACK_SERVICES,
     REMOTE_METHOD_DOCKER_STACK_PS,
+    REMOTE_METHOD_DOCKER_STACK_TASKS,
     REMOTE_METHOD_DOCKER_STACK_DEPLOY,
     REMOTE_METHOD_DOCKER_STACK_RM,
     REMOTE_METHOD_DOCKER_SECRET_LS,
@@ -356,6 +360,7 @@ mod docker_registry_tests {
             REMOTE_METHOD_DOCKER_COMPOSE_DETECT,
             REMOTE_METHOD_DOCKER_COMPOSE_PS,
             REMOTE_METHOD_DOCKER_COMPOSE_CONFIG,
+            REMOTE_METHOD_DOCKER_COMPOSE_PROFILES,
             REMOTE_METHOD_DOCKER_COMPOSE_UP,
             REMOTE_METHOD_DOCKER_COMPOSE_DOWN,
             REMOTE_METHOD_DOCKER_COMPOSE_RESTART,
@@ -381,6 +386,7 @@ mod docker_registry_tests {
             REMOTE_METHOD_DOCKER_STACK_LS,
             REMOTE_METHOD_DOCKER_STACK_SERVICES,
             REMOTE_METHOD_DOCKER_STACK_PS,
+            REMOTE_METHOD_DOCKER_STACK_TASKS,
             REMOTE_METHOD_DOCKER_STACK_DEPLOY,
             REMOTE_METHOD_DOCKER_STACK_RM,
             REMOTE_METHOD_DOCKER_SECRET_LS,

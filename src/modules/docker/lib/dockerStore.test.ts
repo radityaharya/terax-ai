@@ -8,7 +8,12 @@ vi.mock("@/modules/workspace", () => ({
   workspaceScopeKey: () => "local",
 }));
 
-import { isStaleHandleError, MAX_HEALS, useDockerStore } from "./dockerStore";
+import {
+  isStaleHandleError,
+  MAX_HEALS,
+  normalizeStatsSample,
+  useDockerStore,
+} from "./dockerStore";
 
 const HOST = "test-host";
 
@@ -38,6 +43,93 @@ describe("isStaleHandleError", () => {
   it("rejects real errors", () => {
     expect(isStaleHandleError("docker_error: boom")).toBe(false);
     expect(isStaleHandleError("remote request timed out")).toBe(false);
+  });
+});
+
+describe("normalizeStatsSample", () => {
+  it("maps PascalCase daemon keys to the camelCase wire shape", () => {
+    const s = normalizeStatsSample({
+      BlockIO: "27.5MB / 295kB",
+      CPUPerc: "0.00%",
+      Container:
+        "e04ff5b92e5597db9edc39c61d11f90289c97be5a481348fe439082ad3495406",
+      ID: "e04ff5b92e55",
+      MemPerc: "0.10%",
+      MemUsage: "12.19MiB / 11.68GiB",
+      Name: "chat-chroma",
+      NetIO: "13.9kB / 126B",
+      PIDs: "10",
+    });
+    expect(s).toMatchObject({
+      container:
+        "e04ff5b92e5597db9edc39c61d11f90289c97be5a481348fe439082ad3495406",
+      id: "e04ff5b92e55",
+      name: "chat-chroma",
+      cpuPerc: "0.00%",
+      memUsage: "12.19MiB / 11.68GiB",
+      memPerc: "0.10%",
+      netIO: "13.9kB / 126B",
+      blockIO: "27.5MB / 295kB",
+      pids: "10",
+    });
+  });
+
+  it("passes through camelCase samples untouched", () => {
+    const s = normalizeStatsSample({
+      container: "abc123",
+      name: "web",
+      cpuPerc: "12.88%",
+      memUsage: "165.4MiB / 11.68GiB",
+      memPerc: "1.38%",
+      netIO: "5.63MB / 17.8kB",
+      blockIO: "771MB / 4.06MB",
+      pids: "12",
+    });
+    expect(s).toMatchObject({
+      container: "abc123",
+      id: "abc123",
+      name: "web",
+      cpuPerc: "12.88%",
+      memUsage: "165.4MiB / 11.68GiB",
+    });
+  });
+
+  it("stores refreshStats samples under every lookup key the panel uses", async () => {
+    const store = useDockerStore.getState();
+    sshRpcMock.mockResolvedValueOnce([
+      {
+        BlockIO: "27.5MB / 295kB",
+        CPUPerc: "0.00%",
+        Container:
+          "e04ff5b92e5597db9edc39c61d11f90289c97be5a481348fe439082ad3495406",
+        ID: "e04ff5b92e55",
+        MemPerc: "0.10%",
+        MemUsage: "12.19MiB / 11.68GiB",
+        Name: "chat-chroma",
+        NetIO: "13.9kB / 126B",
+        PIDs: "10",
+      },
+    ]);
+    await store.refreshStats(HOST);
+    const stats = useDockerStore.getState().byHost[HOST]?.stats ?? {};
+    // Panel looks up by 12-char list id; the daemon keys by full id/name.
+    expect(stats["e04ff5b92e55"]?.cpuPerc).toBe("0.00%");
+    expect(stats["chat-chroma"]?.memUsage).toBe("12.19MiB / 11.68GiB");
+    expect(stats["e04ff5b92e5597db9edc39c61d11f90289c97be5a481348fe439082ad3495406"]?.netIO).toBe(
+      "13.9kB / 126B",
+    );
+    expect(
+      useDockerStore.getState().byHost[HOST]?.statsError,
+    ).toBeNull();
+  });
+
+  it("records refreshStats failures instead of dropping them silently", async () => {
+    const store = useDockerStore.getState();
+    sshRpcMock.mockRejectedValueOnce(new Error("daemon down"));
+    await store.refreshStats(HOST);
+    expect(useDockerStore.getState().byHost[HOST]?.statsError).toContain(
+      "daemon down",
+    );
   });
 });
 
@@ -224,5 +316,116 @@ describe("events feed self-heal", () => {
     const feed = useDockerStore.getState().byHost[HOST]?.eventsFeed;
     expect(feed?.phase).toBe("streaming");
     expect(feed?.healsLeft).toBe(MAX_HEALS - 1);
+  });
+});
+
+describe("compose profiles + files", () => {
+  const FILES = [
+    "/home/u/docker-services/OmniRoute/docker-compose.yml",
+    "/home/u/docker-services/OmniRoute/docker-compose.override.yml",
+  ];
+
+  async function seedProject() {
+    const store = useDockerStore.getState();
+    sshRpcMock.mockResolvedValueOnce([]); // docker_compose_ps
+    sshRpcMock.mockResolvedValueOnce({
+      profiles: ["base", "web"],
+    }); // docker_compose_profiles
+    await store.refreshCompose(HOST, "omniroute", FILES, "/home/u/docker-services/OmniRoute");
+    await vi.waitFor(() => {
+      expect(
+        useDockerStore.getState().byHost[HOST]?.compose["omniroute"]?.profiles,
+      ).toEqual(["base", "web"]);
+    });
+  }
+
+  it("fetches declared profiles and keeps them on the project", async () => {
+    await seedProject();
+    const p = useDockerStore.getState().byHost[HOST]?.compose["omniroute"];
+    expect(p?.profiles).toEqual(["base", "web"]);
+    expect(p?.activeProfiles).toEqual([]);
+  });
+
+  it("prunes selected profiles that disappear from the file", async () => {
+    await seedProject();
+    const store = useDockerStore.getState();
+    store.setComposeProfiles(HOST, "omniroute", ["base", "web"]);
+    expect(
+      useDockerStore.getState().byHost[HOST]?.compose["omniroute"]
+        ?.activeProfiles,
+    ).toEqual(["base", "web"]);
+
+    // A later edit to the file drops `web`.
+    sshRpcMock.mockResolvedValueOnce([]); // ps
+    sshRpcMock.mockResolvedValueOnce({ profiles: ["base"] });
+    await store.refreshCompose(HOST, "omniroute", FILES, "/home/u/docker-services/OmniRoute");
+    await vi.waitFor(() => {
+      expect(
+        useDockerStore.getState().byHost[HOST]?.compose["omniroute"]
+          ?.activeProfiles,
+      ).toEqual(["base"]);
+    });
+  });
+
+  it("passes selected profiles on up/restart/pull but not down", async () => {
+    await seedProject();
+    useDockerStore.getState().setComposeProfiles(HOST, "omniroute", ["base"]);
+    expect(
+      useDockerStore.getState().byHost[HOST]?.compose.omniroute
+        ?.activeProfiles,
+    ).toEqual(["base"]);
+
+    const methodFor = {
+      up: "docker_compose_up",
+      restart: "docker_compose_restart",
+      pull: "docker_compose_pull",
+    } as const;
+    for (const action of ["up", "restart", "pull"] as const) {
+      sshRpcMock.mockReset();
+      sshRpcMock.mockResolvedValue([]);
+      await useDockerStore.getState().composeAction(HOST, "omniroute", action);
+      const call = sshRpcMock.mock.calls.find(
+        ([m]) => m === methodFor[action],
+      );
+      expect(call?.[1]).toMatchObject({ profiles: ["base"] });
+    }
+
+    sshRpcMock.mockReset();
+    sshRpcMock.mockResolvedValue([]);
+    await useDockerStore.getState().composeAction(HOST, "omniroute", "down");
+    const downCall = sshRpcMock.mock.calls.find(
+      ([m]) => m === "docker_compose_down",
+    );
+    // `down` resolves the running project; --profile there errors for
+    // services that were never created.
+    expect(downCall?.[1]).not.toHaveProperty("profiles");
+  });
+
+  it("honours a files override from the multi-file picker", async () => {
+    await seedProject();
+    sshRpcMock.mockReset();
+    sshRpcMock.mockResolvedValue([]);
+    const onlyFirst = [FILES[0]];
+    await useDockerStore
+      .getState()
+      .composeAction(HOST, "omniroute", "up", { files: onlyFirst });
+    const call = sshRpcMock.mock.calls.find(
+      ([m]) => m === "docker_compose_up",
+    );
+    expect(call?.[1]).toMatchObject({ files: onlyFirst });
+  });
+
+  it("refuses to run compose with an empty file selection", async () => {
+    await seedProject();
+    sshRpcMock.mockReset();
+    sshRpcMock.mockResolvedValue([]);
+    await useDockerStore
+      .getState()
+      .composeAction(HOST, "omniroute", "up", { files: [] });
+    // Falls back to the registered files rather than running bare compose.
+    const call = sshRpcMock.mock.calls.find(
+      ([m]) => m === "docker_compose_up",
+    );
+    expect(call?.[1]).toMatchObject({ files: FILES });
   });
 });

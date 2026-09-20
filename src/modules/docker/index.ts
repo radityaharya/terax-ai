@@ -1,4 +1,10 @@
 export { CleanupHub } from "./components/CleanupHub";
+export {
+  groupTasksByService,
+  StackCard,
+  taskServiceName,
+  type TaskGroup,
+} from "./components/StackCard";
 export { DetailsDrawer } from "./components/DetailsDrawer";
 export { DockerConfirmDialog } from "./dialogs/DockerConfirmDialog";
 export { DockerEventsPane } from "./DockerEventsPane";
@@ -34,6 +40,7 @@ export {
   type SwarmSecret,
   type SwarmService,
   type SwarmStack,
+  type SwarmStackTask,
   type SwarmState,
   useDockerStore,
 } from "./lib/dockerStore";

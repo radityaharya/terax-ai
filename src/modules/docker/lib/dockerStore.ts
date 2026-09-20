@@ -18,6 +18,7 @@ export type ContainerAction = "start" | "stop" | "restart" | "kill" | "remove";
 
 export type StatsSample = {
   container: string;
+  id: string;
   name: string;
   cpuPerc: string;
   memUsage: string;
@@ -26,6 +27,42 @@ export type StatsSample = {
   blockIO: string;
   pids: string;
 };
+
+/**
+ * Normalizes both camelCase frontend objects and PascalCase Docker CLI output
+ * (`CPUPerc`, `MemUsage`, `NetIO`, `BlockIO`, `Container`, `Name`).
+ */
+export function normalizeStatsSample(
+  raw: Record<string, unknown>,
+): StatsSample {
+  const container = String(
+    raw.container ?? raw.Container ?? raw.ID ?? raw.id ?? "",
+  );
+  const id = String(raw.ID ?? raw.id ?? container).slice(0, 12);
+  const name = String(raw.name ?? raw.Name ?? "").replace(/^\//, "");
+  const cpuPerc = String(
+    raw.cpuPerc ?? raw.cpu_perc ?? raw.CPUPerc ?? "0.00%",
+  );
+  const memUsage = String(raw.memUsage ?? raw.mem_usage ?? raw.MemUsage ?? "—");
+  const memPerc = String(
+    raw.memPerc ?? raw.mem_perc ?? raw.MemPerc ?? "0.00%",
+  );
+  const netIO = String(raw.netIO ?? raw.net_io ?? raw.NetIO ?? "—");
+  const blockIO = String(raw.blockIO ?? raw.block_io ?? raw.BlockIO ?? "—");
+  const pids = String(raw.pids ?? raw.PIDs ?? "0");
+
+  return {
+    container,
+    id,
+    name,
+    cpuPerc,
+    memUsage,
+    memPerc,
+    netIO,
+    blockIO,
+    pids,
+  };
+}
 
 export type DiskUsage = {
   imagesSize: string;
@@ -181,7 +218,18 @@ export type ComposeProjectState = {
   loading: boolean;
   error: string | null;
   updatedAt: number | null;
+  /** Profiles declared by the merged config (from `docker compose config --profiles`). */
+  profiles: string[] | null;
+  /** Profiles the user enabled for this project this session (`--profile` on up/restart/pull). */
+  activeProfiles: string[];
 };
+
+/** Sentinel for "profiles never fetched yet" vs "fetched, none declared". */
+export function composeProfilesUnknown(
+  p: Pick<ComposeProjectState, "profiles">,
+): boolean {
+  return p.profiles === null;
+}
 
 export type SwarmNode = {
   ID?: string;
@@ -213,6 +261,21 @@ export type SwarmStack = {
   [key: string]: unknown;
 };
 
+/** One `stack ps` task. Keys follow the daemon's PascalCase (`ID`,
+ *  `Name`, `Image`, `DesiredState`, `CurrentState`, `Node`, ...); the
+ *  agent annotates `taskHealthy` server-side. */
+export type SwarmStackTask = {
+  ID?: string;
+  Name?: string;
+  Image?: string;
+  Node?: string;
+  DesiredState?: string;
+  CurrentState?: string;
+  Error?: string;
+  taskHealthy?: boolean;
+  [key: string]: unknown;
+};
+
 export type SwarmInfo = {
   LocalNodeState?: string;
   ControlAvailable?: boolean;
@@ -240,6 +303,8 @@ export type SwarmState = {
   nodes: SwarmNode[];
   services: SwarmService[];
   stacks: SwarmStack[];
+  /** `stack ps` tasks keyed by stack name (lazy: fetched on card expand). */
+  stackTasks: Record<string, SwarmStackTask[]>;
   secrets: SwarmSecret[];
   configs: SwarmConfig[];
   loading: boolean;
@@ -278,6 +343,7 @@ function emptyHost(): HostDockerState {
       nodes: [],
       services: [],
       stacks: [],
+      stackTasks: {},
       secrets: [],
       configs: [],
       loading: false,
@@ -381,16 +447,30 @@ type State = {
     hostId: string,
     project: string,
     action: "up" | "down" | "restart" | "pull",
-    opts?: { build?: boolean; volumes?: boolean; services?: string[] },
+    opts?: {
+      build?: boolean;
+      volumes?: boolean;
+      services?: string[];
+      profiles?: string[];
+      /** Override the project's registered file set (multi-file picker). */
+      files?: string[];
+    },
   ) => Promise<void>;
+  setComposeProfiles: (
+    hostId: string,
+    project: string,
+    profiles: string[],
+  ) => void;
+  refreshComposeProfiles: (hostId: string, project: string) => Promise<void>;
   refreshSwarm: (hostId: string) => Promise<void>;
   refreshSwarmSecrets: (hostId: string) => Promise<void>;
   serviceAction: (
     hostId: string,
-    action: "scale" | "update-image" | "rm" | "rollback",
+    action: "scale" | "update-image" | "rm" | "rollback" | "force-update",
     service: string,
     opts?: { replicas?: number; image?: string },
   ) => Promise<void>;
+  refreshStackTasks: (hostId: string, stack: string) => Promise<void>;
   stackAction: (
     hostId: string,
     action: "deploy" | "rm",
@@ -698,16 +778,24 @@ export const useDockerStore = create<State>((set) => ({
 
   refreshStats: async (hostId, ids) => {
     try {
-      const samples = await sshRpc<StatsSample[]>(
+      const rawSamples = await sshRpc<Record<string, unknown>[]>(
         "docker_stats",
         ids && ids.length > 0 ? { ids } : {},
         hostId,
       );
+      const samples = (Array.isArray(rawSamples) ? rawSamples : []).map(
+        normalizeStatsSample,
+      );
+      const statsMap: Record<string, StatsSample> = {};
+      for (const s of samples) {
+        if (s.container) statsMap[s.container] = s;
+        if (s.id) statsMap[s.id] = s;
+        if (s.name) statsMap[s.name] = s;
+        if (s.container.length >= 12) statsMap[s.container.slice(0, 12)] = s;
+      }
       patch(set, hostId, (h) => ({
         ...h,
-        stats: Object.fromEntries(
-          samples.map((s) => [s.container || s.name, s]),
-        ),
+        stats: statsMap,
         statsAt: Date.now(),
         statsError: null,
       }));
@@ -1731,6 +1819,7 @@ export const useDockerStore = create<State>((set) => ({
   },
 
   refreshCompose: async (hostId, project, files, projectDir) => {
+    const prev = useDockerStore.getState().byHost[hostId]?.compose[project];
     patch(set, hostId, (h) => ({
       ...h,
       compose: {
@@ -1743,6 +1832,8 @@ export const useDockerStore = create<State>((set) => ({
           loading: true,
           error: null,
           updatedAt: h.compose[project]?.updatedAt ?? null,
+          profiles: prev?.profiles ?? null,
+          activeProfiles: prev?.activeProfiles ?? [],
         },
       },
     }));
@@ -1766,9 +1857,18 @@ export const useDockerStore = create<State>((set) => ({
             loading: false,
             error: null,
             updatedAt: Date.now(),
+            profiles:
+              h.compose[project]?.profiles ?? null,
+            activeProfiles: h.compose[project]?.activeProfiles ?? [],
           },
         },
       }));
+      // Profiles fetch separately (cheap, non-blocking): the ps call must
+      // not wait on a config parse, and config can fail while ps works.
+      void useDockerStore
+        .getState()
+        .refreshComposeProfiles(hostId, project)
+        .catch(() => {});
     } catch (e) {
       patch(set, hostId, (h) => ({
         ...h,
@@ -1782,15 +1882,69 @@ export const useDockerStore = create<State>((set) => ({
             loading: false,
             error: String(e),
             updatedAt: null,
+            profiles: h.compose[project]?.profiles ?? null,
+            activeProfiles: h.compose[project]?.activeProfiles ?? [],
           },
         },
       }));
     }
   },
 
-  composeAction: async (hostId, project, action, opts) => {
+  setComposeProfiles: (hostId, project, profiles) => {
+    patch(set, hostId, (h) => ({
+      ...h,
+      compose: h.compose[project]
+        ? {
+            ...h.compose,
+            [project]: { ...h.compose[project], activeProfiles: profiles },
+          }
+        : h.compose,
+    }));
+  },
+
+  refreshComposeProfiles: async (hostId, project) => {
     const files =
       useDockerStore.getState().byHost[hostId]?.compose[project]?.files ?? [];
+    if (files.length === 0) return;
+    try {
+      const res = await sshRpc<{ profiles?: string[] }>(
+        "docker_compose_profiles",
+        { files },
+        hostId,
+      );
+      // A missing/garbled response must not clobber the user's selection:
+      // an older agent without this method returns `undefined`, and patching
+      // `profiles: []` there would silently drop every enabled profile.
+      if (!res || !Array.isArray(res.profiles)) return;
+      const profiles = res.profiles;
+      patch(set, hostId, (h) => {
+        const cur = h.compose[project];
+        if (!cur) return h;
+        return {
+          ...h,
+          compose: {
+            ...h.compose,
+            [project]: {
+              ...cur,
+              profiles,
+              // Drop stale selections that no longer exist in the file.
+              activeProfiles: cur.activeProfiles.filter((p) =>
+                profiles.includes(p),
+              ),
+            },
+          },
+        };
+      });
+    } catch {
+      // Profiles are best-effort: a broken config must not take down the
+      // card. Leave `profiles` null (unknown) so the UI stays quiet.
+    }
+  },
+
+  composeAction: async (hostId, project, action, opts) => {
+    const cur =
+      useDockerStore.getState().byHost[hostId]?.compose[project];
+    const files = opts?.files?.length ? opts.files : (cur?.files ?? []);
     if (files.length === 0) return;
     patch(set, hostId, (h) => ({
       ...h,
@@ -1803,6 +1957,8 @@ export const useDockerStore = create<State>((set) => ({
             projectDir: "",
             containers: [],
             updatedAt: null,
+            profiles: null,
+            activeProfiles: [] as string[],
           }),
           loading: true,
           error: null,
@@ -1818,6 +1974,13 @@ export const useDockerStore = create<State>((set) => ({
             : action === "restart"
               ? "docker_compose_restart"
               : "docker_compose_pull";
+      // Profiles apply to config-reading actions only. `down` and `up`
+      // resolve the running project without them; passing --profile to
+      // `down` would refuse with "no such service" for profile-gated
+      // services that were never created.
+      const needsProfiles = action === "up" || action === "restart" || action === "pull";
+      const profiles =
+        needsProfiles && cur ? [...cur.activeProfiles] : undefined;
       await sshRpc(
         method,
         {
@@ -1825,10 +1988,15 @@ export const useDockerStore = create<State>((set) => ({
           ...(opts?.build ? { build: true } : {}),
           ...(opts?.volumes ? { volumes: true } : {}),
           ...(opts?.services?.length ? { services: opts.services } : {}),
+          ...(profiles?.length ? { profiles } : {}),
         },
         hostId,
       );
-      await useDockerStore.getState().refreshCompose(hostId, project, files);
+      // Refresh against the project's registered file set (not the override)
+      // so the container list stays complete regardless of the picker.
+      await useDockerStore
+        .getState()
+        .refreshCompose(hostId, project, cur?.files ?? files);
       await useDockerStore.getState().refreshContainers(hostId);
     } catch (e) {
       patch(set, hostId, (h) => ({
@@ -1842,6 +2010,8 @@ export const useDockerStore = create<State>((set) => ({
               projectDir: "",
               containers: [],
               updatedAt: null,
+              profiles: null,
+              activeProfiles: [] as string[],
             }),
             loading: false,
             error: String(e),
@@ -1930,6 +2100,8 @@ export const useDockerStore = create<State>((set) => ({
           { service, image: opts?.image ?? "" },
           hostId,
         );
+      } else if (action === "force-update") {
+        await sshRpc("docker_service_update", { service, force: true }, hostId);
       } else if (action === "rm") {
         await sshRpc("docker_service_rm", { service }, hostId);
       } else {
@@ -1947,6 +2119,31 @@ export const useDockerStore = create<State>((set) => ({
         delete busy[service];
         return { ...h, swarm: { ...h.swarm, busyService: busy } };
       });
+    }
+  },
+
+  refreshStackTasks: async (hostId, stack) => {
+    try {
+      const tasks = await sshRpc<SwarmStackTask[]>(
+        "docker_stack_tasks",
+        { stack },
+        hostId,
+      );
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: {
+          ...h.swarm,
+          stackTasks: {
+            ...h.swarm.stackTasks,
+            [stack]: Array.isArray(tasks) ? tasks : [],
+          },
+        },
+      }));
+    } catch (e) {
+      patch(set, hostId, (h) => ({
+        ...h,
+        swarm: { ...h.swarm, error: String(e) },
+      }));
     }
   },
 

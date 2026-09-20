@@ -1,4 +1,3 @@
-import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
   Cancel01Icon,
@@ -16,6 +15,8 @@ import {
   type SwarmNode,
   type SwarmService,
 } from "../lib/dockerStore";
+import { ResourceRow } from "./ResourceRow";
+import { StackCard } from "./StackCard";
 
 type Props = {
   hostId: string;
@@ -28,11 +29,8 @@ export function SwarmPanel({ hostId, swarmActive, onOpenServiceLogs }: Props) {
   const swarm = useDockerStore((s) => s.byHost[hostId]?.swarm);
   const refreshSwarm = useDockerStore((s) => s.refreshSwarm);
   const serviceAction = useDockerStore((s) => s.serviceAction);
-  const stackAction = useDockerStore((s) => s.stackAction);
   const nodeAction = useDockerStore((s) => s.nodeAction);
-  const refreshStackDrift = useDockerStore((s) => s.refreshStackDrift);
   const [scaleTarget, setScaleTarget] = useState<{ id: string; name: string; replicas: string } | null>(null);
-  const [driftStack, setDriftStack] = useState<string | null>(null);
 
   useEffect(() => {
     if (swarmActive) void refreshSwarm(hostId);
@@ -95,20 +93,7 @@ export function SwarmPanel({ hostId, swarmActive, onOpenServiceLogs }: Props) {
     void nodeAction(hostId, a, id);
   };
 
-  const handleStackRemove = async (name: string, servicesCount?: string) => {
-    const confirmed = await confirmDockerAction({
-      title: "Remove swarm stack",
-      actionLabel: "Remove",
-      actionVariant: "destructive",
-      resourceKind: "Swarm Stack",
-      resourceName: name,
-      resourceDetails: servicesCount ? `${servicesCount} service(s)` : undefined,
-      hostAlias: hostId,
-      description: "Removes this stack and terminates all services and tasks deployed under it.",
-    });
-    if (!confirmed) return;
-    void stackAction(hostId, "rm", name);
-  };
+
 
   return (
     <div className="flex flex-col gap-2 px-1.5 pb-2">
@@ -188,45 +173,15 @@ export function SwarmPanel({ hostId, swarmActive, onOpenServiceLogs }: Props) {
           No stacks deployed.
         </div>
       ) : (
-        (swarm?.stacks ?? []).map((st) => {
-          const name = String(st.Name ?? "?");
-          const d = drift[name];
-          const drifted = d && JSON.stringify(d.running) !== JSON.stringify(d.desired);
-          const servicesCount = String(st.Services ?? "");
-          return (
-            <div key={name} className="rounded-md border border-border/40 px-2 py-1.5">
-              <div className="flex items-center gap-1.5">
-                <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
-                  {name}
-                </span>
-                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/70">
-                  {servicesCount} svc
-                </span>
-                {drifted ? (
-                  <span className="shrink-0 rounded bg-amber-500/15 px-1 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400" title={`Running differs from compose file.\nRunning: ${(d?.running ?? []).join(", ")}\nDesired: ${(d?.desired ?? []).join(", ")}`}>
-                    drifted
-                  </span>
-                ) : null}
-              </div>
-              <div className="mt-1 flex items-center gap-0.5">
-                <SmallButton label={`Check drift for ${name}`} onClick={() => {
-                  setDriftStack(name);
-                  void refreshStackDrift(hostId, name, "");
-                }}>
-                  <HugeiconsIcon icon={Refresh01Icon} size={12} strokeWidth={1.75} />
-                </SmallButton>
-                <SmallButton label={`Remove stack ${name}`} onClick={() => void handleStackRemove(name, servicesCount)}>
-                  <HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={1.75} />
-                </SmallButton>
-                {driftStack === name && d ? (
-                  <span className="ml-1 truncate text-[10px] text-muted-foreground/70">
-                    run: {d.running.join(", ") || "—"} · want: {d.desired.join(", ") || "—"}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-          );
-        })
+        (swarm?.stacks ?? []).map((st) => (
+          <StackCard
+            key={String(st.Name ?? "?")}
+            hostId={hostId}
+            stack={st}
+            onOpenServiceLogs={onOpenServiceLogs}
+            drift={drift[String(st.Name ?? "?")] ?? null}
+          />
+        ))
       )}
     </div>
   );
@@ -299,46 +254,61 @@ function ServiceRow({
   const health = service.replicaHealth;
   const under = health?.underReplicated ?? false;
   return (
-    <div className="group rounded-md px-2 py-1.5 transition-colors hover:bg-accent/50">
-      <div className="flex items-center gap-1.5">
-        <span
-          role="img"
-          aria-label={under ? "under-replicated" : "healthy"}
-          className={cn(
-            "size-2 shrink-0 rounded-full",
-            under ? "bg-amber-400" : "bg-emerald-500",
-          )}
-        />
-        <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
-          {name}
+    <ResourceRow
+      tone={under ? "warn" : "ok"}
+      toneLabel={under ? "under-replicated" : "healthy"}
+      title={
+        <>
+          <span className="min-w-0 truncate">{name}</span>
           {busy ? (
-            <span className="ml-1.5 text-[10px] font-normal text-muted-foreground/70">
+            <span className="shrink-0 text-[10px] font-normal text-muted-foreground/70">
               {busy}…
             </span>
           ) : null}
-        </span>
-        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/70">
-          {health ? `${health.running}/${health.desired}` : String(service.Replicas ?? "")}
-        </span>
-      </div>
-      <div className="mt-0.5 truncate text-[10px] text-muted-foreground/60">
-        {String(service.Image ?? "")}
-      </div>
-      <div className="mt-1 hidden items-center gap-0.5 group-hover:flex">
-        <SmallButton label={`Scale ${name}`} onClick={onScale}>
-          <HugeiconsIcon icon={ArrowDown01Icon} size={12} strokeWidth={1.75} />
-        </SmallButton>
-        <SmallButton label={`Logs for ${name}`} onClick={onLogs}>
-          <HugeiconsIcon icon={PlayIcon} size={12} strokeWidth={1.75} />
-        </SmallButton>
-        <SmallButton label={`Rollback ${name}`} onClick={onRollback}>
-          <HugeiconsIcon icon={RotateClockwiseIcon} size={12} strokeWidth={1.75} />
-        </SmallButton>
-        <SmallButton label={`Remove ${name}`} onClick={onRemove}>
-          <HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={1.75} />
-        </SmallButton>
-      </div>
-    </div>
+          <span className="ml-auto shrink-0 pl-2 text-[10px] font-normal tabular-nums text-muted-foreground/70">
+            {health
+              ? `${health.running}/${health.desired}`
+              : String(service.Replicas ?? "")}
+          </span>
+        </>
+      }
+      subtitle={String(service.Image ?? "")}
+      actions={[
+        {
+          key: "scale",
+          label: `Scale ${name}`,
+          icon: (
+            <HugeiconsIcon icon={ArrowDown01Icon} size={12} strokeWidth={1.75} />
+          ),
+          onClick: onScale,
+        },
+        {
+          key: "logs",
+          label: `Logs for ${name}`,
+          icon: <HugeiconsIcon icon={PlayIcon} size={12} strokeWidth={1.75} />,
+          onClick: onLogs,
+        },
+        {
+          key: "rollback",
+          label: `Rollback ${name}`,
+          icon: (
+            <HugeiconsIcon
+              icon={RotateClockwiseIcon}
+              size={12}
+              strokeWidth={1.75}
+            />
+          ),
+          onClick: onRollback,
+        },
+        {
+          key: "remove",
+          label: `Remove ${name}`,
+          icon: <HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={1.75} />,
+          onClick: onRemove,
+          danger: true,
+        },
+      ]}
+    />
   );
 }
 
@@ -355,36 +325,42 @@ function NodeRow({
   const status = String(node.Status ?? "");
   const manager = String(node.ManagerStatus ?? "");
   return (
-    <div className="group flex items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors hover:bg-accent/50">
-      <span
-        role="img"
-        aria-label={status}
-        className={cn(
-          "size-2 shrink-0 rounded-full",
-          status === "Ready" ? "bg-emerald-500" : status === "Down" ? "bg-destructive" : "bg-amber-400",
-        )}
-      />
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-[12px] font-medium leading-tight">
-          {hostname}
-          {manager ? <span className="ml-1.5 text-[10px] text-muted-foreground/70">{manager}</span> : null}
-        </span>
-        <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
-          {availability} · {String(node.EngineVersion ?? "")}
-        </span>
-      </span>
-      <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
-        {availability === "Drain" ? (
-          <SmallButton label={`Activate ${hostname}`} onClick={() => onAction("activate")}>
-            <HugeiconsIcon icon={PlayIcon} size={12} strokeWidth={1.75} />
-          </SmallButton>
-        ) : (
-          <SmallButton label={`Drain ${hostname}`} onClick={() => onAction("drain")}>
-            <HugeiconsIcon icon={StopIcon} size={12} strokeWidth={1.75} />
-          </SmallButton>
-        )}
-      </span>
-    </div>
+    <ResourceRow
+      tone={
+        status === "Ready" ? "ok" : status === "Down" ? "hot" : "warn"
+      }
+      toneLabel={status}
+      title={
+        <>
+          <span className="min-w-0 truncate">{hostname}</span>
+          {manager ? (
+            <span className="shrink-0 text-[10px] font-normal text-muted-foreground/70">
+              {manager}
+            </span>
+          ) : null}
+        </>
+      }
+      subtitle={`${availability} · ${String(node.EngineVersion ?? "")}`}
+      actions={[
+        availability === "Drain"
+          ? {
+              key: "activate",
+              label: `Activate ${hostname}`,
+              icon: (
+                <HugeiconsIcon icon={PlayIcon} size={12} strokeWidth={1.75} />
+              ),
+              onClick: () => onAction("activate"),
+            }
+          : {
+              key: "drain",
+              label: `Drain ${hostname}`,
+              icon: (
+                <HugeiconsIcon icon={StopIcon} size={12} strokeWidth={1.75} />
+              ),
+              onClick: () => onAction("drain"),
+            },
+      ]}
+    />
   );
 }
 
@@ -433,31 +409,6 @@ function ScalePrompt({
         </button>
       </div>
     </div>
-  );
-}
-
-function SmallButton({
-  label,
-  onClick,
-  children,
-}: {
-  label: string;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      className="flex size-5 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
-    >
-      {children}
-    </button>
   );
 }
 

@@ -2,21 +2,16 @@ import { cn } from "@/lib/utils";
 import { useSidebarDeckStore } from "@/modules/sidebar";
 import {
   Activity01Icon,
-  ArrowUpRight01Icon,
-  ComputerTerminal02Icon,
   Delete02Icon,
   File02Icon,
   HardDriveIcon,
-  PlayIcon,
   Refresh01Icon,
-  RotateClockwiseIcon,
-  StopIcon,
-  ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
 import { CleanupHub } from "./components/CleanupHub";
 import { ComposeCard } from "./components/ComposeCard";
+import { ContainerRow } from "./components/ContainerRow";
 import { DetailsDrawer } from "./components/DetailsDrawer";
 import { SwarmInitPrompt } from "./components/SwarmInitPrompt";
 import { SwarmPanel } from "./components/SwarmPanel";
@@ -28,8 +23,10 @@ import { ExecDialog } from "./dialogs/ExecDialog";
 import { PullDialog } from "./dialogs/PullDialog";
 import { RegistryDialog } from "./dialogs/RegistryDialog";
 import { daemonLabel } from "./lib/capabilities";
+import { composeProjectName, projectInFolder } from "./lib/compose";
+import { containerId, containerName, containerState } from "./lib/container";
 import { confirmDockerAction } from "./lib/dockerConfirmStore";
-import { type ContainerAction, useDockerStore } from "./lib/dockerStore";
+import { useDockerStore } from "./lib/dockerStore";
 import type { DockerContainer, DockerResourceKind } from "./lib/types";
 
 type OpenLogsTabFn = (input: {
@@ -50,6 +47,10 @@ type Props = {
   /** Active tab's host id (null = local/WSL: v1 shows an empty state). */
   hostId: string | null;
   hostAlias?: string | null;
+  /** Active explorer root (remote path when hostId is set). Drives the
+   *  "in this folder" compose section — a compose file whose directory
+   *  matches (or is an ancestor/descendant of) this path surfaces first. */
+  cwd?: string | null;
   openLogsTabRef?: React.MutableRefObject<OpenLogsTabFn | null>;
   openExecTabRef?: React.MutableRefObject<OpenExecTabFn | null>;
   /** False while spaces/tabs are still restoring from disk. `hostId` is
@@ -74,6 +75,7 @@ const SEGMENTS: {
 export function DockerPanel({
   hostId,
   hostAlias,
+  cwd,
   openLogsTabRef,
   openExecTabRef,
   booted = true,
@@ -268,7 +270,6 @@ export function DockerPanel({
     hostId ? (s.byHost[hostId] ?? null) : null,
   );
   const refreshAll = useDockerStore((s) => s.refreshAll);
-  const containerAction = useDockerStore((s) => s.containerAction);
   const refreshStats = useDockerStore((s) => s.refreshStats);
   const [statsOn, setStatsOn] = useState(false);
 
@@ -307,7 +308,6 @@ export function DockerPanel({
 
   const daemon = hostState?.daemon ?? { status: "unknown" as const };
   const containers = hostState?.containers;
-  const busy = hostState?.busyContainers ?? {};
 
   const filteredContainers = useMemo(() => {
     if (!hostId) return [];
@@ -327,12 +327,11 @@ export function DockerPanel({
   // if the store already knows their files.
   const refreshCompose = useDockerStore((s) => s.refreshCompose);
 
-  const containerNamesById = useMemo(() => {
-    const out: Record<string, string> = {};
-    for (const c of containers?.items ?? []) {
-      out[containerId(c)] = containerName(c);
-    }
+  const containersById = useMemo(() => {
+    const out: Record<string, DockerContainer> = {};
+    for (const c of containers?.items ?? []) out[containerId(c)] = c;
     return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containers?.items]);
 
   useEffect(() => {
@@ -345,69 +344,20 @@ export function DockerPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostId, containers?.updatedAt]);
 
-  const runAction = async (action: ContainerAction, id: string) => {
-    if (!hostId) return;
-    const name = containerNamesById[id] ?? id.slice(0, 12);
-    const container = containers?.items?.find((c) => containerId(c) === id);
-    const image = container?.Image ? String(container.Image) : undefined;
-
-    const actionMeta: Record<
-      ContainerAction,
-      {
-        title: string;
-        label: string;
-        variant: "destructive" | "warning" | "default";
-        desc: string;
-      }
-    > = {
-      start: {
-        title: "Start container",
-        label: "Start",
-        variant: "default",
-        desc: "Starts the stopped container process.",
-      },
-      stop: {
-        title: "Stop container",
-        label: "Stop",
-        variant: "warning",
-        desc: "Stops the running container process (sends SIGTERM, then SIGKILL if unresponsive).",
-      },
-      restart: {
-        title: "Restart container",
-        label: "Restart",
-        variant: "warning",
-        desc: "Restarts the running container process.",
-      },
-      kill: {
-        title: "Kill container",
-        label: "Kill",
-        variant: "destructive",
-        desc: "Sends SIGKILL immediately to the container process. Unsaved data will be lost.",
-      },
-      remove: {
-        title: "Remove container",
-        label: "Remove",
-        variant: "destructive",
-        desc: "Permanently removes the container. Any data not stored in persistent volumes will be lost.",
-      },
+  // Shared row handlers: the containers list and compose service rows both
+  // need the same "open logs/inspect/exec for this container" behavior.
+  const containerHandlers = (c: DockerContainer) => {
+    const id = containerId(c);
+    return {
+      onInspect: () =>
+        openInspectDeck({ kind: "container", id, title: containerName(c) }),
+      onLogs: () =>
+        openLogsDeck({ kind: "container", id, title: containerName(c) }),
+      onLogsTab: () =>
+        openLogsTab("container", id, `${containerName(c)} logs`),
+      onExec: () =>
+        openExecDeck({ container: id, containerName: containerName(c) }),
     };
-
-    const meta = actionMeta[action];
-    const confirmed = await confirmDockerAction({
-      title: meta.title,
-      actionLabel: meta.label,
-      actionVariant: meta.variant,
-      resourceKind: "Container",
-      resourceName: name,
-      resourceDetails: image
-        ? `ID: ${id.slice(0, 12)} · Image: ${image}`
-        : `ID: ${id.slice(0, 12)}`,
-      hostAlias: hostAlias ?? hostId,
-      description: meta.desc,
-    });
-    if (!confirmed) return;
-
-    void containerAction(hostId, action, [id], { force: true });
   };
 
   if (!hostId) {
@@ -507,9 +457,7 @@ export function DockerPanel({
                 type="button"
                 onClick={() => setStatsOn((v) => !v)}
                 aria-pressed={statsOn}
-                title={
-                  statsOn ? "Hide live stats" : "Show live CPU/memory stats"
-                }
+                title={statsOn ? "Hide live stats" : "Show live stats"}
                 className={cn(
                   "h-7 shrink-0 rounded-md px-2 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40",
                   statsOn
@@ -547,6 +495,10 @@ export function DockerPanel({
                 <EmptyNote text="Loading containers…" />
               ) : containers?.error && filteredContainers.length === 0 ? (
                 <EmptyNote text={containers.error} />
+              ) : statsOn && hostState?.statsError ? (
+                <EmptyNote
+                  text={`Stats unavailable: ${hostState.statsError}. Retrying…`}
+                />
               ) : filteredContainers.length === 0 ? (
                 <EmptyNote
                   text={
@@ -558,45 +510,14 @@ export function DockerPanel({
               ) : (
                 filteredContainers.map((c) => {
                   const id = containerId(c);
-                  const busyAction = busy[id];
-                  const sample = hostState?.stats[id];
                   return (
                     <ContainerRow
                       key={id}
+                      hostId={hostId}
                       container={c}
-                      busy={busyAction}
-                      onAction={(a) => runAction(a, id)}
-                      onInspect={() =>
-                        openInspectDeck({
-                          kind: "container",
-                          id,
-                          title: containerName(c),
-                        })
-                      }
-                      onLogs={() =>
-                        openLogsDeck({
-                          kind: "container",
-                          id,
-                          title: containerName(c),
-                        })
-                      }
-                      onLogsTab={() =>
-                        openLogsTab("container", id, `${containerName(c)} logs`)
-                      }
-                      onExec={() =>
-                        openExecDeck({
-                          container: id,
-                          containerName: containerName(c),
-                        })
-                      }
-                      stats={
-                        statsOn && sample
-                          ? {
-                              cpuPerc: sample.cpuPerc,
-                              memUsage: sample.memUsage,
-                            }
-                          : null
-                      }
+                      hostAlias={hostAlias}
+                      stats={statsOn ? hostState?.stats[id] ?? null : null}
+                      {...containerHandlers(c)}
                     />
                   );
                 })
@@ -613,11 +534,12 @@ export function DockerPanel({
             ) : segment === "compose" ? (
               <ComposeList
                 hostId={hostId}
+                cwd={cwd ?? null}
                 filter={filter}
-                containerNames={containerNamesById}
-                onOpenLogs={(id, title) =>
-                  openLogsDeck({ kind: "container", id, title })
-                }
+                containersById={containersById}
+                statsById={statsOn ? (hostState?.stats ?? {}) : {}}
+                hostAlias={hostAlias}
+                containerHandlers={containerHandlers}
               />
             ) : segment === "swarm" ? (
               <SwarmView
@@ -704,29 +626,93 @@ function parseLabels(raw: unknown): Record<string, string> {
   return out;
 }
 
+type ContainerHandlers = (c: DockerContainer) => {
+  onInspect: () => void;
+  onLogs: () => void;
+  onLogsTab: () => void;
+  onExec: () => void;
+};
+
 function ComposeList({
   hostId,
+  cwd,
   filter,
-  containerNames,
-  onOpenLogs,
+  containersById,
+  statsById,
+  hostAlias,
+  containerHandlers,
 }: {
   hostId: string;
+  cwd: string | null;
   filter: string;
-  containerNames: Record<string, string>;
-  onOpenLogs: (id: string, title: string) => void;
+  containersById: Record<string, DockerContainer>;
+  statsById: Record<string, import("./lib/dockerStore").StatsSample>;
+  hostAlias?: string | null;
+  containerHandlers: ContainerHandlers;
 }) {
   const projects = useDockerStore((s) => s.byHost[hostId]?.compose ?? {});
-  const list = useMemo(() => {
-    const all = Object.values(projects);
-    const q = filter.trim().toLowerCase();
-    if (!q) return all;
-    return all.filter(
-      (p) =>
-        p.name.toLowerCase().includes(q) ||
-        p.files.some((f) => f.toLowerCase().includes(q)),
+  const detectCompose = useDockerStore((s) => s.detectCompose);
+  const refreshCompose = useDockerStore((s) => s.refreshCompose);
+  const [cwdFiles, setCwdFiles] = useState<string[] | null>(null);
+
+  // Detect compose files sitting directly in the active folder. This is the
+  // "you're standing in a compose project" case: it must work even when the
+  // project has never been started (so no container labels exist to group).
+  useEffect(() => {
+    let cancelled = false;
+    setCwdFiles(null);
+    if (!cwd) return;
+    detectCompose(hostId, cwd).then(
+      (files) => {
+        if (!cancelled) setCwdFiles(files);
+      },
+      () => {
+        if (!cancelled) setCwdFiles([]);
+      },
     );
-  }, [projects, filter]);
-  if (list.length === 0) {
+    return () => {
+      cancelled = true;
+    };
+  }, [hostId, cwd, detectCompose]);
+
+  const all = useMemo(() => Object.values(projects), [projects]);
+
+  // Projects whose files live in the active folder (or a subfolder). A
+  // running project's working_dir is the authoritative match; fall back to
+  // comparing the file's dirname.
+  const inFolder = useMemo(
+    () => all.filter((p) => projectInFolder(p, cwd)),
+    [all, cwd],
+  );
+
+  // Register a detected-but-never-started project so its card has a stable
+  // store entry (container list, profiles, actions all key off the store).
+  useEffect(() => {
+    if (!cwd || !cwdFiles || cwdFiles.length === 0) return;
+    const dir = cwd.replace(/\/+$/, "");
+    const already = inFolder.some(
+      (p) => p.projectDir.replace(/\/+$/, "") === dir,
+    );
+    if (already) return;
+    const name = composeProjectName(dir);
+    void refreshCompose(hostId, name, cwdFiles, cwd).catch(() => {});
+    // Only re-register when the detected set or folder changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostId, cwd, cwdFiles?.join("|"), inFolder.length]);
+
+  const q = filter.trim().toLowerCase();
+  const matches = (p: { name: string; files: string[] }) =>
+    !q ||
+    p.name.toLowerCase().includes(q) ||
+    p.files.some((f) => f.toLowerCase().includes(q));
+
+  const folderList = inFolder.filter(matches);
+  const restList = all.filter((p) => !inFolder.includes(p)).filter(matches);
+
+  const cwdProject = folderList[0];
+  const otherFolderProjects = folderList.slice(1);
+
+  if (all.length === 0 && (!cwdFiles || cwdFiles.length === 0)) {
     return (
       <EmptyNote
         text={
@@ -737,18 +723,100 @@ function ComposeList({
       />
     );
   }
+
   return (
-    <>
-      {list.map((p) => (
-        <ComposeCard
-          key={p.name}
-          hostId={hostId}
-          project={p}
-          containerNames={containerNames}
-          onOpenLogs={onOpenLogs}
-        />
-      ))}
-    </>
+    <div className="flex flex-col gap-2">
+      {cwdProject ? (
+        <section className="flex flex-col gap-1">
+          <SectionHeading
+            title="In this folder"
+            hint={cwd ?? undefined}
+          />
+          <ComposeCard
+            key={cwdProject.name}
+            hostId={hostId}
+            hostAlias={hostAlias}
+            project={cwdProject}
+            containersById={containersById}
+            statsById={statsById}
+            containerHandlers={containerHandlers}
+            availableFiles={
+              cwdFiles && cwdFiles.length > 0
+                ? cwdFiles
+                : cwdProject.files
+            }
+          />
+          {otherFolderProjects.map((p) => (
+            <ComposeCard
+              key={p.name}
+              hostId={hostId}
+              hostAlias={hostAlias}
+              project={p}
+              containersById={containersById}
+              statsById={statsById}
+              containerHandlers={containerHandlers}
+            />
+          ))}
+        </section>
+      ) : null}
+
+      {restList.length > 0 ? (
+        <section className="flex flex-col gap-1">
+          {all.length > folderList.length ? (
+            <SectionHeading
+              title={folderList.length > 0 ? "All projects" : "Compose"}
+              count={restList.length}
+            />
+          ) : null}
+          {restList.map((p) => (
+            <ComposeCard
+              key={p.name}
+              hostId={hostId}
+              hostAlias={hostAlias}
+              project={p}
+              containersById={containersById}
+              statsById={statsById}
+              containerHandlers={containerHandlers}
+            />
+          ))}
+        </section>
+      ) : null}
+
+      {folderList.length === 0 && restList.length === 0 ? (
+        <EmptyNote text="No compose projects match the filter." />
+      ) : null}
+    </div>
+  );
+}
+
+function SectionHeading({
+  title,
+  count,
+  hint,
+}: {
+  title: string;
+  count?: number;
+  hint?: string;
+}) {
+  return (
+    <div className="flex items-baseline gap-1.5 px-0.5">
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+        {title}
+      </span>
+      {count !== undefined ? (
+        <span className="text-[10px] tabular-nums text-muted-foreground/50">
+          {count}
+        </span>
+      ) : null}
+      {hint ? (
+        <span
+          className="min-w-0 flex-1 truncate text-right font-mono text-[9px] text-muted-foreground/40"
+          title={hint}
+        >
+          {hint}
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -1361,177 +1429,6 @@ function imageRef(img: {
   if (repo === "<none>" && tag === "<none>")
     return String(img.Digest ?? imageId(img));
   return `${repo}:${tag}`;
-}
-
-export function containerId(c: DockerContainer): string {
-  const raw = (c.ID ?? c.Id ?? "") as string;
-  return (
-    raw.replace(/^sha256:/, "").slice(0, 12) || String(c.Names ?? c.Name ?? "?")
-  );
-}
-
-export function containerName(c: DockerContainer): string {
-  const raw = String(c.Names ?? c.Name ?? "");
-  return raw.split(",")[0]?.replace(/^\//, "").trim() || containerId(c);
-}
-
-function containerState(
-  c: DockerContainer,
-): "running" | "exited" | "paused" | "dead" | "unknown" {
-  const s = String(c.State ?? "").toLowerCase();
-  if (s.includes("running")) return "running";
-  if (s.includes("paused")) return "paused";
-  if (s.includes("dead") || s.includes("removing")) return "dead";
-  if (s.includes("exited") || s.includes("created")) return "exited";
-  // `docker ps --format json` emits State + Status ("Up 2 hours").
-  const status = String(c.Status ?? "").toLowerCase();
-  if (status.startsWith("up")) return "running";
-  if (status.startsWith("exited") || status.startsWith("created"))
-    return "exited";
-  if (status.includes("paused")) return "paused";
-  return "unknown";
-}
-
-const STATE_DOT: Record<string, string> = {
-  running: "bg-emerald-500",
-  exited: "bg-muted-foreground/40",
-  paused: "bg-amber-400",
-  dead: "bg-destructive",
-  unknown: "bg-muted-foreground/40",
-};
-
-function ContainerRow({
-  container,
-  busy,
-  onAction,
-  onInspect,
-  onLogs,
-  onLogsTab,
-  onExec,
-  stats,
-}: {
-  container: DockerContainer;
-  busy: ContainerAction | undefined;
-  onAction: (a: ContainerAction) => void;
-  onInspect: () => void;
-  onLogs: () => void;
-  onLogsTab: () => void;
-  onExec: () => void;
-  stats?: { cpuPerc: string; memUsage: string } | null;
-}) {
-  const id = containerId(container);
-  const name = containerName(container);
-  const state = containerState(container);
-  const running = state === "running";
-  const detail = String(container.Status ?? container.Image ?? "");
-  const statsLine =
-    stats && (stats.cpuPerc || stats.memUsage)
-      ? `CPU ${stats.cpuPerc || "—"} · MEM ${stats.memUsage || "—"}`
-      : null;
-  return (
-    // biome-ignore lint/a11y/useSemanticElements: row hosts nested buttons, cannot be a <button>
-    <div
-      role="button"
-      tabIndex={0}
-      title={`${name} (${id}) — click for details`}
-      onClick={onInspect}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          onInspect();
-        }
-      }}
-      className="group relative flex cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1.5 outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-primary/40"
-    >
-      <span
-        role="img"
-        aria-label={state}
-        title={state}
-        className={cn("size-2 shrink-0 rounded-full", STATE_DOT[state])}
-      />
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-[12px] font-medium leading-tight">
-          {name}
-          {busy ? (
-            <span className="ml-1.5 text-[10px] font-normal text-muted-foreground/70">
-              {busy === "remove" ? "removing…" : `${busy}ing…`}
-            </span>
-          ) : null}
-        </span>
-        <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
-          {detail}
-        </span>
-        {statsLine ? (
-          <span className="truncate text-[10px] tabular-nums leading-tight text-primary/80">
-            {statsLine}
-          </span>
-        ) : null}
-      </span>
-      <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
-        {running ? (
-          <>
-            <RowButton
-              label={`Stop ${name}`}
-              onClick={() => onAction("stop")}
-            >
-              <HugeiconsIcon icon={StopIcon} size={13} strokeWidth={1.75} />
-            </RowButton>
-            <RowButton
-              label={`Restart ${name}`}
-              onClick={() => onAction("restart")}
-            >
-              <HugeiconsIcon
-                icon={RotateClockwiseIcon}
-                size={13}
-                strokeWidth={1.75}
-              />
-            </RowButton>
-            <RowButton
-              label={`Kill ${name}`}
-              onClick={() => onAction("kill")}
-            >
-              <HugeiconsIcon icon={ZapIcon} size={13} strokeWidth={1.75} />
-            </RowButton>
-          </>
-        ) : (
-          <RowButton
-            label={`Start ${name}`}
-            onClick={() => onAction("start")}
-          >
-            <HugeiconsIcon icon={PlayIcon} size={13} strokeWidth={1.75} />
-          </RowButton>
-        )}
-        <RowButton label={`Logs for ${name}`} onClick={onLogs}>
-          <HugeiconsIcon icon={File02Icon} size={13} strokeWidth={1.75} />
-        </RowButton>
-        <RowButton
-          label={`Open logs for ${name} in a tab`}
-          onClick={onLogsTab}
-        >
-          <HugeiconsIcon
-            icon={ArrowUpRight01Icon}
-            size={13}
-            strokeWidth={1.75}
-          />
-        </RowButton>
-        {running ? (
-          <RowButton label={`Exec shell in ${name}`} onClick={onExec}>
-            <HugeiconsIcon
-              icon={ComputerTerminal02Icon}
-              size={13}
-              strokeWidth={1.75}
-            />
-          </RowButton>
-        ) : null}
-        <RowButton
-          label={`Remove ${name}`}
-          onClick={() => onAction("remove")}
-        >
-          <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
-        </RowButton>
-      </span>
-    </div>
-  );
 }
 
 function PanelTitle({
