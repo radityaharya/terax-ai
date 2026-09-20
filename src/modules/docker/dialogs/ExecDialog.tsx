@@ -9,12 +9,21 @@ type Props = {
   containerName: string;
   onExec: (shell: string, attach: boolean) => void;
   onClose: () => void;
+  /** Render body only (no frame): the deck panel owns header + close. */
+  bare?: boolean;
 };
 
 const SHELLS = ["sh", "bash", "ash", "zsh", "fish"];
 
 /** Pick a shell (probed in the container) or attach, then open an exec tab. */
-export function ExecDialog({ hostId, container, containerName, onExec, onClose }: Props) {
+export function ExecDialog({
+  hostId,
+  container,
+  containerName,
+  onExec,
+  onClose,
+  bare,
+}: Props) {
   const [shell, setShell] = useState("sh");
   const [probing, setProbing] = useState(true);
   const [attach, setAttach] = useState(false);
@@ -22,7 +31,11 @@ export function ExecDialog({ hostId, container, containerName, onExec, onClose }
   useEffect(() => {
     let cancelled = false;
     setProbing(true);
-    sshRpc<{ shell: string | null }>("docker_container_shell_probe", { id: container }, hostId)
+    sshRpc<{ shell: string | null }>(
+      "docker_container_shell_probe",
+      { id: container },
+      hostId,
+    )
       .then((res) => {
         if (cancelled) return;
         if (res.shell && SHELLS.includes(res.shell)) setShell(res.shell);
@@ -45,6 +58,17 @@ export function ExecDialog({ hostId, container, containerName, onExec, onClose }
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, onExec, shell, attach]);
 
+  if (bare) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col gap-2 px-2.5 py-2">
+          <ExecBody />
+        </div>
+        <ExecActions />
+      </div>
+    );
+  }
+
   return (
     <div
       className="absolute inset-y-0 right-0 z-20 flex w-80 max-w-[85%] flex-col border-l border-border/60 bg-background shadow-xl"
@@ -65,6 +89,13 @@ export function ExecDialog({ hostId, container, containerName, onExec, onClose }
           <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={1.75} />
         </button>
       </div>
+      <ExecBody />
+      <ExecActions />
+    </div>
+  );
+
+  function ExecBody() {
+    return (
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2.5 py-2">
         <label className="flex flex-col gap-1 text-[11px]">
           <span className="font-medium text-muted-foreground">Shell</span>
@@ -83,17 +114,29 @@ export function ExecDialog({ hostId, container, containerName, onExec, onClose }
           </select>
         </label>
         {probing ? (
-          <div className="text-[10px] text-muted-foreground/70">Probing shells in the container…</div>
+          <div className="text-[10px] text-muted-foreground/70">
+            Probing shells in the container…
+          </div>
         ) : null}
         <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <input type="checkbox" checked={attach} onChange={(e) => setAttach(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={attach}
+            onChange={(e) => setAttach(e.target.checked)}
+          />
           Attach to main process instead of exec
         </label>
         <div className="text-[10px] text-muted-foreground/70">
-          Opens a terminal tab running `docker exec -it {container} {attach ? "" : shell}` on
-          this host. The tab reconnects from the Docker panel if the shell exits.
+          Opens a terminal tab running `docker exec -it {container}{" "}
+          {attach ? "" : shell}` on this host. The tab reconnects from the
+          Docker panel if the shell exits.
         </div>
       </div>
+    );
+  }
+
+  function ExecActions() {
+    return (
       <div className="flex shrink-0 items-center justify-end gap-1.5 border-t border-border/60 px-2.5 py-2">
         <button
           type="button"
@@ -110,6 +153,6 @@ export function ExecDialog({ hostId, container, containerName, onExec, onClose }
           Open terminal
         </button>
       </div>
-    </div>
-  );
+    );
+  }
 }

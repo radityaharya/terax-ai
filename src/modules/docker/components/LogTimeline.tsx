@@ -1,7 +1,11 @@
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ansiSpans, stripAnsi } from "../lib/ansi";
-import { classifyLogLevel, extractTimestamp, type LogLevel } from "../lib/logLevels";
+import {
+  classifyLogLevel,
+  extractTimestamp,
+  type LogLevel,
+} from "../lib/logLevels";
 
 export type TimelineRow = {
   /** Stable row key (index + length hash). */
@@ -93,7 +97,12 @@ export function LogTimeline({
       className="min-h-0 flex-1 overflow-auto bg-black/[0.82] py-1.5 font-mono"
       style={{ fontSize, lineHeight: 1.5 }}
     >
-      <WindowedRows rows={rows} highlight={highlight} wrap={wrap} scrollRef={scrollRef} />
+      <WindowedRows
+        rows={rows}
+        highlight={highlight}
+        wrap={wrap}
+        scrollRef={scrollRef}
+      />
     </div>
   );
 }
@@ -124,7 +133,10 @@ function WindowedRows({
     }
     const overscan = Math.ceil(viewport / ROW_H) + 10;
     const start = Math.max(0, Math.floor(scrollTop / ROW_H) - overscan);
-    const end = Math.min(rows.length, Math.ceil((scrollTop + viewport) / ROW_H) + overscan);
+    const end = Math.min(
+      rows.length,
+      Math.ceil((scrollTop + viewport) / ROW_H) + overscan,
+    );
     return {
       start,
       end,
@@ -146,7 +158,9 @@ function WindowedRows({
 }
 
 /** Live scrollTop of the timeline viewport, coalesced per frame. */
-function useScrollTop(scrollRef: React.RefObject<HTMLDivElement | null>): number {
+function useScrollTop(
+  scrollRef: React.RefObject<HTMLDivElement | null>,
+): number {
   const [top, setTop] = useState(0);
   useEffect(() => {
     const el = scrollRef.current;
@@ -200,9 +214,18 @@ function TimelineLine({
       style={wrap ? undefined : { height: ROW_H }}
     >
       <span className="flex w-24 shrink-0 items-baseline gap-1.5 self-start pt-[3px] select-none">
-        {dot ? <span className={cn("size-1.5 shrink-0 translate-y-[-1px] rounded-full", dot)} /> : null}
+        {dot ? (
+          <span
+            className={cn(
+              "size-1.5 shrink-0 translate-y-[-1px] rounded-full",
+              dot,
+            )}
+          />
+        ) : null}
         {row.ts ? (
-          <span className="truncate text-[0.85em] tabular-nums text-neutral-500">{shortTs(row.ts)}</span>
+          <span className="truncate text-[0.85em] tabular-nums text-neutral-500">
+            {shortTs(row.ts)}
+          </span>
         ) : null}
       </span>
       <span className="min-w-0 flex-1 text-neutral-200">
@@ -231,7 +254,14 @@ function PlainSpans({
         // biome-ignore lint/suspicious/noArrayIndexKey: positional ANSI segments
         const key = `${i}-${s.text.length}`;
         if (highlight) {
-          return <HighlightText key={key} text={s.text} className={s.className} re={highlight} />;
+          return (
+            <HighlightText
+              key={key}
+              text={s.text}
+              className={s.className}
+              re={highlight}
+            />
+          );
         }
         return s.className ? (
           <span key={key} className={s.className}>
@@ -298,7 +328,8 @@ function HighlightText({
     if (guard > text.length + 10) break;
     const m: RegExpExecArray | null = fresh.exec(text);
     if (m === null) break;
-    if (m.index > last) parts.push({ text: text.slice(last, m.index), hit: false });
+    if (m.index > last)
+      parts.push({ text: text.slice(last, m.index), hit: false });
     parts.push({ text: m[0], hit: true });
     last = m.index + m[0].length;
     if (m[0].length === 0) fresh.lastIndex = last + 1;
@@ -313,7 +344,11 @@ function HighlightText({
 }
 
 /** Positional match fragments with stable content-derived keys. */
-function MatchParts({ parts }: { parts: { text: string; hit: boolean; key: string }[] }) {
+function MatchParts({
+  parts,
+}: {
+  parts: { text: string; hit: boolean; key: string }[];
+}) {
   return (
     <>
       {parts.map((p) =>

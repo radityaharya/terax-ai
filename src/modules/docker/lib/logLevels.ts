@@ -11,7 +11,16 @@ export function classifyLogLevel(line: string): LogLevel {
   const m = LEVEL_RE.exec(text);
   if (!m) return "plain";
   const w = m[1].toLowerCase();
-  if (w === "fatal" || w === "error" || w === "err" || w.startsWith("fail") || w === "exception" || w === "panic" || w === "critical" || w === "crit") {
+  if (
+    w === "fatal" ||
+    w === "error" ||
+    w === "err" ||
+    w.startsWith("fail") ||
+    w === "exception" ||
+    w === "panic" ||
+    w === "critical" ||
+    w === "crit"
+  ) {
     return "error";
   }
   if (w.startsWith("warn")) return "warn";
@@ -39,4 +48,11 @@ export function stripTimestamp(line: string): string {
   return plain.slice(idx + ts.length).trimStart();
 }
 
-export const LEVEL_ORDER: LogLevel[] = ["error", "warn", "info", "debug", "trace", "plain"];
+export const LEVEL_ORDER: LogLevel[] = [
+  "error",
+  "warn",
+  "info",
+  "debug",
+  "trace",
+  "plain",
+];

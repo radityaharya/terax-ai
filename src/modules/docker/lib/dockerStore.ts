@@ -14,12 +14,7 @@ function emptyList<T>(): ResourceListState<T> {
   return { items: [], loading: false, error: null, updatedAt: null };
 }
 
-export type ContainerAction =
-  | "start"
-  | "stop"
-  | "restart"
-  | "kill"
-  | "remove";
+export type ContainerAction = "start" | "stop" | "restart" | "kill" | "remove";
 
 export type StatsSample = {
   container: string;
@@ -43,7 +38,13 @@ export type DiskUsage = {
   buildCacheReclaimable: string;
 };
 
-export type PruneTarget = "containers" | "images" | "volumes" | "networks" | "builder" | "system";
+export type PruneTarget =
+  | "containers"
+  | "images"
+  | "volumes"
+  | "networks"
+  | "builder"
+  | "system";
 
 type HostDockerState = {
   daemon: DockerDaemonState;
@@ -69,7 +70,10 @@ type HostDockerState = {
   /** Update-check results keyed by image reference. */
   updates: Record<string, ImageUpdateState>;
   /** Registry login state per registry host. */
-  registries: Record<string, { loggedIn: boolean; busy: boolean; error: string | null }>;
+  registries: Record<
+    string,
+    { loggedIn: boolean; busy: boolean; error: string | null }
+  >;
   /** Pull jobs keyed by local job id. */
   pulls: Record<string, PullJob>;
   /** Live log follows keyed by `container:<id>` or `service:<id>`. */
@@ -195,7 +199,11 @@ export type SwarmService = {
   Mode?: string;
   Replicas?: string;
   Image?: string;
-  replicaHealth?: { running: number; desired: number; underReplicated: boolean };
+  replicaHealth?: {
+    running: number;
+    desired: number;
+    underReplicated: boolean;
+  };
   [key: string]: unknown;
 };
 
@@ -401,7 +409,11 @@ type State = {
   secretRemove: (hostId: string, name: string) => Promise<void>;
   configCreate: (hostId: string, name: string, file: string) => Promise<void>;
   configRemove: (hostId: string, name: string) => Promise<void>;
-  refreshStackDrift: (hostId: string, stack: string, composeFile: string) => Promise<void>;
+  refreshStackDrift: (
+    hostId: string,
+    stack: string,
+    composeFile: string,
+  ) => Promise<void>;
 };
 
 function patch(
@@ -483,14 +495,20 @@ export const useDockerStore = create<State>((set) => ({
       if (!caps.installed) {
         patch(set, hostId, (h) => ({
           ...h,
-          daemon: { status: "not-installed", message: "Docker is not installed on this host." },
+          daemon: {
+            status: "not-installed",
+            message: "Docker is not installed on this host.",
+          },
         }));
         return;
       }
       if (!caps.daemonRunning) {
         patch(set, hostId, (h) => ({
           ...h,
-          daemon: { status: "daemon-down", message: "Docker daemon is not running." },
+          daemon: {
+            status: "daemon-down",
+            message: "Docker daemon is not running.",
+          },
         }));
         return;
       }
@@ -519,10 +537,19 @@ export const useDockerStore = create<State>((set) => ({
       containers: { ...h.containers, loading: true, error: null },
     }));
     try {
-      const items = await sshRpc<DockerContainer[]>("docker_ps", { all }, hostId);
+      const items = await sshRpc<DockerContainer[]>(
+        "docker_ps",
+        { all },
+        hostId,
+      );
       patch(set, hostId, (h) => ({
         ...h,
-        containers: { items, loading: false, error: null, updatedAt: Date.now() },
+        containers: {
+          items,
+          loading: false,
+          error: null,
+          updatedAt: Date.now(),
+        },
       }));
     } catch (e) {
       patch(set, hostId, (h) => ({
@@ -557,7 +584,11 @@ export const useDockerStore = create<State>((set) => ({
       volumes: { ...h.volumes, loading: true, error: null },
     }));
     try {
-      const items = await sshRpc<DockerVolume[]>("docker_volumes_ls", {}, hostId);
+      const items = await sshRpc<DockerVolume[]>(
+        "docker_volumes_ls",
+        {},
+        hostId,
+      );
       patch(set, hostId, (h) => ({
         ...h,
         volumes: { items, loading: false, error: null, updatedAt: Date.now() },
@@ -576,7 +607,11 @@ export const useDockerStore = create<State>((set) => ({
       networks: { ...h.networks, loading: true, error: null },
     }));
     try {
-      const items = await sshRpc<DockerNetwork[]>("docker_networks_ls", {}, hostId);
+      const items = await sshRpc<DockerNetwork[]>(
+        "docker_networks_ls",
+        {},
+        hostId,
+      );
       patch(set, hostId, (h) => ({
         ...h,
         networks: { items, loading: false, error: null, updatedAt: Date.now() },
@@ -636,8 +671,7 @@ export const useDockerStore = create<State>((set) => ({
       },
     }));
     try {
-      const method =
-        action === "remove" ? "docker_rm" : `docker_${action}`;
+      const method = action === "remove" ? "docker_rm" : `docker_${action}`;
       await sshRpc<string>(
         method,
         {
@@ -689,7 +723,11 @@ export const useDockerStore = create<State>((set) => ({
       inspects: { ...s.inspects, [key]: { status: "loading" } },
     }));
     try {
-      const data = await sshRpc<unknown>("docker_inspect", { kind, id }, hostId);
+      const data = await sshRpc<unknown>(
+        "docker_inspect",
+        { kind, id },
+        hostId,
+      );
       set((s) => ({
         ...s,
         inspects: { ...s.inspects, [key]: { status: "ready", data } },
@@ -874,7 +912,11 @@ export const useDockerStore = create<State>((set) => ({
           ...h,
           pulls: {
             ...h.pulls,
-            [jobId]: { ...(h.pulls[jobId] ?? job), phase: "error", error: String(e) },
+            [jobId]: {
+              ...(h.pulls[jobId] ?? job),
+              phase: "error",
+              error: String(e),
+            },
           },
         }));
       }
@@ -884,13 +926,25 @@ export const useDockerStore = create<State>((set) => ({
 
   pollPull: async (hostId, jobId) => {
     const job = useDockerStore.getState().byHost[hostId]?.pulls[jobId];
-    if (!job || job.handle === null || job.phase === "done" || job.phase === "error") return;
+    if (
+      !job ||
+      job.handle === null ||
+      job.phase === "done" ||
+      job.phase === "error"
+    )
+      return;
     // Drain loop: the agent caps each poll chunk (truncated=true) so the
     // frame never blows the transport cap. Keep polling with the advanced
     // offset until a non-truncated chunk arrives — one UI tick per drain.
     for (let i = 0; i < 8; i++) {
       const cur = useDockerStore.getState().byHost[hostId]?.pulls[jobId];
-      if (!cur || cur.handle === null || cur.phase === "done" || cur.phase === "error") return;
+      if (
+        !cur ||
+        cur.handle === null ||
+        cur.phase === "done" ||
+        cur.phase === "error"
+      )
+        return;
       let res: {
         bytes: string;
         nextOffset?: number;
@@ -938,7 +992,11 @@ export const useDockerStore = create<State>((set) => ({
           ...h,
           pulls: {
             ...h.pulls,
-            [jobId]: { ...(h.pulls[jobId] ?? job), phase: "error", error: String(e) },
+            [jobId]: {
+              ...(h.pulls[jobId] ?? job),
+              phase: "error",
+              error: String(e),
+            },
           },
         }));
         return;
@@ -950,7 +1008,10 @@ export const useDockerStore = create<State>((set) => ({
           ...prev,
           output: prev.output + (res.bytes ?? ""),
           offset: res.nextOffset ?? res.next_offset ?? prev.offset,
-          dropped: (res.dropped ?? 0) > prev.dropped ? (res.dropped ?? 0) : prev.dropped,
+          dropped:
+            (res.dropped ?? 0) > prev.dropped
+              ? (res.dropped ?? 0)
+              : prev.dropped,
           events: [...prev.events, ...(res.events ?? [])].slice(-200),
         };
         for (const ev of res.events ?? []) {
@@ -1012,7 +1073,11 @@ export const useDockerStore = create<State>((set) => ({
         ...h,
         pulls: {
           ...h.pulls,
-          [jobId]: { ...(h.pulls[jobId] ?? job), phase: "error", error: String(e) },
+          [jobId]: {
+            ...(h.pulls[jobId] ?? job),
+            phase: "error",
+            error: String(e),
+          },
         },
       }));
     }
@@ -1059,7 +1124,11 @@ export const useDockerStore = create<State>((set) => ({
       // Password travels the token-authenticated RPC channel only, passed
       // to `docker login --password-stdin` server-side. The store holds
       // login state — never the credential.
-      await sshRpc("docker_registry_login", { registry, username, password }, hostId);
+      await sshRpc(
+        "docker_registry_login",
+        { registry, username, password },
+        hostId,
+      );
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("secrets_set", {
@@ -1125,7 +1194,11 @@ export const useDockerStore = create<State>((set) => ({
     // the pane for the same container must attach to the existing stream,
     // not orphan a second `docker logs -f` on the agent.
     const live = useDockerStore.getState().byHost[hostId]?.logFollows[followId];
-    if (live && (live.phase === "following" || live.phase === "starting") && live.handle !== null) {
+    if (
+      live &&
+      (live.phase === "following" || live.phase === "starting") &&
+      live.handle !== null
+    ) {
       return followId;
     }
     if (live && live.phase === "following" && live.handle === null) {
@@ -1165,7 +1238,8 @@ export const useDockerStore = create<State>((set) => ({
                 ...(opts.since ? { since: opts.since } : {}),
               }
             : { service: id, tail: opts.tail };
-        const method = kind === "container" ? "docker_logs_spawn" : "docker_service_logs";
+        const method =
+          kind === "container" ? "docker_logs_spawn" : "docker_service_logs";
         // Services use one-shot logs (no follow lane on the agent); the
         // follow state still gives the pane a uniform shape.
         info = await sshRpc<{ handle?: number; output?: string }>(
@@ -1210,9 +1284,7 @@ export const useDockerStore = create<State>((set) => ({
             handle: info.handle ?? null,
             phase: kind === "container" ? "following" : "done",
             lines:
-              kind === "container"
-                ? []
-                : String(info.output ?? "").split("\n"),
+              kind === "container" ? [] : String(info.output ?? "").split("\n"),
             exited: kind !== "container",
             healsLeft: MAX_HEALS,
           },
@@ -1226,8 +1298,14 @@ export const useDockerStore = create<State>((set) => ({
   },
 
   pollLogFollow: async (hostId, followId) => {
-    const follow = useDockerStore.getState().byHost[hostId]?.logFollows[followId];
-    if (!follow || follow.handle === null || follow.phase === "done" || follow.phase === "error") {
+    const follow =
+      useDockerStore.getState().byHost[hostId]?.logFollows[followId];
+    if (
+      !follow ||
+      follow.handle === null ||
+      follow.phase === "done" ||
+      follow.phase === "error"
+    ) {
       return;
     }
     // Drain loop: the agent caps each chunk (truncated=true) under the
@@ -1237,8 +1315,15 @@ export const useDockerStore = create<State>((set) => ({
     // chunks chain losslessly.
     let exited = false;
     for (let i = 0; i < 8; i++) {
-      const cur0 = useDockerStore.getState().byHost[hostId]?.logFollows[followId];
-      if (!cur0 || cur0.handle === null || cur0.phase === "done" || cur0.phase === "error") return;
+      const cur0 =
+        useDockerStore.getState().byHost[hostId]?.logFollows[followId];
+      if (
+        !cur0 ||
+        cur0.handle === null ||
+        cur0.phase === "done" ||
+        cur0.phase === "error"
+      )
+        return;
       let res: {
         bytes: string;
         nextOffset?: number;
@@ -1285,7 +1370,11 @@ export const useDockerStore = create<State>((set) => ({
           ...h,
           logFollows: {
             ...h.logFollows,
-            [followId]: { ...(h.logFollows[followId] ?? follow), phase: "error", error: String(e) },
+            [followId]: {
+              ...(h.logFollows[followId] ?? follow),
+              phase: "error",
+              error: String(e),
+            },
           },
         }));
         return;
@@ -1319,7 +1408,9 @@ export const useDockerStore = create<State>((set) => ({
     // definition on this path.
     if (cur?.phase !== "starting") return;
     const sep = followId.indexOf(":");
-    const kind = followId.startsWith("service:") ? ("service" as const) : ("container" as const);
+    const kind = followId.startsWith("service:")
+      ? ("service" as const)
+      : ("container" as const);
     const id = followId.slice(sep + 1);
     if (kind !== "container") return;
     try {
@@ -1333,7 +1424,8 @@ export const useDockerStore = create<State>((set) => ({
         },
         hostId,
       );
-      if (typeof info.handle !== "number") throw new Error("agent did not return a log handle");
+      if (typeof info.handle !== "number")
+        throw new Error("agent did not return a log handle");
       patch(set, hostId, (h) => ({
         ...h,
         logFollows: {
@@ -1351,7 +1443,11 @@ export const useDockerStore = create<State>((set) => ({
         ...h,
         logFollows: {
           ...h.logFollows,
-          [followId]: { ...(h.logFollows[followId] ?? cur), phase: "error", error: String(e) },
+          [followId]: {
+            ...(h.logFollows[followId] ?? cur),
+            phase: "error",
+            error: String(e),
+          },
         },
       }));
     }
@@ -1367,7 +1463,8 @@ export const useDockerStore = create<State>((set) => ({
       return;
     }
     followRefs.delete(followId);
-    const follow = useDockerStore.getState().byHost[hostId]?.logFollows[followId];
+    const follow =
+      useDockerStore.getState().byHost[hostId]?.logFollows[followId];
     if (follow?.handle !== null && follow?.handle !== undefined) {
       try {
         await sshRpc("docker_logs_kill", { handle: follow.handle }, hostId);
@@ -1385,14 +1482,19 @@ export const useDockerStore = create<State>((set) => ({
   setLogOptions: (hostId, followId, options) => {
     const cur = useDockerStore.getState().byHost[hostId]?.logFollows[followId];
     if (!cur) return;
-    const kind = followId.startsWith("service:") ? ("service" as const) : ("container" as const);
+    const kind = followId.startsWith("service:")
+      ? ("service" as const)
+      : ("container" as const);
     const id = followId.slice(followId.indexOf(":") + 1);
-    void useDockerStore.getState().stopLogFollow(hostId, followId).then(() => {
-      useDockerStore.getState().startLogFollow(hostId, kind, id, {
-        ...cur.options,
-        ...options,
+    void useDockerStore
+      .getState()
+      .stopLogFollow(hostId, followId)
+      .then(() => {
+        useDockerStore.getState().startLogFollow(hostId, kind, id, {
+          ...cur.options,
+          ...options,
+        });
       });
-    });
   },
 
   startEventsFeed: async (hostId, filter) => {
@@ -1455,12 +1557,24 @@ export const useDockerStore = create<State>((set) => ({
 
   pollEventsFeed: async (hostId) => {
     const feed = useDockerStore.getState().byHost[hostId]?.eventsFeed;
-    if (!feed || feed.handle === null || feed.phase === "done" || feed.phase === "error") return;
+    if (
+      !feed ||
+      feed.handle === null ||
+      feed.phase === "done" ||
+      feed.phase === "error"
+    )
+      return;
     // Drain loop (same rationale as pollLogFollow): a burst of daemon
     // events can exceed one capped chunk per tick.
     for (let i = 0; i < 8; i++) {
       const cur0 = useDockerStore.getState().byHost[hostId]?.eventsFeed;
-      if (!cur0 || cur0.handle === null || cur0.phase === "done" || cur0.phase === "error") return;
+      if (
+        !cur0 ||
+        cur0.handle === null ||
+        cur0.phase === "done" ||
+        cur0.phase === "error"
+      )
+        return;
       let res: {
         bytes: string;
         nextOffset?: number;
@@ -1498,7 +1612,11 @@ export const useDockerStore = create<State>((set) => ({
         }
         patch(set, hostId, (h) => ({
           ...h,
-          eventsFeed: { ...(h.eventsFeed ?? feed), phase: "error", error: String(e) },
+          eventsFeed: {
+            ...(h.eventsFeed ?? feed),
+            phase: "error",
+            error: String(e),
+          },
         }));
         return;
       }
@@ -1507,7 +1625,9 @@ export const useDockerStore = create<State>((set) => ({
       // and prepend it to the next chunk.
       const raw = String(res.bytes ?? "");
       const endsClean = raw === "" || raw.endsWith("\n");
-      const complete = endsClean ? raw : raw.slice(0, raw.lastIndexOf("\n") + 1);
+      const complete = endsClean
+        ? raw
+        : raw.slice(0, raw.lastIndexOf("\n") + 1);
       const carry = endsClean ? "" : raw.slice(raw.lastIndexOf("\n") + 1);
       const fresh: DockerEvent[] = complete
         .split("\n")
@@ -1533,7 +1653,9 @@ export const useDockerStore = create<State>((set) => ({
             events: [...curFeed.events, ...fresh].slice(-500),
             // Rewind past the held-back fragment so the next poll re-reads
             // it whole; complete lines still advance exactly once.
-            offset: (res.nextOffset ?? res.next_offset ?? curFeed.offset) - carryBytes,
+            offset:
+              (res.nextOffset ?? res.next_offset ?? curFeed.offset) -
+              carryBytes,
             dropped: Math.max(curFeed.dropped, res.dropped ?? 0),
             phase: res.exited ? "done" : "streaming",
           },
@@ -1567,7 +1689,11 @@ export const useDockerStore = create<State>((set) => ({
     } catch (e) {
       patch(set, hostId, (h) => ({
         ...h,
-        eventsFeed: { ...(h.eventsFeed ?? cur), phase: "error", error: String(e) },
+        eventsFeed: {
+          ...(h.eventsFeed ?? cur),
+          phase: "error",
+          error: String(e),
+        },
       }));
     }
   },
@@ -1596,7 +1722,11 @@ export const useDockerStore = create<State>((set) => ({
   },
 
   detectCompose: async (hostId, dir) => {
-    const res = await sshRpc<{ files: string[] }>("docker_compose_detect", { dir }, hostId);
+    const res = await sshRpc<{ files: string[] }>(
+      "docker_compose_detect",
+      { dir },
+      hostId,
+    );
     return res.files ?? [];
   },
 
@@ -1630,9 +1760,9 @@ export const useDockerStore = create<State>((set) => ({
             name: project,
             files,
             projectDir: projectDir ?? "",
-            containers: items.map((c) =>
-              String(c.ID ?? c.Id ?? c.Name ?? ""),
-            ).filter(Boolean),
+            containers: items
+              .map((c) => String(c.ID ?? c.Id ?? c.Name ?? ""))
+              .filter(Boolean),
             loading: false,
             error: null,
             updatedAt: Date.now(),
@@ -1659,27 +1789,45 @@ export const useDockerStore = create<State>((set) => ({
   },
 
   composeAction: async (hostId, project, action, opts) => {
-    const files = useDockerStore.getState().byHost[hostId]?.compose[project]?.files ?? [];
+    const files =
+      useDockerStore.getState().byHost[hostId]?.compose[project]?.files ?? [];
     if (files.length === 0) return;
     patch(set, hostId, (h) => ({
       ...h,
       compose: {
         ...h.compose,
-        [project]: { ...(h.compose[project] ?? { name: project, files, projectDir: "", containers: [], updatedAt: null }), loading: true, error: null },
+        [project]: {
+          ...(h.compose[project] ?? {
+            name: project,
+            files,
+            projectDir: "",
+            containers: [],
+            updatedAt: null,
+          }),
+          loading: true,
+          error: null,
+        },
       },
     }));
     try {
       const method =
-        action === "up" ? "docker_compose_up"
-        : action === "down" ? "docker_compose_down"
-        : action === "restart" ? "docker_compose_restart"
-        : "docker_compose_pull";
-      await sshRpc(method, {
-        files,
-        ...(opts?.build ? { build: true } : {}),
-        ...(opts?.volumes ? { volumes: true } : {}),
-        ...(opts?.services?.length ? { services: opts.services } : {}),
-      }, hostId);
+        action === "up"
+          ? "docker_compose_up"
+          : action === "down"
+            ? "docker_compose_down"
+            : action === "restart"
+              ? "docker_compose_restart"
+              : "docker_compose_pull";
+      await sshRpc(
+        method,
+        {
+          files,
+          ...(opts?.build ? { build: true } : {}),
+          ...(opts?.volumes ? { volumes: true } : {}),
+          ...(opts?.services?.length ? { services: opts.services } : {}),
+        },
+        hostId,
+      );
       await useDockerStore.getState().refreshCompose(hostId, project, files);
       await useDockerStore.getState().refreshContainers(hostId);
     } catch (e) {
@@ -1687,7 +1835,17 @@ export const useDockerStore = create<State>((set) => ({
         ...h,
         compose: {
           ...h.compose,
-          [project]: { ...(h.compose[project] ?? { name: project, files, projectDir: "", containers: [], updatedAt: null }), loading: false, error: String(e) },
+          [project]: {
+            ...(h.compose[project] ?? {
+              name: project,
+              files,
+              projectDir: "",
+              containers: [],
+              updatedAt: null,
+            }),
+            loading: false,
+            error: String(e),
+          },
         },
       }));
     }
@@ -1701,13 +1859,28 @@ export const useDockerStore = create<State>((set) => ({
     try {
       const [info, nodes, services, stacks] = await Promise.all([
         sshRpc<SwarmInfo>("docker_swarm_info", {}, hostId),
-        sshRpc<SwarmNode[]>("docker_node_ls", {}, hostId).catch(() => [] as SwarmNode[]),
-        sshRpc<SwarmService[]>("docker_service_ls", {}, hostId).catch(() => [] as SwarmService[]),
-        sshRpc<SwarmStack[]>("docker_stack_ls", {}, hostId).catch(() => [] as SwarmStack[]),
+        sshRpc<SwarmNode[]>("docker_node_ls", {}, hostId).catch(
+          () => [] as SwarmNode[],
+        ),
+        sshRpc<SwarmService[]>("docker_service_ls", {}, hostId).catch(
+          () => [] as SwarmService[],
+        ),
+        sshRpc<SwarmStack[]>("docker_stack_ls", {}, hostId).catch(
+          () => [] as SwarmStack[],
+        ),
       ]);
       patch(set, hostId, (h) => ({
         ...h,
-        swarm: { ...h.swarm, info, nodes, services, stacks, loading: false, error: null, updatedAt: Date.now() },
+        swarm: {
+          ...h.swarm,
+          info,
+          nodes,
+          services,
+          stacks,
+          loading: false,
+          error: null,
+          updatedAt: Date.now(),
+        },
       }));
     } catch (e) {
       patch(set, hostId, (h) => ({
@@ -1720,8 +1893,12 @@ export const useDockerStore = create<State>((set) => ({
   refreshSwarmSecrets: async (hostId) => {
     try {
       const [secrets, configs] = await Promise.all([
-        sshRpc<SwarmSecret[]>("docker_secret_ls", {}, hostId).catch(() => [] as SwarmSecret[]),
-        sshRpc<SwarmConfig[]>("docker_config_ls", {}, hostId).catch(() => [] as SwarmConfig[]),
+        sshRpc<SwarmSecret[]>("docker_secret_ls", {}, hostId).catch(
+          () => [] as SwarmSecret[],
+        ),
+        sshRpc<SwarmConfig[]>("docker_config_ls", {}, hostId).catch(
+          () => [] as SwarmConfig[],
+        ),
       ]);
       patch(set, hostId, (h) => ({
         ...h,
@@ -1735,13 +1912,24 @@ export const useDockerStore = create<State>((set) => ({
   serviceAction: async (hostId, action, service, opts) => {
     patch(set, hostId, (h) => ({
       ...h,
-      swarm: { ...h.swarm, busyService: { ...h.swarm.busyService, [service]: action } },
+      swarm: {
+        ...h.swarm,
+        busyService: { ...h.swarm.busyService, [service]: action },
+      },
     }));
     try {
       if (action === "scale") {
-        await sshRpc("docker_service_scale", { service, replicas: opts?.replicas ?? 1 }, hostId);
+        await sshRpc(
+          "docker_service_scale",
+          { service, replicas: opts?.replicas ?? 1 },
+          hostId,
+        );
       } else if (action === "update-image") {
-        await sshRpc("docker_service_update", { service, image: opts?.image ?? "" }, hostId);
+        await sshRpc(
+          "docker_service_update",
+          { service, image: opts?.image ?? "" },
+          hostId,
+        );
       } else if (action === "rm") {
         await sshRpc("docker_service_rm", { service }, hostId);
       } else {
@@ -1786,7 +1974,12 @@ export const useDockerStore = create<State>((set) => ({
       } else if (action === "demote") {
         await sshRpc("docker_node_demote", { node }, hostId);
       } else {
-        const availability = action === "drain" ? "drain" : action === "pause" ? "pause" : "active";
+        const availability =
+          action === "drain"
+            ? "drain"
+            : action === "pause"
+              ? "pause"
+              : "active";
         await sshRpc("docker_node_update", { node, availability }, hostId);
       }
       await useDockerStore.getState().refreshSwarm(hostId);
@@ -1800,7 +1993,11 @@ export const useDockerStore = create<State>((set) => ({
 
   swarmInit: async (hostId, advertiseAddr) => {
     try {
-      await sshRpc("docker_swarm_init", advertiseAddr ? { advertiseAddr } : {}, hostId);
+      await sshRpc(
+        "docker_swarm_init",
+        advertiseAddr ? { advertiseAddr } : {},
+        hostId,
+      );
       await useDockerStore.getState().refreshSwarm(hostId);
       await useDockerStore.getState().refreshCapabilities(hostId);
     } catch (e) {
@@ -1892,10 +2089,21 @@ export const useDockerStore = create<State>((set) => ({
   refreshStackDrift: async (hostId, stack, composeFile) => {
     try {
       const [services, config] = await Promise.all([
-        sshRpc<{ Image?: string }[]>("docker_stack_services", { stack }, hostId),
-        sshRpc<{ config: string }>("docker_compose_config", { files: [composeFile] }, hostId),
+        sshRpc<{ Image?: string }[]>(
+          "docker_stack_services",
+          { stack },
+          hostId,
+        ),
+        sshRpc<{ config: string }>(
+          "docker_compose_config",
+          { files: [composeFile] },
+          hostId,
+        ),
       ]);
-      const running = services.map((s) => String(s.Image ?? "")).filter(Boolean).sort();
+      const running = services
+        .map((s) => String(s.Image ?? ""))
+        .filter(Boolean)
+        .sort();
       const desired = config.config
         .split("\n")
         .map((l) => l.trim())
@@ -1905,7 +2113,10 @@ export const useDockerStore = create<State>((set) => ({
         .sort();
       patch(set, hostId, (h) => ({
         ...h,
-        swarm: { ...h.swarm, drift: { ...h.swarm.drift, [stack]: { running, desired } } },
+        swarm: {
+          ...h.swarm,
+          drift: { ...h.swarm.drift, [stack]: { running, desired } },
+        },
       }));
     } catch {
       // best effort — drift row stays hidden

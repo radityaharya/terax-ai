@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { classifyLogLevel, extractTimestamp, stripTimestamp } from "./logLevels";
+import {
+  classifyLogLevel,
+  extractTimestamp,
+  stripTimestamp,
+} from "./logLevels";
 
 describe("classifyLogLevel", () => {
   it("buckets common level words", () => {
@@ -27,7 +31,9 @@ describe("extractTimestamp", () => {
     expect(extractTimestamp("2026-09-20T09:15:32.896513192Z Saving data")).toBe(
       "2026-09-20T09:15:32.896513192Z",
     );
-    expect(extractTimestamp("2026-09-20 09:15:32 hello")).toBe("2026-09-20 09:15:32");
+    expect(extractTimestamp("2026-09-20 09:15:32 hello")).toBe(
+      "2026-09-20 09:15:32",
+    );
   });
 
   it("returns null without a timestamp", () => {
@@ -43,6 +49,8 @@ describe("stripTimestamp", () => {
   });
 
   it("leaves plain lines alone", () => {
-    expect(stripTimestamp("Saving data to: /data")).toBe("Saving data to: /data");
+    expect(stripTimestamp("Saving data to: /data")).toBe(
+      "Saving data to: /data",
+    );
   });
 });

@@ -3,14 +3,16 @@ import { Cancel01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import {
-  useDockerStore,
   type DiskUsage,
   type PruneTarget,
+  useDockerStore,
 } from "../lib/dockerStore";
 
 type Props = {
   hostId: string;
   onClose: () => void;
+  /** Render body only (no frame): the SidebarDeck owns header + close. */
+  bare?: boolean;
 };
 
 const ROWS: {
@@ -64,12 +66,16 @@ const ROWS: {
 ];
 
 /** `docker system df` + per-category prune with explicit confirm. */
-export function CleanupHub({ hostId, onClose }: Props) {
+export function CleanupHub({ hostId, onClose, bare }: Props) {
   const disk = useDockerStore((s) => s.byHost[hostId]?.disk ?? null);
-  const diskLoading = useDockerStore((s) => s.byHost[hostId]?.diskLoading ?? false);
+  const diskLoading = useDockerStore(
+    (s) => s.byHost[hostId]?.diskLoading ?? false,
+  );
   const diskError = useDockerStore((s) => s.byHost[hostId]?.diskError ?? null);
   const pruning = useDockerStore((s) => s.byHost[hostId]?.pruning ?? null);
-  const pruneOutput = useDockerStore((s) => s.byHost[hostId]?.pruneOutput ?? null);
+  const pruneOutput = useDockerStore(
+    (s) => s.byHost[hostId]?.pruneOutput ?? null,
+  );
   const refreshDisk = useDockerStore((s) => s.refreshDisk);
   const prune = useDockerStore((s) => s.prune);
   const clearPruneOutput = useDockerStore((s) => s.clearPruneOutput);
@@ -87,7 +93,10 @@ export function CleanupHub({ hostId, onClose }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const runPrune = (target: PruneTarget, opts?: { all?: boolean; volumes?: boolean }) => {
+  const runPrune = (
+    target: PruneTarget,
+    opts?: { all?: boolean; volumes?: boolean },
+  ) => {
     if (confirming !== target) {
       setConfirming(target);
       return;
@@ -95,6 +104,14 @@ export function CleanupHub({ hostId, onClose }: Props) {
     setConfirming(null);
     void prune(hostId, target, opts);
   };
+
+  if (bare) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col gap-1 px-2 py-2">
+        <CleanupBody />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -116,6 +133,12 @@ export function CleanupHub({ hostId, onClose }: Props) {
           <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={1.75} />
         </button>
       </div>
+      <CleanupBody />
+    </div>
+  );
+
+  function CleanupBody() {
+    return (
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 py-2">
         {diskLoading && !disk ? (
           <div className="py-6 text-center text-[11px] text-muted-foreground/70">
@@ -174,7 +197,11 @@ export function CleanupHub({ hostId, onClose }: Props) {
                       pruning !== null && "opacity-50",
                     )}
                   >
-                    <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
+                    <HugeiconsIcon
+                      icon={Delete02Icon}
+                      size={13}
+                      strokeWidth={1.75}
+                    />
                   </button>
                 )}
               </div>
@@ -193,12 +220,16 @@ export function CleanupHub({ hostId, onClose }: Props) {
                 aria-label="Dismiss prune output"
                 className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-accent hover:text-foreground"
               >
-                <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
+                <HugeiconsIcon
+                  icon={Cancel01Icon}
+                  size={12}
+                  strokeWidth={1.75}
+                />
               </button>
             </div>
           </div>
         ) : null}
       </div>
-    </div>
-  );
+    );
+  }
 }

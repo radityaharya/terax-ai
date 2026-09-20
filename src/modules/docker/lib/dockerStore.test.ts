@@ -48,7 +48,10 @@ describe("log follow self-heal", () => {
     sshRpcMock.mockResolvedValueOnce({ handle: 1 });
     store.startLogFollow(HOST, "container", "web");
     await vi.waitFor(() => {
-      expect(useDockerStore.getState().byHost[HOST]?.logFollows["container:web"]?.handle).toBe(1);
+      expect(
+        useDockerStore.getState().byHost[HOST]?.logFollows["container:web"]
+          ?.handle,
+      ).toBe(1);
     });
 
     // Poll fails with a dead lane; respawn returns handle 2, then an
@@ -62,10 +65,14 @@ describe("log follow self-heal", () => {
     await store.pollLogFollow(HOST, "container:web");
     // Respawn chains spawn -> poll internally; settle the chain.
     await vi.waitFor(() => {
-      expect(useDockerStore.getState().byHost[HOST]?.logFollows["container:web"]?.handle).toBe(2);
+      expect(
+        useDockerStore.getState().byHost[HOST]?.logFollows["container:web"]
+          ?.handle,
+      ).toBe(2);
     });
 
-    const follow = useDockerStore.getState().byHost[HOST]?.logFollows["container:web"];
+    const follow =
+      useDockerStore.getState().byHost[HOST]?.logFollows["container:web"];
     expect(follow?.phase).toBe("following");
     expect(follow?.healsLeft).toBe(MAX_HEALS - 1);
     expect(sshRpcMock).toHaveBeenCalledWith(
@@ -80,7 +87,10 @@ describe("log follow self-heal", () => {
     sshRpcMock.mockResolvedValueOnce({ handle: 1 });
     store.startLogFollow(HOST, "container", "db");
     await vi.waitFor(() => {
-      expect(useDockerStore.getState().byHost[HOST]?.logFollows["container:db"]?.handle).toBe(1);
+      expect(
+        useDockerStore.getState().byHost[HOST]?.logFollows["container:db"]
+          ?.handle,
+      ).toBe(1);
     });
 
     // Every poll dies but every spawn succeeds: MAX_HEALS respawns
@@ -92,7 +102,8 @@ describe("log follow self-heal", () => {
       sshRpcMock.mockResolvedValueOnce(okPoll({ next_offset: 0 }));
       await store.pollLogFollow(HOST, "container:db");
       await vi.waitFor(() => {
-        const f = useDockerStore.getState().byHost[HOST]?.logFollows["container:db"];
+        const f =
+          useDockerStore.getState().byHost[HOST]?.logFollows["container:db"];
         expect(f?.handle).toBe(10 + i);
       });
     }
@@ -100,7 +111,8 @@ describe("log follow self-heal", () => {
     sshRpcMock.mockRejectedValueOnce(new Error("no background handle"));
     await store.pollLogFollow(HOST, "container:db");
 
-    const follow = useDockerStore.getState().byHost[HOST]?.logFollows["container:db"];
+    const follow =
+      useDockerStore.getState().byHost[HOST]?.logFollows["container:db"];
     expect(follow?.phase).toBe("error");
     expect(follow?.healsLeft).toBe(0);
   });
@@ -110,13 +122,17 @@ describe("log follow self-heal", () => {
     sshRpcMock.mockResolvedValueOnce({ handle: 1 });
     store.startLogFollow(HOST, "container", "api");
     await vi.waitFor(() => {
-      expect(useDockerStore.getState().byHost[HOST]?.logFollows["container:api"]?.handle).toBe(1);
+      expect(
+        useDockerStore.getState().byHost[HOST]?.logFollows["container:api"]
+          ?.handle,
+      ).toBe(1);
     });
 
     sshRpcMock.mockRejectedValueOnce(new Error("docker_error: boom"));
     await store.pollLogFollow(HOST, "container:api");
 
-    const follow = useDockerStore.getState().byHost[HOST]?.logFollows["container:api"];
+    const follow =
+      useDockerStore.getState().byHost[HOST]?.logFollows["container:api"];
     expect(follow?.phase).toBe("error");
     expect(follow?.error).toContain("boom");
     expect(follow?.healsLeft).toBe(MAX_HEALS);
@@ -140,7 +156,9 @@ describe("pull self-heal", () => {
     sshRpcMock.mockResolvedValueOnce(okPoll({ next_offset: 0 }));
     const jobId = store.startPull(HOST, "img:latest");
     await vi.waitFor(() => {
-      expect(useDockerStore.getState().byHost[HOST]?.pulls[jobId]?.handle).toBe(1);
+      expect(useDockerStore.getState().byHost[HOST]?.pulls[jobId]?.handle).toBe(
+        1,
+      );
     });
     // Let startPull's internal pollPull consume the drained chunk first.
     await vi.waitFor(() => {
@@ -155,7 +173,9 @@ describe("pull self-heal", () => {
     // strict call order: poll#1 rejects, spawn resolves, poll#2 resolves.
     sshRpcMock.mockRejectedValueOnce(new Error("no_handle"));
     sshRpcMock.mockResolvedValueOnce({ handle: 2 });
-    sshRpcMock.mockResolvedValueOnce(okPoll({ next_offset: 0, exited: true, exit_code: 0 }));
+    sshRpcMock.mockResolvedValueOnce(
+      okPoll({ next_offset: 0, exited: true, exit_code: 0 }),
+    );
 
     await store.pollPull(HOST, jobId);
     await vi.waitFor(() => {
@@ -185,7 +205,9 @@ describe("events feed self-heal", () => {
     sshRpcMock.mockResolvedValueOnce(okPoll({ bytes: "", next_offset: 0 }));
     await store.startEventsFeed(HOST);
     await vi.waitFor(() => {
-      expect(useDockerStore.getState().byHost[HOST]?.eventsFeed?.phase).toBe("streaming");
+      expect(useDockerStore.getState().byHost[HOST]?.eventsFeed?.phase).toBe(
+        "streaming",
+      );
     });
 
     sshRpcMock.mockRejectedValueOnce(new Error("no_handle"));
@@ -194,7 +216,9 @@ describe("events feed self-heal", () => {
 
     await store.pollEventsFeed(HOST);
     await vi.waitFor(() => {
-      expect(useDockerStore.getState().byHost[HOST]?.eventsFeed?.handle).toBe(2);
+      expect(useDockerStore.getState().byHost[HOST]?.eventsFeed?.handle).toBe(
+        2,
+      );
     });
 
     const feed = useDockerStore.getState().byHost[HOST]?.eventsFeed;

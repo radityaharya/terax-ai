@@ -3,9 +3,9 @@ import { Cancel01Icon, CopyIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import {
+  type InspectState,
   inspectKey,
   useDockerStore,
-  type InspectState,
 } from "../lib/dockerStore";
 
 export type InspectTarget = {
@@ -18,13 +18,18 @@ type Props = {
   hostId: string;
   target: InspectTarget;
   onClose: () => void;
+  /** Render body only (no frame): the SidebarDeck owns header + close. */
+  bare?: boolean;
 };
 
 /** Slide-over showing structured `docker inspect` output. */
-export function DetailsDrawer({ hostId, target, onClose }: Props) {
-  const key = target ? `${hostId}\u0000${inspectKey(target.kind, target.id)}` : null;
-  const state: InspectState =
-    useDockerStore((s) => (key ? (s.inspects[key] ?? { status: "idle" }) : { status: "idle" }));
+export function DetailsDrawer({ hostId, target, onClose, bare }: Props) {
+  const key = target
+    ? `${hostId}\u0000${inspectKey(target.kind, target.id)}`
+    : null;
+  const state: InspectState = useDockerStore((s) =>
+    key ? (s.inspects[key] ?? { status: "idle" }) : { status: "idle" },
+  );
   const fetchInspect = useDockerStore((s) => s.fetchInspect);
   const [copied, setCopied] = useState(false);
 
@@ -55,6 +60,24 @@ export function DetailsDrawer({ hostId, target, onClose }: Props) {
       // clipboard unavailable — ignore
     }
   };
+
+  if (bare) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col px-2.5 py-2">
+        {state.status === "ready" ? (
+          <InspectBody data={state.data} />
+        ) : state.status === "loading" || state.status === "idle" ? (
+          <div className="py-6 text-center text-[11px] text-muted-foreground/70">
+            Loading inspect…
+          </div>
+        ) : (
+          <div className="break-words py-6 text-center text-[11px] text-destructive">
+            {state.message}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -123,8 +146,10 @@ function InspectBody({ data }: { data: unknown }) {
               title={c.title ?? c.label}
               className={cn(
                 "rounded px-1.5 py-0.5 text-[10px] font-medium",
-                c.tone === "good" && "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-                c.tone === "warn" && "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+                c.tone === "good" &&
+                  "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+                c.tone === "warn" &&
+                  "bg-amber-500/15 text-amber-600 dark:text-amber-400",
                 c.tone === "bad" && "bg-destructive/10 text-destructive",
                 c.tone === "muted" && "bg-accent text-muted-foreground",
               )}
@@ -135,7 +160,11 @@ function InspectBody({ data }: { data: unknown }) {
         </div>
       ) : null}
       <KV label="Id" value={shortId(rec.Id)} mono />
-      <KV label="Image" value={str(nested(rec, ["Config", "Image"]) ?? rec.Image)} mono />
+      <KV
+        label="Image"
+        value={str(nested(rec, ["Config", "Image"]) ?? rec.Image)}
+        mono
+      />
       <KV label="Command" value={cmdline(rec)} mono wrap />
       <KV label="Created" value={str(rec.Created)} />
       <KV
@@ -143,9 +172,15 @@ function InspectBody({ data }: { data: unknown }) {
         value={str(nested(rec, ["HostConfig", "RestartPolicy", "Name"]))}
       />
       <KV label="ExitCode" value={num(nested(rec, ["State", "ExitCode"]))} />
-      <KV label="OOMKilled" value={boolStr(nested(rec, ["State", "OOMKilled"]))} />
+      <KV
+        label="OOMKilled"
+        value={boolStr(nested(rec, ["State", "OOMKilled"]))}
+      />
       <KV label="Error" value={str(nested(rec, ["State", "Error"]))} wrap />
-      <KV label="Health" value={str(nested(rec, ["State", "Health", "Status"]))} />
+      <KV
+        label="Health"
+        value={str(nested(rec, ["State", "Health", "Status"]))}
+      />
       <KV label="Mounts" value={mounts(rec)} wrap />
       <KV label="Ports" value={ports(rec)} wrap />
       <KV label="Env" value={envList(rec)} wrap mono />
@@ -159,7 +194,11 @@ function InspectBody({ data }: { data: unknown }) {
   );
 }
 
-type Chip = { label: string; tone: "good" | "warn" | "bad" | "muted"; title?: string };
+type Chip = {
+  label: string;
+  tone: "good" | "warn" | "bad" | "muted";
+  title?: string;
+};
 
 function topChips(rec: Record<string, unknown>): Chip[] {
   const chips: Chip[] = [];
@@ -171,7 +210,8 @@ function topChips(rec: Record<string, unknown>): Chip[] {
   if (health) {
     chips.push({
       label: `health: ${health}`,
-      tone: health === "healthy" ? "good" : health === "unhealthy" ? "bad" : "warn",
+      tone:
+        health === "healthy" ? "good" : health === "unhealthy" ? "bad" : "warn",
     });
   }
   const restart = str(nested(rec, ["HostConfig", "RestartPolicy", "Name"]));
@@ -228,7 +268,9 @@ function cmdline(rec: Record<string, unknown>): string {
 }
 
 function arrayStr(v: unknown): string[] {
-  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  return Array.isArray(v)
+    ? v.filter((x): x is string => typeof x === "string")
+    : [];
 }
 
 function mounts(rec: Record<string, unknown>): string {
@@ -243,9 +285,8 @@ function mounts(rec: Record<string, unknown>): string {
 }
 
 function ports(rec: Record<string, unknown>): string {
-  const ports = (rec.NetworkSettings as Record<string, unknown> | undefined)?.Ports as
-    | Record<string, unknown>
-    | undefined;
+  const ports = (rec.NetworkSettings as Record<string, unknown> | undefined)
+    ?.Ports as Record<string, unknown> | undefined;
   if (!ports) return "";
   const out: string[] = [];
   for (const [container, bindings] of Object.entries(ports)) {

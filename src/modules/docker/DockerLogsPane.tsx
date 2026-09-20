@@ -1,12 +1,20 @@
 import { cn } from "@/lib/utils";
 import { Cancel01Icon, CopyIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { LogTimeline } from "./components/LogTimeline";
+import {
+  type Dispatch,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { LogsInspector } from "./components/LogsInspector";
+import { LogTimeline } from "./components/LogTimeline";
 import { ansiSpans, stripAnsi } from "./lib/ansi";
-import { classifyLogLevel, LEVEL_ORDER, type LogLevel } from "./lib/logLevels";
 import { retainLogFollow, useDockerStore } from "./lib/dockerStore";
+import { classifyLogLevel, LEVEL_ORDER, type LogLevel } from "./lib/logLevels";
 
 type Props = {
   hostId: string;
@@ -16,6 +24,8 @@ type Props = {
   onClose: () => void;
   /** Render inline (tab surface) instead of as a floating drawer. */
   inline?: boolean;
+  /** Render body only (no frame): the SidebarDeck owns header + close. */
+  bare?: boolean;
 };
 
 const TAIL_CHOICES = [100, 500, 1000, 5000];
@@ -25,9 +35,19 @@ const TAIL_CHOICES = [100, 500, 1000, 5000];
  *
  *  Two surfaces share the follow lifecycle: inline (tab) renders the full
  *  inspector + timeline workspace; drawer keeps the compact legacy strip. */
-export function DockerLogsPane({ hostId, kind, id, title, onClose, inline }: Props) {
+export function DockerLogsPane({
+  hostId,
+  kind,
+  id,
+  title,
+  onClose,
+  inline,
+  bare,
+}: Props) {
   const followId = `${kind}:${id}`;
-  const follow = useDockerStore((s) => s.byHost[hostId]?.logFollows[followId] ?? null);
+  const follow = useDockerStore(
+    (s) => s.byHost[hostId]?.logFollows[followId] ?? null,
+  );
   const startLogFollow = useDockerStore((s) => s.startLogFollow);
   const pollLogFollow = useDockerStore((s) => s.pollLogFollow);
   const stopLogFollow = useDockerStore((s) => s.stopLogFollow);
@@ -65,6 +85,7 @@ export function DockerLogsPane({ hostId, kind, id, title, onClose, inline }: Pro
       stopLogFollow={stopLogFollow}
       setLogOptions={setLogOptions}
       onClose={onClose}
+      bare={bare}
     />
   );
 }
@@ -88,7 +109,11 @@ function InlineLogsPane({
   title: string;
   follow: import("./lib/dockerStore").LogFollowState | null;
   followId: string;
-  startLogFollow: (hostId: string, kind: "container" | "service", id: string) => string;
+  startLogFollow: (
+    hostId: string,
+    kind: "container" | "service",
+    id: string,
+  ) => string;
   pollLogFollow: (hostId: string, followId: string) => Promise<void>;
   stopLogFollow: (hostId: string, followId: string) => Promise<void>;
   setLogOptions: (
@@ -158,6 +183,7 @@ function DrawerLogsPane({
   stopLogFollow,
   setLogOptions,
   onClose,
+  bare,
 }: {
   hostId: string;
   kind: "container" | "service";
@@ -165,7 +191,11 @@ function DrawerLogsPane({
   title: string;
   follow: import("./lib/dockerStore").LogFollowState | null;
   followId: string;
-  startLogFollow: (hostId: string, kind: "container" | "service", id: string) => string;
+  startLogFollow: (
+    hostId: string,
+    kind: "container" | "service",
+    id: string,
+  ) => string;
   pollLogFollow: (hostId: string, followId: string) => Promise<void>;
   stopLogFollow: (hostId: string, followId: string) => Promise<void>;
   setLogOptions: (
@@ -174,6 +204,7 @@ function DrawerLogsPane({
     options: Partial<import("./lib/dockerStore").LogViewOptions>,
   ) => void;
   onClose: () => void;
+  bare?: boolean;
 }) {
   const [paused, setPaused] = useState(false);
   const [filter, setFilter] = useState("");
@@ -254,7 +285,8 @@ function DrawerLogsPane({
       const { invoke } = await import("@tauri-apps/api/core");
       // Write next to the remote home: the agent resolves relative paths
       // against its authorized root.
-      const safe = title.replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 64) || "docker";
+      const safe =
+        title.replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 64) || "docker";
       await invoke("ssh_rpc", {
         hostId,
         method: "fs_write_file",
@@ -267,6 +299,16 @@ function DrawerLogsPane({
   };
 
   const opts = follow?.options;
+
+  if (bare) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <DrawerToolbar />
+        <DrawerBody />
+        <DrawerFooter />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -297,7 +339,16 @@ function DrawerLogsPane({
           <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={1.75} />
         </button>
       </div>
+      <DrawerToolbar />
+      <DrawerBody />
+      <DrawerFooter />
+    </div>
+  );
+
+  function DrawerToolbar() {
+    return (
       <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border/60 px-2.5 py-1.5">
+        {/* toolbar body unchanged below */}
         <button
           type="button"
           onClick={() => setPaused((v) => !v)}
@@ -305,7 +356,9 @@ function DrawerLogsPane({
           title={paused ? "Resume follow" : "Pause follow (freeze scroll)"}
           className={cn(
             "h-6 rounded-md px-2 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40",
-            paused ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+            paused
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:text-foreground",
           )}
         >
           {paused ? "Resume" : "Pause"}
@@ -317,7 +370,9 @@ function DrawerLogsPane({
           title="Toggle line wrap"
           className={cn(
             "h-6 rounded-md px-2 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40",
-            wrap ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+            wrap
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:text-foreground",
           )}
         >
           Wrap
@@ -326,7 +381,9 @@ function DrawerLogsPane({
           <input
             type="checkbox"
             checked={opts?.timestamps ?? true}
-            onChange={(e) => setLogOptions(hostId, followId, { timestamps: e.target.checked })}
+            onChange={(e) =>
+              setLogOptions(hostId, followId, { timestamps: e.target.checked })
+            }
           />
           Times
         </label>
@@ -334,7 +391,9 @@ function DrawerLogsPane({
           Tail
           <select
             value={opts?.tail ?? 500}
-            onChange={(e) => setLogOptions(hostId, followId, { tail: Number(e.target.value) })}
+            onChange={(e) =>
+              setLogOptions(hostId, followId, { tail: Number(e.target.value) })
+            }
             className="h-6 rounded border border-border/60 bg-background px-1 text-[11px] outline-none"
           >
             {TAIL_CHOICES.map((t) => (
@@ -367,6 +426,11 @@ function DrawerLogsPane({
           Export
         </button>
       </div>
+    );
+  }
+
+  function DrawerBody() {
+    return (
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -376,19 +440,33 @@ function DrawerLogsPane({
           <div className="text-red-400">{follow.error}</div>
         ) : visible.length === 0 ? (
           <div className="text-neutral-500">
-            {follow?.phase === "starting" ? "Attaching to logs…" : "No log lines yet."}
+            {follow?.phase === "starting"
+              ? "Attaching to logs…"
+              : "No log lines yet."}
           </div>
         ) : (
           visible.map((line, i) => (
             // Index keys are safe: log lines are append-only, capped at 5000.
             // biome-ignore lint/suspicious/noArrayIndexKey: append-only log buffer
-            <LogLine key={`${i}-${line.length}`} line={line} highlight={highlightRe} wrap={wrap} />
+            <LogLine
+              key={`${i}-${line.length}`}
+              line={line}
+              highlight={highlightRe}
+              wrap={wrap}
+            />
           ))
         )}
         {follow && follow.dropped > 0 ? (
-          <div className="text-amber-400">…{follow.dropped} bytes dropped from buffer…</div>
+          <div className="text-amber-400">
+            …{follow.dropped} bytes dropped from buffer…
+          </div>
         ) : null}
       </div>
+    );
+  }
+
+  function DrawerFooter() {
+    return (
       <div className="flex shrink-0 items-center justify-between border-t border-border/60 px-2.5 py-1 text-[10px] text-muted-foreground/70">
         <span>
           {visible.length} lines
@@ -408,8 +486,8 @@ function DrawerLogsPane({
           </button>
         ) : null}
       </div>
-    </div>
-  );
+    );
+  }
 }
 
 /** Full-space logs workspace for the tab surface: slim header, timeline
@@ -519,7 +597,8 @@ function LogsWorkspace({
     const text = visible.map(stripAnsi).join("\n");
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const safe = title.replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 64) || "docker";
+      const safe =
+        title.replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 64) || "docker";
       await invoke("ssh_rpc", {
         hostId,
         method: "fs_write_file",
@@ -538,8 +617,22 @@ function LogsWorkspace({
     (l: LogLevel | null) =>
       setLevels(() =>
         l === null
-          ? { error: true, warn: true, info: true, debug: true, trace: true, plain: true }
-          : { error: l === "error", warn: l === "warn", info: l === "info", debug: l === "debug", trace: l === "trace", plain: l === "plain" },
+          ? {
+              error: true,
+              warn: true,
+              info: true,
+              debug: true,
+              trace: true,
+              plain: true,
+            }
+          : {
+              error: l === "error",
+              warn: l === "warn",
+              info: l === "info",
+              debug: l === "debug",
+              trace: l === "trace",
+              plain: l === "plain",
+            },
       ),
     [setLevels],
   );
@@ -547,7 +640,10 @@ function LogsWorkspace({
   const phase = follow?.phase ?? "starting";
   return (
     // biome-ignore lint/a11y/useAriaPropsSupportedByRole: tab surface carries the tab label
-    <div className="flex h-full w-full flex-col bg-background" aria-label={`Logs: ${title}`}>
+    <div
+      className="flex h-full w-full flex-col bg-background"
+      aria-label={`Logs: ${title}`}
+    >
       <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-1.5">
         <span className="min-w-0 flex-1 truncate text-xs font-semibold text-foreground">
           Logs · {title}
@@ -571,7 +667,9 @@ function LogsWorkspace({
             </div>
           ) : visible.length === 0 ? (
             <div className="flex-1 overflow-auto bg-black/[0.82] p-3 font-mono text-[12px] text-neutral-500">
-              {phase === "starting" ? "Attaching to logs…" : "No log lines yet."}
+              {phase === "starting"
+                ? "Attaching to logs…"
+                : "No log lines yet."}
             </div>
           ) : (
             <LogTimeline
@@ -612,9 +710,12 @@ function LogsWorkspace({
             setWrap: (v: boolean) => setWrap(v),
             bumpFont: (d: number) =>
               setFontSize((f: number) => Math.min(18, Math.max(10, f + d))),
-            setTimestamps: (v: boolean) => setLogOptions(hostId, followId, { timestamps: v }),
-            setTail: (v: number) => setLogOptions(hostId, followId, { tail: v }),
-            setSince: (v: string) => setLogOptions(hostId, followId, { since: v }),
+            setTimestamps: (v: boolean) =>
+              setLogOptions(hostId, followId, { timestamps: v }),
+            setTail: (v: number) =>
+              setLogOptions(hostId, followId, { tail: v }),
+            setSince: (v: string) =>
+              setLogOptions(hostId, followId, { since: v }),
             toggleLevel,
             onlyLevel,
             onCopy: () => void copyAll(),
@@ -633,9 +734,12 @@ function FollowPill({ phase, paused }: { phase: string; paused: boolean }) {
     <span
       className={cn(
         "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
-        label === "following" && "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-        label === "paused" && "bg-amber-500/15 text-amber-600 dark:text-amber-400",
-        (label === "done" || label === "error") && "bg-accent text-muted-foreground",
+        label === "following" &&
+          "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+        label === "paused" &&
+          "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+        (label === "done" || label === "error") &&
+          "bg-accent text-muted-foreground",
         label === "starting" && "bg-accent text-muted-foreground",
       )}
     >
@@ -659,7 +763,9 @@ function LogLine({
   const keyed = spans.map((s, i) => ({ ...s, key: `${i}-${s.text.length}` }));
   if (!highlight) {
     return (
-      <div className={wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}>
+      <div
+        className={wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}
+      >
         {keyed.map((s) =>
           s.className ? (
             <span key={s.key} className={s.className}>
@@ -676,7 +782,12 @@ function LogLine({
   return (
     <div className={wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}>
       {keyed.map((s) => (
-        <HighlightText key={s.key} text={s.text} className={s.className} re={highlight} />
+        <HighlightText
+          key={s.key}
+          text={s.text}
+          className={s.className}
+          re={highlight}
+        />
       ))}
     </div>
   );
@@ -701,13 +812,17 @@ function HighlightText({
     if (guard > text.length + 10) break;
     const m: RegExpExecArray | null = fresh.exec(text);
     if (m === null) break;
-    if (m.index > last) parts.push({ text: text.slice(last, m.index), hit: false });
+    if (m.index > last)
+      parts.push({ text: text.slice(last, m.index), hit: false });
     parts.push({ text: m[0], hit: true });
     last = m.index + m[0].length;
     if (m[0].length === 0) fresh.lastIndex = last + 1;
   }
   if (last < text.length) parts.push({ text: text.slice(last), hit: false });
-  const keyedParts = parts.map((p, i) => ({ ...p, key: `${i}-${p.text.length}` }));
+  const keyedParts = parts.map((p, i) => ({
+    ...p,
+    key: `${i}-${p.text.length}`,
+  }));
   return (
     <span className={className ?? undefined}>
       {keyedParts.map((p) =>

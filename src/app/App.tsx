@@ -31,6 +31,7 @@ import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { native } from "@/modules/ai/lib/native";
 import { CommandPalette, createCommandItems } from "@/modules/command-palette";
 import { useControlBridge } from "@/modules/control";
+import { DockerNotifications, DockerPanel } from "@/modules/docker";
 import {
   type EditorPaneHandle,
   NewEditorDialog,
@@ -45,21 +46,20 @@ import {
   useExplorerPinStore,
 } from "@/modules/explorer";
 import type { GitHistorySearchHandle } from "@/modules/git-history";
-import { DockerNotifications, DockerPanel } from "@/modules/docker";
-import {
-  HostEditorDialog,
-  HostKeyDialog,
-  HostsPanel,
-  SshAuthDialog,
-  probeHost,
-  useHostStore,
-  type SshHost,
-} from "@/modules/hosts";
 import {
   Header,
   type SearchInlineHandle,
   type SearchTarget,
 } from "@/modules/header";
+import {
+  HostEditorDialog,
+  HostKeyDialog,
+  HostsPanel,
+  probeHost,
+  SshAuthDialog,
+  type SshHost,
+  useHostStore,
+} from "@/modules/hosts";
 import { setLspNavigator } from "@/modules/lsp";
 import type { PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
@@ -72,9 +72,13 @@ import {
   useGlobalShortcuts,
 } from "@/modules/shortcuts";
 import {
+  SIDEBAR_DECK_MAX_WIDTH,
+  SIDEBAR_DECK_MIN_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  SidebarDeck,
   SidebarRail,
+  useSidebarDeckPanel,
   useSidebarPanel,
 } from "@/modules/sidebar";
 import {
@@ -90,8 +94,8 @@ import {
 } from "@/modules/spaces";
 import { StatusBar } from "@/modules/statusbar";
 import {
-  TabSwitcherHud,
   type CloseTabsPlan,
+  TabSwitcherHud,
   tabEnv,
   useTabSwitcher,
   useTabs,
@@ -145,12 +149,12 @@ import {
   WorkspaceInputBar,
 } from "./components/WorkspaceInputBar";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
-import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
 import {
   hasOpenPathTab,
   renamedPath,
   spacesEmptiedByTabs,
 } from "./hooks/tabCloseGuards";
+import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
@@ -253,12 +257,12 @@ export default function App() {
   const setWorkspaceEnv = useWorkspaceEnvStore((s) => s.setEnv);
   const { home, launchCwd, launchCwdResolved, adoptWorkspaceEnv } =
     useWorkspaceSwitcher({
-    tabsRef,
-    workspaceEnv,
-    setWorkspaceEnv,
-    resetWorkspace,
-    clearWorkspaceState,
-  });
+      tabsRef,
+      workspaceEnv,
+      setWorkspaceEnv,
+      resetWorkspace,
+      clearWorkspaceState,
+    });
 
   const activeSpaceId = useSpaces((s) => s.activeId);
   const spacesHydrated = useSpaces((s) => s.hydrated);
@@ -275,8 +279,8 @@ export default function App() {
   // picks open a tab in that env. Nothing existing is closed or reset.
   // Defined before handleConnectHost would create a use-before-declare, so
   // the connect goes through a ref updated below.
-  const handleConnectHostRef = useRef<(host: SshHost) => Promise<boolean>>(
-    () => Promise.resolve(false),
+  const handleConnectHostRef = useRef<(host: SshHost) => Promise<boolean>>(() =>
+    Promise.resolve(false),
   );
   const handleWorkspaceChange = useCallback(
     async (env: WorkspaceEnv) => {
@@ -380,6 +384,16 @@ export default function App() {
     toggleExplorerFocus,
   } = useSidebarPanel(explorerRef);
 
+  // Real resizable third pane for sidebar detail surfaces (Docker
+  // inspect/logs/exec today; any sidebar view can push a card). Sits
+  // between the sidebar list and the workspace, never covers either.
+  const {
+    deckRef,
+    card: sidebarDeckCard,
+    closeDeck: closeSidebarDeck,
+    persistDeckWidth,
+  } = useSidebarDeckPanel();
+
   const [newEditorOpen, setNewEditorOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [paletteInitialMode, setPaletteInitialMode] = useState<
@@ -414,7 +428,9 @@ export default function App() {
   useThemeFileEditing({ tabsRef, openFileTab });
 
   const activeSpace = useSpaces((s) =>
-    activeSpaceId ? (s.spaces.find((sp) => sp.id === activeSpaceId) ?? null) : null,
+    activeSpaceId
+      ? (s.spaces.find((sp) => sp.id === activeSpaceId) ?? null)
+      : null,
   );
   const { explorerRoot, inheritedCwdForNewTab } = useWorkspaceCwd(
     activeTab,
@@ -1377,8 +1393,7 @@ export default function App() {
       // probeHost already resolved home into the connection status; reuse it
       // instead of a duplicate ssh_home_for handshake per host click.
       const known = useHostStore.getState().connections[host.id];
-      const home =
-        known?.state === "online" && known.home ? known.home : null;
+      const home = known?.state === "online" && known.home ? known.home : null;
       newTabWithEnv(env, home ?? undefined, host.alias);
       return true;
     },
@@ -1652,6 +1667,13 @@ export default function App() {
               onLayoutChanged={(_, { isUserInteraction }) => {
                 const width = sidebarRef.current?.getSize().inPixels ?? 0;
                 persistSidebarWidth(width, isUserInteraction);
+                // Only remember a deck width while a card is actually open:
+                // a card-less deck must never carry a "last width" that
+                // could reopen it blank (see the onResize guard below).
+                if (sidebarDeckCard) {
+                  const deckWidth = deckRef.current?.getSize().inPixels ?? 0;
+                  persistDeckWidth(deckWidth, isUserInteraction);
+                }
               }}
             >
               <ResizablePanel
@@ -1679,9 +1701,7 @@ export default function App() {
                       {sidebarView === "hosts" ? (
                         <HostsPanel
                           onConnect={(host) => void handleConnectHost(host)}
-                          onEdit={(host) =>
-                            setHostEditor({ open: true, host })
-                          }
+                          onEdit={(host) => setHostEditor({ open: true, host })}
                           onShowHostKey={(host) => setHostKeyPrompt(host)}
                           onShowAuth={(host, next, message) =>
                             setSshAuthPrompt({ host, next, message })
@@ -1754,6 +1774,44 @@ export default function App() {
                     />
                   </div>
                 </div>
+              </ResizablePanel>
+              <ResizableHandle
+                disabled={!sidebarDeckCard}
+                className="w-1 rounded-full bg-transparent transition-colors duration-[var(--dur-fast)] after:w-4 hover:bg-border"
+              />
+              <ResizablePanel
+                id="sidebar-deck"
+                panelRef={deckRef}
+                defaultSize="0px"
+                minSize={`${SIDEBAR_DECK_MIN_WIDTH}px`}
+                maxSize={`${SIDEBAR_DECK_MAX_WIDTH}px`}
+                collapsible
+                collapsedSize={0}
+                onResize={(size) => {
+                  // A user drag to 0 acts like the close button: clear the
+                  // card too, so state stays in sync with the panel. Width
+                  // persistence happens on the group's onLayoutChanged.
+                  if (size.inPixels <= 0 && sidebarDeckCard) closeSidebarDeck();
+                  // Guard rail: if this panel is ever open with NO card
+                  // (e.g. a drag-open before any card existed, or a stale
+                  // width restored on mount), it renders nothing and has
+                  // no close button — force it shut instead of leaving an
+                  // unclosable blank pane.
+                  else if (size.inPixels > 0 && !sidebarDeckCard) {
+                    deckRef.current?.collapse();
+                  }
+                }}
+              >
+                {sidebarDeckCard ? (
+                  <div className="h-full min-h-0 pr-0.5">
+                    <div className="terax-pane flex h-full min-h-0 flex-col">
+                      <SidebarDeck
+                        card={sidebarDeckCard}
+                        onClose={closeSidebarDeck}
+                      />
+                    </div>
+                  </div>
+                ) : null}
               </ResizablePanel>
               <ResizableHandle className="w-1 rounded-full bg-transparent transition-colors duration-[var(--dur-fast)] after:w-4 hover:bg-border" />
               <ResizablePanel id="workspace" defaultSize="78%" minSize="30%">
@@ -1883,9 +1941,7 @@ export default function App() {
           {hostEditor.open && (
             <HostEditorDialog
               host={hostEditor.host}
-              onOpenChange={(open) =>
-                setHostEditor((s) => ({ ...s, open }))
-              }
+              onOpenChange={(open) => setHostEditor((s) => ({ ...s, open }))}
               onSaved={(host) => void handleConnectHost(host)}
             />
           )}
@@ -1899,8 +1955,7 @@ export default function App() {
                 const host = hostKeyPrompt;
                 setHostKeyPrompt(null);
                 void probeHost(host).then((status) => {
-                  if (status.state === "online")
-                    void handleConnectHost(host);
+                  if (status.state === "online") void handleConnectHost(host);
                   else if (status.state === "needs-auth")
                     setSshAuthPrompt({
                       host,

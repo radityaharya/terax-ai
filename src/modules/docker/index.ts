@@ -1,30 +1,24 @@
-export { DockerPanel } from "./DockerPanel";
-export { DetailsDrawer } from "./components/DetailsDrawer";
 export { CleanupHub } from "./components/CleanupHub";
+export { DetailsDrawer } from "./components/DetailsDrawer";
 export { DockerEventsPane } from "./DockerEventsPane";
 export { DockerLogsPane } from "./DockerLogsPane";
 export { DockerNotifications } from "./DockerNotifications";
+export { DockerPanel } from "./DockerPanel";
+export { composeLabel, daemonLabel, swarmLabel } from "./lib/capabilities";
 export {
-  evaluateEvent,
-  underReplicatedNotification,
-  updateAvailableNotification,
-  type DockerNotification,
-} from "./lib/notify";
-export {
-  useDockerStore,
-  hostDocker,
-  inspectKey,
-  mutedRules,
-  retainLogFollow,
   type ComposeProjectState,
   type ContainerAction,
   type DiskUsage,
   type DockerEvent,
   type EventsFeedState,
+  hostDocker,
   type InspectState,
+  inspectKey,
   type LogFollowState,
   type LogViewOptions,
+  mutedRules,
   type PruneTarget,
+  retainLogFollow,
   type StatsSample,
   type SwarmConfig,
   type SwarmInfo,
@@ -33,9 +27,14 @@ export {
   type SwarmService,
   type SwarmStack,
   type SwarmState,
+  useDockerStore,
 } from "./lib/dockerStore";
-export { daemonLabel, swarmLabel, composeLabel } from "./lib/capabilities";
-export { checkImageUpdate, type ImageUpdate } from "./lib/updateCheck";
+export {
+  type DockerNotification,
+  evaluateEvent,
+  underReplicatedNotification,
+  updateAvailableNotification,
+} from "./lib/notify";
 export type {
   DockerCapabilities,
   DockerContainer,
@@ -47,3 +46,4 @@ export type {
   PullProgressEvent,
   ResourceListState,
 } from "./lib/types";
+export { checkImageUpdate, type ImageUpdate } from "./lib/updateCheck";

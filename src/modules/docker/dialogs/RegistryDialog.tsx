@@ -6,13 +6,15 @@ import { useDockerStore } from "../lib/dockerStore";
 type Props = {
   hostId: string;
   onClose: () => void;
+  /** Render body only (no frame): the deck panel owns header + close. */
+  bare?: boolean;
 };
 
 const COMMON = ["docker.io", "ghcr.io", "gcr.io", "quay.io"];
 
 /** Registry login/logout. Credentials go to the keyring + login stdin —
  *  the store only ever holds login state. */
-export function RegistryDialog({ hostId, onClose }: Props) {
+export function RegistryDialog({ hostId, onClose, bare }: Props) {
   const registries = useDockerStore((s) => s.byHost[hostId]?.registries ?? {});
   const registryLogin = useDockerStore((s) => s.registryLogin);
   const registryLogout = useDockerStore((s) => s.registryLogout);
@@ -33,12 +35,28 @@ export function RegistryDialog({ hostId, onClose }: Props) {
   const active = registry === "custom" ? custom.trim() : registry;
   const state = registries[active];
   const canSubmit =
-    active.length > 0 && username.trim().length > 0 && password.length > 0 && !state?.busy;
+    active.length > 0 &&
+    username.trim().length > 0 &&
+    password.length > 0 &&
+    !state?.busy;
 
   const submit = () => {
     if (!canSubmit) return;
-    void registryLogin(hostId, active, username.trim(), password).then(() => setPassword(""));
+    void registryLogin(hostId, active, username.trim(), password).then(() =>
+      setPassword(""),
+    );
   };
+
+  if (bare) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col gap-2 px-2.5 py-2">
+          <RegistryBody />
+        </div>
+        <RegistryActions />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -60,6 +78,13 @@ export function RegistryDialog({ hostId, onClose }: Props) {
           <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={1.75} />
         </button>
       </div>
+      <RegistryBody />
+      <RegistryActions />
+    </div>
+  );
+
+  function RegistryBody() {
+    return (
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2.5 py-2">
         <label className="flex flex-col gap-1 text-[11px]">
           <span className="font-medium text-muted-foreground">Registry</span>
@@ -79,7 +104,9 @@ export function RegistryDialog({ hostId, onClose }: Props) {
         </label>
         {registry === "custom" ? (
           <label className="flex flex-col gap-1 text-[11px]">
-            <span className="font-medium text-muted-foreground">Custom registry host</span>
+            <span className="font-medium text-muted-foreground">
+              Custom registry host
+            </span>
             <input
               value={custom}
               onChange={(e) => setCustom(e.target.value)}
@@ -98,7 +125,9 @@ export function RegistryDialog({ hostId, onClose }: Props) {
           />
         </label>
         <label className="flex flex-col gap-1 text-[11px]">
-          <span className="font-medium text-muted-foreground">Password / token</span>
+          <span className="font-medium text-muted-foreground">
+            Password / token
+          </span>
           <input
             type={showPassword ? "text" : "password"}
             value={password}
@@ -119,7 +148,9 @@ export function RegistryDialog({ hostId, onClose }: Props) {
           Show password
         </label>
         {state?.error ? (
-          <div className="break-words text-[11px] text-destructive">{state.error}</div>
+          <div className="break-words text-[11px] text-destructive">
+            {state.error}
+          </div>
         ) : null}
         {state?.loggedIn ? (
           <div className="text-[11px] text-emerald-600 dark:text-emerald-400">
@@ -127,11 +158,16 @@ export function RegistryDialog({ hostId, onClose }: Props) {
           </div>
         ) : null}
         <div className="text-[10px] text-muted-foreground/70">
-          The password is sent over the authenticated agent channel straight into
-          `docker login --password-stdin`, then kept in your OS keyring — never in
-          Terax state or logs.
+          The password is sent over the authenticated agent channel straight
+          into `docker login --password-stdin`, then kept in your OS keyring —
+          never in Terax state or logs.
         </div>
       </div>
+    );
+  }
+
+  function RegistryActions() {
+    return (
       <div className="flex shrink-0 items-center justify-end gap-1.5 border-t border-border/60 px-2.5 py-2">
         {state?.loggedIn ? (
           <button
@@ -152,6 +188,6 @@ export function RegistryDialog({ hostId, onClose }: Props) {
           {state?.busy ? "Logging in…" : "Log in"}
         </button>
       </div>
-    </div>
-  );
+    );
+  }
 }

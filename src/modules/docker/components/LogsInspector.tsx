@@ -59,7 +59,13 @@ const LEVEL_STYLE: Record<LogLevel, { dot: string; label: string }> = {
 
 /** Right-hand inspector rail for the logs tab: search, level buckets,
  *  stream controls, source options, export. Collapses under 640px. */
-export function LogsInspector({ s, a }: { s: InspectorState; a: InspectorActions }) {
+export function LogsInspector({
+  s,
+  a,
+}: {
+  s: InspectorState;
+  a: InspectorActions;
+}) {
   return (
     <aside
       aria-label="Log inspector"
@@ -98,13 +104,25 @@ export function LogsInspector({ s, a }: { s: InspectorState; a: InspectorActions
                   title={`${LEVEL_STYLE[l].label} — click to toggle, double-click to isolate`}
                   className={cn(
                     "flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40",
-                    on ? "text-foreground hover:bg-accent/60" : "text-muted-foreground/50 hover:bg-accent/40",
+                    on
+                      ? "text-foreground hover:bg-accent/60"
+                      : "text-muted-foreground/50 hover:bg-accent/40",
                   )}
                 >
-                  <span className={cn("size-1.5 shrink-0 rounded-full", LEVEL_STYLE[l].dot, !on && "opacity-30")} />
-                  <span className="flex-1 text-left font-medium">{LEVEL_STYLE[l].label}</span>
+                  <span
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full",
+                      LEVEL_STYLE[l].dot,
+                      !on && "opacity-30",
+                    )}
+                  />
+                  <span className="flex-1 text-left font-medium">
+                    {LEVEL_STYLE[l].label}
+                  </span>
                   <span className="tabular-nums text-muted-foreground/60">
-                    {s.counts[l] > 999 ? `${(s.counts[l] / 1000).toFixed(1)}k` : s.counts[l]}
+                    {s.counts[l] > 999
+                      ? `${(s.counts[l] / 1000).toFixed(1)}k`
+                      : s.counts[l]}
                   </span>
                 </button>
               </li>
@@ -125,14 +143,26 @@ export function LogsInspector({ s, a }: { s: InspectorState; a: InspectorActions
         <div className="flex flex-col gap-1">
           <RailButton
             onClick={() => a.setPaused(!s.paused)}
-            icon={s.paused ? <HugeiconsIcon icon={PlayIcon} size={13} strokeWidth={1.75} /> : <HugeiconsIcon icon={PauseIcon} size={13} strokeWidth={1.75} />}
+            icon={
+              s.paused ? (
+                <HugeiconsIcon icon={PlayIcon} size={13} strokeWidth={1.75} />
+              ) : (
+                <HugeiconsIcon icon={PauseIcon} size={13} strokeWidth={1.75} />
+              )
+            }
           >
             {s.paused ? "Resume follow" : "Pause follow"}
           </RailButton>
           <RailButton
             onClick={a.onJumpBottom}
             disabled={s.atBottom}
-            icon={<HugeiconsIcon icon={ArrowDown01Icon} size={13} strokeWidth={1.75} />}
+            icon={
+              <HugeiconsIcon
+                icon={ArrowDown01Icon}
+                size={13}
+                strokeWidth={1.75}
+              />
+            }
           >
             Jump to live tail
           </RailButton>
@@ -214,13 +244,21 @@ export function LogsInspector({ s, a }: { s: InspectorState; a: InspectorActions
         <div className="flex flex-col gap-1">
           <RailButton
             onClick={a.onCopy}
-            icon={<HugeiconsIcon icon={CopyIcon} size={13} strokeWidth={1.75} />}
+            icon={
+              <HugeiconsIcon icon={CopyIcon} size={13} strokeWidth={1.75} />
+            }
           >
             {s.copied ? "Copied" : "Copy visible"}
           </RailButton>
           <RailButton
             onClick={a.onExport}
-            icon={<HugeiconsIcon icon={Download01Icon} size={13} strokeWidth={1.75} />}
+            icon={
+              <HugeiconsIcon
+                icon={Download01Icon}
+                size={13}
+                strokeWidth={1.75}
+              />
+            }
           >
             Save to host file
           </RailButton>

@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
+import { useSidebarDeckStore } from "@/modules/sidebar";
 import {
-  RotateClockwiseIcon,
   Activity01Icon,
   ArrowUpRight01Icon,
   Cancel01Icon,
@@ -9,32 +9,27 @@ import {
   File02Icon,
   HardDriveIcon,
   PlayIcon,
-  StopIcon,
   Refresh01Icon,
+  RotateClockwiseIcon,
+  StopIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useEffect, useMemo, useState } from "react";
 import { CleanupHub } from "./components/CleanupHub";
 import { ComposeCard } from "./components/ComposeCard";
+import { DetailsDrawer } from "./components/DetailsDrawer";
 import { SwarmInitPrompt } from "./components/SwarmInitPrompt";
 import { SwarmPanel } from "./components/SwarmPanel";
 import { SwarmSecretsPanel } from "./components/SwarmSecretsPanel";
-import { DetailsDrawer } from "./components/DetailsDrawer";
 import { DockerEventsPane } from "./DockerEventsPane";
 import { DockerLogsPane } from "./DockerLogsPane";
 import { ExecDialog } from "./dialogs/ExecDialog";
 import { PullDialog } from "./dialogs/PullDialog";
 import { RegistryDialog } from "./dialogs/RegistryDialog";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useState } from "react";
 import { daemonLabel } from "./lib/capabilities";
-import {
-  useDockerStore,
-  type ContainerAction,
-} from "./lib/dockerStore";
-import type {
-  DockerContainer,
-  DockerResourceKind,
-} from "./lib/types";
+import { type ContainerAction, useDockerStore } from "./lib/dockerStore";
+import type { DockerContainer, DockerResourceKind } from "./lib/types";
 
 type OpenLogsTabFn = (input: {
   targetKind: "container" | "service";
@@ -58,7 +53,10 @@ type Props = {
   openExecTabRef?: React.MutableRefObject<OpenExecTabFn | null>;
 };
 
-const SEGMENTS: { id: DockerResourceKind | "compose" | "swarm"; label: string }[] = [
+const SEGMENTS: {
+  id: DockerResourceKind | "compose" | "swarm";
+  label: string;
+}[] = [
   { id: "containers", label: "Containers" },
   { id: "images", label: "Images" },
   { id: "compose", label: "Compose" },
@@ -67,54 +65,197 @@ const SEGMENTS: { id: DockerResourceKind | "compose" | "swarm"; label: string }[
   { id: "networks", label: "Networks" },
 ];
 
-export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef }: Props) {
-  const [segment, setSegment] = useState<DockerResourceKind | "compose" | "swarm">("containers");
-  const [execTarget, setExecTarget] = useState<{
-    container: string;
-    containerName: string;
-  } | null>(null);
+export function DockerPanel({
+  hostId,
+  hostAlias,
+  openLogsTabRef,
+  openExecTabRef,
+}: Props) {
+  const [segment, setSegment] = useState<
+    DockerResourceKind | "compose" | "swarm"
+  >("containers");
+  // Detail surface lives in the shared sidebar deck store: App.tsx renders
+  // it in a real ResizablePanel next to the list, so it never stacks or
+  // covers this panel's own content.
+  const setDeck = useSidebarDeckStore((s) => s.openCard);
+  const closeDeck = useSidebarDeckStore((s) => s.closeCard);
   const [filter, setFilter] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
-  const [inspecting, setInspecting] = useState<{
+  const [pullReference, setPullReference] = useState("");
+  const [activePulls, setActivePulls] = useState<string[]>([]);
+  // Detail openers: each replaces the current card (single focus). The
+  // bodies live below so the openers stay one-liners at the call sites.
+  const openInspectDeck = (target: {
     kind: "container" | "volume" | "network";
     id: string;
     title: string;
-  } | null>(null);
-  const [cleanupOpen, setCleanupOpen] = useState(false);
-  const [eventsOpen, setEventsOpen] = useState(false);
-  const [pullOpen, setPullOpen] = useState(false);
-  const [pullReference, setPullReference] = useState("");
-  const [registryOpen, setRegistryOpen] = useState(false);
-  const [activePulls, setActivePulls] = useState<string[]>([]);
-  const [logsTarget, setLogsTarget] = useState<{
+  }) => {
+    if (!hostId) return;
+    const t = target;
+    const h = hostId;
+    setDeck({
+      key: `inspect-${t.kind}-${t.id}`,
+      title: t.title,
+      badge: t.kind,
+      body: <DetailsDrawerBody hostId={h} target={t} />,
+    });
+  };
+  const openLogsDeck = (target: {
     kind: "container";
     id: string;
     title: string;
-  } | null>(null);
-  const [serviceLogsTarget, setServiceLogsTarget] = useState<{
+  }) => {
+    if (!hostId) return;
+    const t = target;
+    const h = hostId;
+    setDeck({
+      key: `logs-${t.id}`,
+      title: `Logs · ${t.title}`,
+      body: <LogsDeckBody hostId={h} kind={t.kind} id={t.id} title={t.title} />,
+    });
+  };
+  const openServiceLogsDeck = (target: {
     serviceId: string;
     title: string;
-  } | null>(null);
+  }) => {
+    if (!hostId) return;
+    const t = target;
+    const h = hostId;
+    setDeck({
+      key: `service-logs-${t.serviceId}`,
+      title: `Logs · ${t.title}`,
+      body: (
+        <LogsDeckBody
+          hostId={h}
+          kind="service"
+          id={t.serviceId}
+          title={t.title}
+        />
+      ),
+    });
+  };
+  const openEventsDeck = () => {
+    if (!hostId) return;
+    const h = hostId;
+    setDeck({
+      key: "events",
+      title: "Events",
+      body: <EventsDeckBody hostId={h} />,
+    });
+  };
+  const openCleanupDeck = () => {
+    if (!hostId) return;
+    const h = hostId;
+    setDeck({
+      key: "cleanup",
+      title: "Disk usage & cleanup",
+      body: <CleanupDeckBody hostId={h} />,
+    });
+  };
+  const openPullPromptDeck = () => {
+    setDeck({
+      key: "pull-prompt",
+      title: "Pull image",
+      narrow: true,
+      body: (
+        <PullPromptBody
+          reference={pullReference}
+          onChange={setPullReference}
+          onSubmit={() => openPull(pullReference)}
+          onClose={() => {
+            setPullReference("");
+            closeDeck();
+          }}
+        />
+      ),
+    });
+  };
+  const openRegistryDeck = () => {
+    if (!hostId) return;
+    const h = hostId;
+    setDeck({
+      key: "registry",
+      title: "Registry login",
+      narrow: true,
+      body: <RegistryDeckBody hostId={h} />,
+    });
+  };
+  const openExecDeck = (target: {
+    container: string;
+    containerName: string;
+  }) => {
+    if (!hostId) return;
+    const t = target;
+    const h = hostId;
+    setDeck({
+      key: `exec-${t.container}`,
+      title: `Exec in ${t.containerName}`,
+      narrow: true,
+      body: (
+        <ExecDeckBody
+          hostId={h}
+          container={t.container}
+          containerName={t.containerName}
+          onExec={(shell, attach) =>
+            openExec(t.container, t.containerName, shell, attach)
+          }
+          onClose={closeDeck}
+        />
+      ),
+    });
+  };
+  const openPullProgressDeck = (jobId: string) => {
+    if (!hostId) return;
+    const h = hostId;
+    setDeck({
+      key: `pull-${jobId}`,
+      title: "Pull image",
+      body: (
+        <PullProgressDeckBody
+          hostId={h}
+          jobId={jobId}
+          onClose={() =>
+            setActivePulls((ids) => ids.filter((j) => j !== jobId))
+          }
+        />
+      ),
+    });
+  };
   const startPull = useDockerStore((s) => s.startPull);
-  const openLogsTab = (targetKind: "container" | "service", targetId: string, title: string) => {
+  const openLogsTab = (
+    targetKind: "container" | "service",
+    targetId: string,
+    title: string,
+  ) => {
     openLogsTabRef?.current?.({ targetKind, targetId, title });
   };
-  const openExec = (container: string, containerName: string, shell: string, attach: boolean) => {
+  const openExec = (
+    container: string,
+    containerName: string,
+    shell: string,
+    attach: boolean,
+  ) => {
     if (!hostId) return;
-    openExecTabRef?.current?.({ hostId, container, containerName, shell, attach });
-    setExecTarget(null);
+    openExecTabRef?.current?.({
+      hostId,
+      container,
+      containerName,
+      shell,
+      attach,
+    });
+    closeDeck();
   };
 
   const openPull = (reference: string) => {
     const ref = reference.trim();
     if (!ref || !hostId) {
-      setPullOpen(true);
+      openPullPromptDeck();
       return;
     }
     const jobId = startPull(hostId, ref);
     setActivePulls((ids) => [...ids, jobId]);
-    setPullOpen(false);
     setPullReference("");
+    openPullProgressDeck(jobId);
   };
 
   const hostState = useDockerStore((s) =>
@@ -128,6 +269,17 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
   useEffect(() => {
     if (hostId) void refreshAll(hostId);
   }, [hostId, refreshAll]);
+
+  // Close any open detail card when this panel unmounts (switching to a
+  // different sidebar view or losing the SSH host): the shared deck panel
+  // must not keep showing a Docker card once Docker is no longer active.
+  useEffect(() => {
+    return () => {
+      closeDeck();
+    };
+    // Unmount-only cleanup; closeDeck is a stable zustand action.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Stats poll while the containers segment is visible and toggled on.
   // 5s cadence; only running containers are sampled.
@@ -210,70 +362,6 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
-      {inspecting ? (
-        <DetailsDrawer
-          hostId={hostId}
-          target={inspecting}
-          onClose={() => setInspecting(null)}
-        />
-      ) : null}
-      {cleanupOpen ? (
-        <CleanupHub hostId={hostId} onClose={() => setCleanupOpen(false)} />
-      ) : null}
-      {eventsOpen ? (
-        <DockerEventsPane hostId={hostId} onClose={() => setEventsOpen(false)} />
-      ) : null}
-      {logsTarget ? (
-        <DockerLogsPane
-          hostId={hostId}
-          kind={logsTarget.kind}
-          id={logsTarget.id}
-          title={logsTarget.title}
-          onClose={() => setLogsTarget(null)}
-        />
-      ) : null}
-      {serviceLogsTarget ? (
-        <DockerLogsPane
-          hostId={hostId}
-          kind="service"
-          id={serviceLogsTarget.serviceId}
-          title={serviceLogsTarget.title}
-          onClose={() => setServiceLogsTarget(null)}
-        />
-      ) : null}
-      {activePulls.map((jobId) => (
-        <PullDialog
-          key={jobId}
-          hostId={hostId}
-          jobId={jobId}
-          onClose={() =>
-            setActivePulls((ids) => ids.filter((j) => j !== jobId))
-          }
-        />
-      ))}
-      {pullOpen ? (
-        <PullPrompt
-          reference={pullReference}
-          onChange={setPullReference}
-          onSubmit={() => openPull(pullReference)}
-          onClose={() => {
-            setPullOpen(false);
-            setPullReference("");
-          }}
-        />
-      ) : null}
-      {registryOpen ? (
-        <RegistryDialog hostId={hostId} onClose={() => setRegistryOpen(false)} />
-      ) : null}
-      {execTarget ? (
-        <ExecDialog
-          hostId={hostId}
-          container={execTarget.container}
-          containerName={execTarget.containerName}
-          onExec={(shell, attach) => openExec(execTarget.container, execTarget.containerName, shell, attach)}
-          onClose={() => setExecTarget(null)}
-        />
-      ) : null}
       <PanelTitle
         title="Docker"
         subtitle={hostAlias ?? hostId}
@@ -282,30 +370,39 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
             <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
               {daemonLabel(daemon)}
             </span>
-            <HeaderButton
-              label="Docker events"
-              onClick={() => setEventsOpen(true)}
-            >
-              <HugeiconsIcon icon={Activity01Icon} size={13} strokeWidth={1.75} />
+            <HeaderButton label="Docker events" onClick={openEventsDeck}>
+              <HugeiconsIcon
+                icon={Activity01Icon}
+                size={13}
+                strokeWidth={1.75}
+              />
             </HeaderButton>
             <HeaderButton
               label="Disk usage & cleanup"
-              onClick={() => setCleanupOpen(true)}
+              onClick={openCleanupDeck}
             >
-              <HugeiconsIcon icon={HardDriveIcon} size={13} strokeWidth={1.75} />
+              <HugeiconsIcon
+                icon={HardDriveIcon}
+                size={13}
+                strokeWidth={1.75}
+              />
             </HeaderButton>
             <HeaderButton
               label="Refresh Docker"
               onClick={() => void refreshAll(hostId)}
             >
-              <HugeiconsIcon icon={Refresh01Icon} size={13} strokeWidth={1.75} />
+              <HugeiconsIcon
+                icon={Refresh01Icon}
+                size={13}
+                strokeWidth={1.75}
+              />
             </HeaderButton>
           </span>
         }
       />
       {daemon.status === "ready" ? (
         <>
-          <div className="flex shrink-0 items-center gap-1 px-2 pb-1.5">
+          <div className="flex shrink-0 items-center gap-1 overflow-x-auto px-2 pb-1.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {SEGMENTS.map((s) => (
               <button
                 key={s.id}
@@ -313,14 +410,15 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
                 onClick={() => setSegment(s.id)}
                 aria-pressed={segment === s.id}
                 className={cn(
-                  "rounded-md px-2 py-1 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40",
+                  "shrink-0 rounded-md px-2 py-1 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40",
                   segment === s.id
                     ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 {s.label}
-                {s.id === "containers" && (containers?.items.length ?? 0) > 0 ? (
+                {s.id === "containers" &&
+                (containers?.items.length ?? 0) > 0 ? (
                   <span className="ml-1 text-[10px] text-muted-foreground/70">
                     {containers?.items.length}
                   </span>
@@ -340,7 +438,9 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
                 type="button"
                 onClick={() => setStatsOn((v) => !v)}
                 aria-pressed={statsOn}
-                title={statsOn ? "Hide live stats" : "Show live CPU/memory stats"}
+                title={
+                  statsOn ? "Hide live stats" : "Show live CPU/memory stats"
+                }
                 className={cn(
                   "h-7 shrink-0 rounded-md px-2 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40",
                   statsOn
@@ -355,7 +455,7 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
               <>
                 <button
                   type="button"
-                  onClick={() => setRegistryOpen(true)}
+                  onClick={openRegistryDeck}
                   title="Registry login"
                   className="h-7 shrink-0 rounded-md px-2 text-[11px] font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/40"
                 >
@@ -363,7 +463,7 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
                 </button>
                 <button
                   type="button"
-                  onClick={() => setPullOpen(true)}
+                  onClick={openPullPromptDeck}
                   title="Pull image"
                   className="h-7 shrink-0 rounded-md bg-primary px-2 text-[11px] font-medium text-primary-foreground outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-primary/40"
                 >
@@ -380,7 +480,11 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
                 <EmptyNote text={containers.error} />
               ) : filteredContainers.length === 0 ? (
                 <EmptyNote
-                  text={filter ? "No containers match the filter." : "No containers on this host."}
+                  text={
+                    filter
+                      ? "No containers match the filter."
+                      : "No containers on this host."
+                  }
                 />
               ) : (
                 filteredContainers.map((c) => {
@@ -396,24 +500,34 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
                       onAction={(a) => runAction(a, id)}
                       onCancelRemove={() => setConfirmRemove(null)}
                       onInspect={() =>
-                        setInspecting({
+                        openInspectDeck({
                           kind: "container",
                           id,
                           title: containerName(c),
                         })
                       }
                       onLogs={() =>
-                        setLogsTarget({
+                        openLogsDeck({
                           kind: "container",
                           id,
                           title: containerName(c),
                         })
                       }
-                      onLogsTab={() => openLogsTab("container", id, `${containerName(c)} logs`)}
-                      onExec={() => setExecTarget({ container: id, containerName: containerName(c) })}
+                      onLogsTab={() =>
+                        openLogsTab("container", id, `${containerName(c)} logs`)
+                      }
+                      onExec={() =>
+                        openExecDeck({
+                          container: id,
+                          containerName: containerName(c),
+                        })
+                      }
                       stats={
                         statsOn && sample
-                          ? { cpuPerc: sample.cpuPerc, memUsage: sample.memUsage }
+                          ? {
+                              cpuPerc: sample.cpuPerc,
+                              memUsage: sample.memUsage,
+                            }
                           : null
                       }
                     />
@@ -424,8 +538,8 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
               <ImagesList
                 hostId={hostId}
                 filter={filter}
-                onPull={() => setPullOpen(true)}
-                onRegistry={() => setRegistryOpen(true)}
+                onPull={openPullPromptDeck}
+                onRegistry={openRegistryDeck}
                 activePulls={activePulls}
               />
             ) : segment === "compose" ? (
@@ -434,28 +548,34 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
                 filter={filter}
                 containerNames={containerNamesById}
                 onOpenLogs={(id, title) =>
-                  setLogsTarget({ kind: "container", id, title })
+                  openLogsDeck({ kind: "container", id, title })
                 }
               />
             ) : segment === "swarm" ? (
               <SwarmView
                 hostId={hostId}
-                capabilities={daemon.status === "ready" ? daemon.capabilities : null}
+                capabilities={
+                  daemon.status === "ready" ? daemon.capabilities : null
+                }
                 onOpenServiceLogs={(serviceId, title) =>
-                  setServiceLogsTarget({ serviceId, title })
+                  openServiceLogsDeck({ serviceId, title })
                 }
               />
             ) : segment === "volumes" ? (
               <VolumesList
                 hostId={hostId}
                 filter={filter}
-                onInspect={(kind, id, title) => setInspecting({ kind, id, title })}
+                onInspect={(kind, id, title) =>
+                  openInspectDeck({ kind, id, title })
+                }
               />
             ) : (
               <NetworksList
                 hostId={hostId}
                 filter={filter}
-                onInspect={(kind, id, title) => setInspecting({ kind, id, title })}
+                onInspect={(kind, id, title) =>
+                  openInspectDeck({ kind, id, title })
+                }
               />
             )}
           </div>
@@ -477,17 +597,19 @@ export function DockerPanel({ hostId, hostAlias, openLogsTabRef, openExecTabRef 
 }
 
 /** Group containers into compose projects via labels. */
-function groupComposeProjects(items: DockerContainer[]): Record<
-  string,
-  { files: string[]; projectDir: string }
-> {
+function groupComposeProjects(
+  items: DockerContainer[],
+): Record<string, { files: string[]; projectDir: string }> {
   const out: Record<string, { files: string[]; projectDir: string }> = {};
   for (const c of items) {
     const labels = parseLabels(c.Labels);
     const project = labels["com.docker.compose.project"];
     if (!project) continue;
     const filesRaw = labels["com.docker.compose.project.config_files"] ?? "";
-    const files = filesRaw.split(",").map((f) => f.trim()).filter(Boolean);
+    const files = filesRaw
+      .split(",")
+      .map((f) => f.trim())
+      .filter(Boolean);
     const dir = labels["com.docker.compose.project.working_dir"] ?? "";
     if (!out[project]) out[project] = { files, projectDir: dir };
     else {
@@ -568,7 +690,8 @@ function SwarmView({
   capabilities: { swarmState: string } | null;
   onOpenServiceLogs: (serviceId: string, title: string) => void;
 }) {
-  const swarmActive = (capabilities?.swarmState ?? "").toLowerCase() === "active";
+  const swarmActive =
+    (capabilities?.swarmState ?? "").toLowerCase() === "active";
   const [secretsOpen, setSecretsOpen] = useState(false);
   const [initOpen, setInitOpen] = useState(false);
   if (!swarmActive) {
@@ -614,7 +737,98 @@ function SwarmView({
   );
 }
 
-function PullPrompt({
+/** Deck bodies: thin wrappers that render a legacy overlay component in
+ *  `bare` mode (body only, no frame/header) as one deck CARD BODY. The
+ *  deck panel owns the shared header + close for all of them. */
+function DetailsDrawerBody({
+  hostId,
+  target,
+}: {
+  hostId: string;
+  target: {
+    kind: "container" | "volume" | "network";
+    id: string;
+    title: string;
+  };
+}) {
+  return (
+    <DetailsDrawer hostId={hostId} target={target} onClose={() => {}} bare />
+  );
+}
+
+function LogsDeckBody({
+  hostId,
+  kind,
+  id,
+  title,
+}: {
+  hostId: string;
+  kind: "container" | "service";
+  id: string;
+  title: string;
+}) {
+  return (
+    <DockerLogsPane
+      hostId={hostId}
+      kind={kind}
+      id={id}
+      title={title}
+      onClose={() => {}}
+      bare
+    />
+  );
+}
+
+function EventsDeckBody({ hostId }: { hostId: string }) {
+  return <DockerEventsPane hostId={hostId} onClose={() => {}} bare />;
+}
+
+function CleanupDeckBody({ hostId }: { hostId: string }) {
+  return <CleanupHub hostId={hostId} onClose={() => {}} bare />;
+}
+
+function RegistryDeckBody({ hostId }: { hostId: string }) {
+  return <RegistryDialog hostId={hostId} onClose={() => {}} bare />;
+}
+
+function ExecDeckBody({
+  hostId,
+  container,
+  containerName,
+  onExec,
+  onClose,
+}: {
+  hostId: string;
+  container: string;
+  containerName: string;
+  onExec: (shell: string, attach: boolean) => void;
+  onClose: () => void;
+}) {
+  return (
+    <ExecDialog
+      hostId={hostId}
+      container={container}
+      containerName={containerName}
+      onExec={onExec}
+      onClose={onClose}
+      bare
+    />
+  );
+}
+
+function PullProgressDeckBody({
+  hostId,
+  jobId,
+  onClose,
+}: {
+  hostId: string;
+  jobId: string;
+  onClose: () => void;
+}) {
+  return <PullDialog hostId={hostId} jobId={jobId} onClose={onClose} bare />;
+}
+
+function PullPromptBody({
   reference,
   onChange,
   onSubmit,
@@ -626,19 +840,12 @@ function PullPrompt({
   onClose: () => void;
 }) {
   return (
-    <div
-      className="absolute inset-y-0 right-0 z-20 flex w-80 max-w-[85%] flex-col border-l border-border/60 bg-background shadow-xl"
-      role="dialog"
-      aria-label="Pull image"
-    >
-      <div className="flex shrink-0 items-center px-2.5 py-2">
-        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-foreground">
-          Pull image
-        </span>
-      </div>
+    <div className="flex flex-col" role="dialog" aria-label="Pull image">
       <div className="flex flex-col gap-2 px-2.5 py-2">
         <label className="flex flex-col gap-1 text-[11px]">
-          <span className="font-medium text-muted-foreground">Image reference</span>
+          <span className="font-medium text-muted-foreground">
+            Image reference
+          </span>
           <input
             value={reference}
             onChange={(e) => onChange(e.target.value)}
@@ -717,7 +924,9 @@ function ImagesList({
   if (filtered.length === 0 && activePulls.length === 0) {
     return (
       <EmptyNote
-        text={filter ? "No images match the filter." : "No images on this host."}
+        text={
+          filter ? "No images match the filter." : "No images on this host."
+        }
       />
     );
   }
@@ -787,7 +996,11 @@ function ImagesList({
                   label={`Check for updates to ${ref}`}
                   onClick={() => void checkUpdate(hostId, ref)}
                 >
-                  <HugeiconsIcon icon={Refresh01Icon} size={13} strokeWidth={1.75} />
+                  <HugeiconsIcon
+                    icon={Refresh01Icon}
+                    size={13}
+                    strokeWidth={1.75}
+                  />
                 </RowButton>
               </span>
             )}
@@ -796,7 +1009,8 @@ function ImagesList({
       })}
       {activePulls.length > 0 ? (
         <div className="px-2 pt-1 text-[10px] text-muted-foreground/70">
-          {activePulls.length} pull{activePulls.length === 1 ? "" : "s"} in progress — see panels on the right.
+          {activePulls.length} pull{activePulls.length === 1 ? "" : "s"} in
+          progress — see panels on the right.
         </div>
       ) : null}
       <div className="flex gap-1.5 px-2 pt-2">
@@ -852,7 +1066,9 @@ function VolumesList({
   if (filtered.length === 0) {
     return (
       <EmptyNote
-        text={filter ? "No volumes match the filter." : "No volumes on this host."}
+        text={
+          filter ? "No volumes match the filter." : "No volumes on this host."
+        }
       />
     );
   }
@@ -866,7 +1082,9 @@ function VolumesList({
             className="group relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 outline-none transition-colors hover:bg-accent/50"
           >
             <span className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-[12px] font-medium leading-tight">{name}</span>
+              <span className="truncate text-[12px] font-medium leading-tight">
+                {name}
+              </span>
               <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
                 {confirm === name
                   ? `Remove volume ${name}? Data will be lost.`
@@ -899,10 +1117,21 @@ function VolumesList({
                   label={`Inspect volume ${name}`}
                   onClick={() => onInspect("volume", name, name)}
                 >
-                  <HugeiconsIcon icon={File02Icon} size={13} strokeWidth={1.75} />
+                  <HugeiconsIcon
+                    icon={File02Icon}
+                    size={13}
+                    strokeWidth={1.75}
+                  />
                 </RowButton>
-                <RowButton label={`Remove volume ${name}`} onClick={() => setConfirm(name)}>
-                  <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
+                <RowButton
+                  label={`Remove volume ${name}`}
+                  onClick={() => setConfirm(name)}
+                >
+                  <HugeiconsIcon
+                    icon={Delete02Icon}
+                    size={13}
+                    strokeWidth={1.75}
+                  />
                 </RowButton>
               </span>
             )}
@@ -946,7 +1175,9 @@ function NetworksList({
   if (filtered.length === 0) {
     return (
       <EmptyNote
-        text={filter ? "No networks match the filter." : "No networks on this host."}
+        text={
+          filter ? "No networks match the filter." : "No networks on this host."
+        }
       />
     );
   }
@@ -968,7 +1199,9 @@ function NetworksList({
               className="size-2 shrink-0 rounded-full bg-muted-foreground/40"
             />
             <span className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-[12px] font-medium leading-tight">{name}</span>
+              <span className="truncate text-[12px] font-medium leading-tight">
+                {name}
+              </span>
               <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
                 {confirm === name
                   ? `Remove network ${name}?`
@@ -1005,10 +1238,21 @@ function NetworksList({
                   label={`Inspect network ${name}`}
                   onClick={() => onInspect("network", name, name)}
                 >
-                  <HugeiconsIcon icon={File02Icon} size={13} strokeWidth={1.75} />
+                  <HugeiconsIcon
+                    icon={File02Icon}
+                    size={13}
+                    strokeWidth={1.75}
+                  />
                 </RowButton>
-                <RowButton label={`Remove network ${name}`} onClick={() => setConfirm(name)}>
-                  <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
+                <RowButton
+                  label={`Remove network ${name}`}
+                  onClick={() => setConfirm(name)}
+                >
+                  <HugeiconsIcon
+                    icon={Delete02Icon}
+                    size={13}
+                    strokeWidth={1.75}
+                  />
                 </RowButton>
               </span>
             )}
@@ -1036,13 +1280,16 @@ function imageRef(img: {
 }): string {
   const repo = String(img.Repository ?? "<none>");
   const tag = String(img.Tag ?? "<none>");
-  if (repo === "<none>" && tag === "<none>") return String(img.Digest ?? imageId(img));
+  if (repo === "<none>" && tag === "<none>")
+    return String(img.Digest ?? imageId(img));
   return `${repo}:${tag}`;
 }
 
 export function containerId(c: DockerContainer): string {
   const raw = (c.ID ?? c.Id ?? "") as string;
-  return raw.replace(/^sha256:/, "").slice(0, 12) || String(c.Names ?? c.Name ?? "?");
+  return (
+    raw.replace(/^sha256:/, "").slice(0, 12) || String(c.Names ?? c.Name ?? "?")
+  );
 }
 
 export function containerName(c: DockerContainer): string {
@@ -1050,7 +1297,9 @@ export function containerName(c: DockerContainer): string {
   return raw.split(",")[0]?.replace(/^\//, "").trim() || containerId(c);
 }
 
-function containerState(c: DockerContainer): "running" | "exited" | "paused" | "dead" | "unknown" {
+function containerState(
+  c: DockerContainer,
+): "running" | "exited" | "paused" | "dead" | "unknown" {
   const s = String(c.State ?? "").toLowerCase();
   if (s.includes("running")) return "running";
   if (s.includes("paused")) return "paused";
@@ -1059,7 +1308,8 @@ function containerState(c: DockerContainer): "running" | "exited" | "paused" | "
   // `docker ps --format json` emits State + Status ("Up 2 hours").
   const status = String(c.Status ?? "").toLowerCase();
   if (status.startsWith("up")) return "running";
-  if (status.startsWith("exited") || status.startsWith("created")) return "exited";
+  if (status.startsWith("exited") || status.startsWith("created"))
+    return "exited";
   if (status.includes("paused")) return "paused";
   return "unknown";
 }
@@ -1170,33 +1420,63 @@ function ContainerRow({
         <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
           {running ? (
             <>
-              <RowButton label={`Stop ${name}`} onClick={() => onAction("stop")}>
+              <RowButton
+                label={`Stop ${name}`}
+                onClick={() => onAction("stop")}
+              >
                 <HugeiconsIcon icon={StopIcon} size={13} strokeWidth={1.75} />
               </RowButton>
-              <RowButton label={`Restart ${name}`} onClick={() => onAction("restart")}>
-                <HugeiconsIcon icon={RotateClockwiseIcon} size={13} strokeWidth={1.75} />
+              <RowButton
+                label={`Restart ${name}`}
+                onClick={() => onAction("restart")}
+              >
+                <HugeiconsIcon
+                  icon={RotateClockwiseIcon}
+                  size={13}
+                  strokeWidth={1.75}
+                />
               </RowButton>
-              <RowButton label={`Kill ${name}`} onClick={() => onAction("kill")}>
+              <RowButton
+                label={`Kill ${name}`}
+                onClick={() => onAction("kill")}
+              >
                 <HugeiconsIcon icon={ZapIcon} size={13} strokeWidth={1.75} />
               </RowButton>
             </>
           ) : (
-            <RowButton label={`Start ${name}`} onClick={() => onAction("start")}>
+            <RowButton
+              label={`Start ${name}`}
+              onClick={() => onAction("start")}
+            >
               <HugeiconsIcon icon={PlayIcon} size={13} strokeWidth={1.75} />
             </RowButton>
           )}
           <RowButton label={`Logs for ${name}`} onClick={onLogs}>
             <HugeiconsIcon icon={File02Icon} size={13} strokeWidth={1.75} />
           </RowButton>
-          <RowButton label={`Open logs for ${name} in a tab`} onClick={onLogsTab}>
-            <HugeiconsIcon icon={ArrowUpRight01Icon} size={13} strokeWidth={1.75} />
+          <RowButton
+            label={`Open logs for ${name} in a tab`}
+            onClick={onLogsTab}
+          >
+            <HugeiconsIcon
+              icon={ArrowUpRight01Icon}
+              size={13}
+              strokeWidth={1.75}
+            />
           </RowButton>
           {running ? (
             <RowButton label={`Exec shell in ${name}`} onClick={onExec}>
-              <HugeiconsIcon icon={ComputerTerminal02Icon} size={13} strokeWidth={1.75} />
+              <HugeiconsIcon
+                icon={ComputerTerminal02Icon}
+                size={13}
+                strokeWidth={1.75}
+              />
             </RowButton>
           ) : null}
-          <RowButton label={`Remove ${name}`} onClick={() => onAction("remove")}>
+          <RowButton
+            label={`Remove ${name}`}
+            onClick={() => onAction("remove")}
+          >
             <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
           </RowButton>
           <RowButton label="Cancel" onClick={onCancelRemove}>
