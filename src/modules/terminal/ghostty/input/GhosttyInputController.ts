@@ -434,10 +434,16 @@ export class GhosttyInputController {
     }
     const position = this.mousePosition(event);
     if (!position) return;
+    // Motion reports are `32 + button-code`, where the code is 0/1/2 for a
+    // held button and 3 for "none". Skipping the 3 is not cosmetic: 32 alone
+    // decodes as a *left-button drag*, so a plain hover was reported as a
+    // drag (zellij/any 1003 app reacted by starting a selection on every
+    // pointer move).
     let button = 32;
     if ((this.mouseButtons & 1) !== 0) button += 0;
     else if ((this.mouseButtons & 2) !== 0) button += 1;
     else if ((this.mouseButtons & 4) !== 0) button += 2;
+    else button += 3;
     const signature = [
       button,
       position.col,

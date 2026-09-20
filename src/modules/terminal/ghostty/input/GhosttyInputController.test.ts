@@ -432,8 +432,72 @@ describe("GhosttyInputController", () => {
     }
 
     expect(onData).toHaveBeenCalledOnce();
+    // 35 = 32 (motion) + 3 (no button held). 32 alone would claim the left
+    // button is down, turning a hover into a drag-select for the app.
     expect(new TextDecoder().decode(onData.mock.calls[0][0])).toBe(
-      "\x1b[<32;2;2M",
+      "\x1b[<35;2;2M",
+    );
+    controller.dispose();
+  });
+
+  it("reports a held left button as a drag, not a hover", () => {
+    const input = new FakeTextArea();
+    const pointerTarget = new FakeElement();
+    const onData = vi.fn();
+    const controller = new GhosttyInputController({
+      model: inputModel((mode) => mode === 1003 || mode === 1006),
+      input: input as unknown as HTMLTextAreaElement,
+      pointerTarget: pointerTarget as unknown as HTMLElement,
+      cellSize: () => ({ width: 10, height: 20 }),
+      onData,
+      onCopy: () => false,
+      isMac: false,
+    });
+
+    pointerTarget.dispatchEvent(
+      mouseEvent("mousedown", { button: 0, clientX: 15, clientY: 25 }),
+    );
+    onData.mockClear();
+    pointerTarget.dispatchEvent(
+      mouseEvent("mousemove", { button: 0, clientX: 25, clientY: 25 }),
+    );
+
+    // 32 = motion with button 0 (left) still held — a real drag.
+    expect(new TextDecoder().decode(onData.mock.calls[0][0])).toBe(
+      "\x1b[<32;3;2M",
+    );
+    controller.dispose();
+  });
+
+  it("keeps report idleness and hover distinct in the same cell", () => {
+    const input = new FakeTextArea();
+    const pointerTarget = new FakeElement();
+    const onData = vi.fn();
+    const controller = new GhosttyInputController({
+      model: inputModel((mode) => mode === 1003 || mode === 1006),
+      input: input as unknown as HTMLTextAreaElement,
+      pointerTarget: pointerTarget as unknown as HTMLElement,
+      cellSize: () => ({ width: 10, height: 20 }),
+      onData,
+      onCopy: () => false,
+      isMac: false,
+    });
+
+    pointerTarget.dispatchEvent(
+      mouseEvent("mousedown", { button: 0, clientX: 15, clientY: 25 }),
+    );
+    pointerTarget.dispatchEvent(
+      mouseEvent("mouseup", { button: 0, clientX: 15, clientY: 25 }),
+    );
+    onData.mockClear();
+    // After release the very same cell must report as a hover, not keep
+    // repeating the press.
+    pointerTarget.dispatchEvent(
+      mouseEvent("mousemove", { button: 0, clientX: 15, clientY: 25 }),
+    );
+
+    expect(new TextDecoder().decode(onData.mock.calls[0][0])).toBe(
+      "\x1b[<35;2;2M",
     );
     controller.dispose();
   });
