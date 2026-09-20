@@ -37,6 +37,26 @@ export function mruSnapshot(): MruMap {
   return read();
 }
 
+/**
+ * Drop every entry under a key prefix. The store is shared, so callers scope
+ * their own namespace (e.g. "newtab:") rather than clearing everything.
+ */
+export function clearMruPrefix(prefix: string): void {
+  const map = read();
+  let changed = false;
+  for (const key of Object.keys(map)) {
+    if (!key.startsWith(prefix)) continue;
+    delete map[key];
+    changed = true;
+  }
+  if (!changed) return;
+  try {
+    localStorage.setItem(KEY, JSON.stringify(map));
+  } catch {
+    /* ignore */
+  }
+}
+
 export function mruRank(snapshot: MruMap, id: string): number {
   return snapshot[id] ?? 0;
 }
