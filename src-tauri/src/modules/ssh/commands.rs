@@ -52,6 +52,7 @@ pub async fn ssh_save_host(
         identity_file: fields.identity_file,
         remote_root: fields.remote_root,
         bound_space_id: bound,
+        color: fields.color,
         agent_forward: fields.agent_forward,
         created_at_ms: created,
         updated_at_ms: now,
@@ -139,6 +140,7 @@ pub async fn ssh_import_host(
         port: Some(fields.port),
         identity_file: fields.identity_file,
         remote_root: None,
+        color: None,
         agent_forward: Some(false),
     })
     .await

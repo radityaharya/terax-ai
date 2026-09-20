@@ -1333,6 +1333,7 @@ mod tests {
             identity_file: None,
             remote_root: None,
             bound_space_id: None,
+            color: None,
             agent_forward: false,
             created_at_ms: 0,
             updated_at_ms: 0,

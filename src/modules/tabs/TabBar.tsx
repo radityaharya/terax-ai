@@ -56,6 +56,7 @@ import {
 } from "react";
 import { labelFor } from "./lib/tabLabel";
 import type { EditorTab, Tab } from "./lib/useTabs";
+import { hostChipStyle, resolveHostColor } from "@/modules/hosts/lib/hostColor";
 import type { SshHost } from "@/modules/hosts/lib/types";
 import { NewTabMenu } from "./NewTabMenu";
 
@@ -643,7 +644,10 @@ function useTabAgentStatus(tab: Tab) {
  * every host-list change; the alias is stable for the tab's lifetime.
  */
 function TabHostChip({ hostId }: { hostId: string }) {
-  const [alias, setAlias] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<{
+    alias: string;
+    color: string;
+  } | null>(null);
   useEffect(() => {
     let cancelled = false;
     void import("@/modules/hosts/lib/hostStore").then((m) => {
@@ -651,18 +655,29 @@ function TabHostChip({ hostId }: { hostId: string }) {
       const host = m.useHostStore
         .getState()
         .hosts.find((h) => h.id === hostId);
-      if (!cancelled) setAlias(host?.alias ?? null);
+      if (!cancelled) {
+        setSnapshot(
+          host ? { alias: host.alias, color: resolveHostColor(host) } : null,
+        );
+      }
     });
     return () => {
       cancelled = true;
     };
   }, [hostId]);
+  // Neutral until the host resolves, then the host's own accent — so a mixed
+  // tab strip groups by host in one glance.
   return (
     <span
-      title={alias ? `${alias} (${hostId})` : hostId}
-      className="max-w-24 shrink-0 truncate rounded bg-primary/15 px-1 py-px text-[10px] font-medium leading-tight text-primary"
+      title={snapshot ? `${snapshot.alias} (${hostId})` : hostId}
+      style={
+        snapshot
+          ? hostChipStyle(snapshot.color)
+          : { color: "var(--muted-foreground)" }
+      }
+      className="max-w-24 shrink-0 truncate rounded border px-1 py-px text-[10px] font-medium leading-tight"
     >
-      {alias ?? hostId.slice(0, 8)}
+      {snapshot?.alias ?? hostId.slice(0, 8)}
     </span>
   );
 }

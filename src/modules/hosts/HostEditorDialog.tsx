@@ -12,6 +12,8 @@ import { Label } from "@/components/ui/label";
 import { ServerStack03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
+import { HostColorPicker } from "./HostColorPicker";
+import { hostIdSeed, suggestHostColor } from "./lib/hostColor";
 import { saveHost } from "./lib/hostStore";
 import type { SshHost, SshHostInput } from "./lib/types";
 
@@ -28,6 +30,7 @@ export function HostEditorDialog({ host, onOpenChange, onSaved }: Props) {
   const [port, setPort] = useState(String(host?.port ?? 22));
   const [identityFile, setIdentityFile] = useState(host?.identityFile ?? "");
   const [remoteRoot, setRemoteRoot] = useState(host?.remoteRoot ?? "");
+  const [color, setColor] = useState<string | null>(host?.color ?? null);
   const [agentForward, setAgentForward] = useState(host?.agentForward ?? false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -39,10 +42,15 @@ export function HostEditorDialog({ host, onOpenChange, onSaved }: Props) {
     setPort(String(host?.port ?? 22));
     setIdentityFile(host?.identityFile ?? "");
     setRemoteRoot(host?.remoteRoot ?? "");
+    setColor(host?.color ?? null);
     setAgentForward(host?.agentForward ?? false);
     setError(null);
     setSaving(false);
   }, [host]);
+
+  // What "Auto" resolves to: the real id once saved, else the id the backend
+  // will mint from this alias — so the preview matches the saved host.
+  const autoHex = suggestHostColor(host?.id || hostIdSeed(alias));
 
   const submit = async () => {
     const portNum = Number.parseInt(port.trim(), 10);
@@ -60,6 +68,7 @@ export function HostEditorDialog({ host, onOpenChange, onSaved }: Props) {
       port: portNum,
       identityFile: identityFile.trim() || null,
       remoteRoot: remoteRoot.trim() || null,
+      color,
       agentForward,
     };
     try {
@@ -92,6 +101,17 @@ export function HostEditorDialog({ host, onOpenChange, onSaved }: Props) {
               value={alias}
               onChange={(e) => setAlias(e.target.value)}
               placeholder="prod-web"
+            />
+          </Field>
+          <Field
+            label="Color"
+            hint="Tints this host in the Hosts panel and on its tabs."
+          >
+            <HostColorPicker
+              value={color}
+              autoHex={autoHex}
+              previewLabel={alias.trim() || hostname.trim() || "host"}
+              onChange={setColor}
             />
           </Field>
           <div className="grid grid-cols-[1fr_5.5rem] gap-2">
@@ -172,10 +192,10 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <span className="flex flex-col gap-1 text-xs">
+    <div className="flex flex-col gap-1 text-xs">
       <Label className="text-[11px] font-medium">{label}</Label>
       {children}
       {hint && <span className="text-muted-foreground">{hint}</span>}
-    </span>
+    </div>
   );
 }

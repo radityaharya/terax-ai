@@ -20,6 +20,10 @@ pub struct SshHost {
     pub remote_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_space_id: Option<String>,
+    /// `#rrggbb` accent shown on the host's rows and tabs. `None` means
+    /// "auto": the UI derives a stable color from the host id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     #[serde(default)]
     pub agent_forward: bool,
     #[serde(default)]
@@ -38,7 +42,27 @@ pub struct SshHostInput {
     pub port: Option<u16>,
     pub identity_file: Option<String>,
     pub remote_root: Option<String>,
+    pub color: Option<String>,
     pub agent_forward: Option<bool>,
+}
+
+/// A host accent is stored as `#rrggbb` only. The value ends up in an inline
+/// style, so anything outside that shape is rejected rather than escaped —
+/// closing the door on a crafted value smuggling arbitrary CSS.
+pub fn normalize_host_color(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    let expanded = match hex.len() {
+        3 => hex.chars().flat_map(|c| [c, c]).collect::<String>(),
+        6 => hex.to_string(),
+        _ => return Err("color must be a hex value like #4f8ff7".into()),
+    };
+    if !expanded.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("color must be a hex value like #4f8ff7".into());
+    }
+    Ok(Some(format!("#{}", expanded.to_lowercase())))
 }
 
 pub fn normalize_host_input(input: &SshHostInput) -> Result<SshHostFields, String> {
@@ -86,6 +110,7 @@ pub fn normalize_host_input(input: &SshHostInput) -> Result<SshHostFields, Strin
             return Err("remote root must be an absolute path".into());
         }
     }
+    let color = normalize_host_color(input.color.as_deref())?;
     Ok(SshHostFields {
         alias,
         user,
@@ -93,6 +118,7 @@ pub fn normalize_host_input(input: &SshHostInput) -> Result<SshHostFields, Strin
         port,
         identity_file,
         remote_root,
+        color,
         agent_forward: input.agent_forward.unwrap_or(false),
     })
 }
@@ -104,6 +130,7 @@ pub struct SshHostFields {
     pub port: u16,
     pub identity_file: Option<String>,
     pub remote_root: Option<String>,
+    pub color: Option<String>,
     pub agent_forward: bool,
 }
 
@@ -143,6 +170,7 @@ pub fn imported_to_fields(imported: &ImportedHost, default_user: &str) -> SshHos
         port: imported.port.unwrap_or(22),
         identity_file: imported.identity_file.clone(),
         remote_root: None,
+        color: None,
         agent_forward: false,
     }
 }
@@ -312,6 +340,7 @@ mod tests {
             port: Some(22),
             identity_file: None,
             remote_root: None,
+            color: None,
             agent_forward: None,
         }
     }
@@ -322,6 +351,47 @@ mod tests {
         let mut bad = input("ok");
         bad.user = "a b".into();
         assert!(normalize_host_input(&bad).is_err());
+    }
+
+    #[test]
+    fn normalizes_host_colors_and_keeps_auto_empty() {
+        assert_eq!(normalize_host_color(None).unwrap(), None);
+        assert_eq!(normalize_host_color(Some("  ")).unwrap(), None);
+        assert_eq!(
+            normalize_host_color(Some("#4F8FF7")).unwrap().as_deref(),
+            Some("#4f8ff7")
+        );
+        assert_eq!(
+            normalize_host_color(Some("abc")).unwrap().as_deref(),
+            Some("#aabbcc")
+        );
+        assert_eq!(
+            normalize_host_color(Some("#0A0")).unwrap().as_deref(),
+            Some("#00aa00")
+        );
+    }
+
+    #[test]
+    fn rejects_colors_that_are_not_hex() {
+        for bad in ["red", "#12345", "rgb(1,2,3)", "#zzzzzz", "url(x)"] {
+            assert!(
+                normalize_host_color(Some(bad)).is_err(),
+                "expected {bad:?} to be rejected"
+            );
+        }
+        let mut host = input("ok");
+        host.color = Some("javascript:alert(1)".into());
+        assert!(normalize_host_input(&host).is_err());
+    }
+
+    #[test]
+    fn saved_color_survives_normalize() {
+        let mut host = input("ok");
+        host.color = Some("#4f8ff7".into());
+        assert_eq!(
+            normalize_host_input(&host).unwrap().color.as_deref(),
+            Some("#4f8ff7")
+        );
     }
 
     #[test]
@@ -352,6 +422,7 @@ mod tests {
                 identity_file: None,
                 remote_root: None,
                 bound_space_id: None,
+                color: None,
                 agent_forward: false,
                 created_at_ms: 0,
                 updated_at_ms: 0,

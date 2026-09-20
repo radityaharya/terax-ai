@@ -12,6 +12,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
+import { resolveHostColor } from "./lib/hostColor";
 import {
   deleteHost,
   probeHost,
@@ -264,7 +265,8 @@ function HostRow({
         icon={ServerStack03Icon}
         size={14}
         strokeWidth={1.75}
-        className="shrink-0 text-muted-foreground/70"
+        className="shrink-0"
+        style={{ color: resolveHostColor(host) }}
       />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-[12px] font-medium leading-tight">

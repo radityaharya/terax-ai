@@ -7,6 +7,9 @@ export type SshHost = {
   identityFile?: string | null;
   remoteRoot?: string | null;
   boundSpaceId?: string | null;
+  /** `#rrggbb` accent. `null`/absent means "auto" — a stable color derived
+   *  from the host id (see `resolveHostColor`). */
+  color?: string | null;
   agentForward: boolean;
   createdAtMs: number;
   updatedAtMs: number;
@@ -20,6 +23,7 @@ export type SshHostInput = {
   port?: number | null;
   identityFile?: string | null;
   remoteRoot?: string | null;
+  color?: string | null;
   agentForward?: boolean | null;
 };
 
