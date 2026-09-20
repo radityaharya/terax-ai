@@ -57,6 +57,10 @@ type Callbacks = {
   onSearchReady?: (search: TerminalSearchController) => void;
   onExit?: (code: number) => void;
   onCwd?: (cwd: string) => void;
+  /** True from the moment `openPty` is called until it resolves/rejects —
+   *  the window where an SSH handshake can hang with zero other feedback.
+   *  See useGhosttyTerminalSession's `connecting` return value. */
+  onConnecting?: (connecting: boolean) => void;
 };
 
 type GhosttySession = {
@@ -84,6 +88,11 @@ type GhosttySession = {
   rendererError: string | null;
   shellExited: boolean;
   disposed: boolean;
+  /** True while `openPty` is in flight (spawning the shell / SSH
+   *  handshake). The terminal surface mounts and accepts input before
+   *  this resolves, so callers use it to show a non-blocking "connecting"
+   *  affordance instead of a silent blank cursor. */
+  connecting: boolean;
   generation: number;
   initializing: Promise<void> | null;
   startup: GhosttyStartupTimings;
@@ -140,6 +149,7 @@ export function useGhosttyTerminalSession({
 }: Options) {
   const [model, setModel] = useState<GhosttyTerminalModelApi | null>(null);
   const [error, setError] = useState<GhosttySessionFailure | null>(null);
+  const [connecting, setConnecting] = useState(false);
   const { fontFamily, fontSize, fontWeight } = useTerminalFont();
   const letterSpacing = usePreferencesStore(
     (state) => state.terminalLetterSpacing,
@@ -181,11 +191,13 @@ export function useGhosttyTerminalSession({
     session.callbacks = {
       onModel: setModel,
       onError: setError,
+      onConnecting: setConnecting,
       onSearchReady: (search) => callbackRef.current.onSearchReady?.(search),
       onExit: (code) => callbackRef.current.onExit?.(code),
       onCwd: (cwd) => callbackRef.current.onCwd?.(cwd),
     };
     setError(sessionFailure(session));
+    setConnecting(session.connecting);
     if (session.surface) {
       session.callbacks.onSearchReady?.(session.surface.searchController());
     }
@@ -291,6 +303,7 @@ export function useGhosttyTerminalSession({
     () => ({
       error,
       model,
+      connecting,
       retry,
       write,
       focus,
@@ -298,7 +311,17 @@ export function useGhosttyTerminalSession({
       getSelection,
       applyTheme,
     }),
-    [write, focus, getBuffer, getSelection, applyTheme, error, retry, model],
+    [
+      write,
+      focus,
+      getBuffer,
+      getSelection,
+      applyTheme,
+      error,
+      retry,
+      model,
+      connecting,
+    ],
   );
 }
 
@@ -581,6 +604,7 @@ function ensureSession(
     rendererError: null,
     shellExited: false,
     disposed: false,
+    connecting: false,
     generation: 0,
     initializing: null,
     startup: createStartupTimings(),
@@ -819,35 +843,52 @@ async function initializeSessionGeneration(
 
   const startCols = model.cols;
   const startRows = model.rows;
-  const pty = await openPty(
-    startCols,
-    startRows,
-    {
-      onData: (bytes) => {
-        if (!session.disposed && generation === session.generation) {
-          mark("firstOutputMs");
-          model.write(bytes);
-          ghosttyBlocks(session.leafId)?.changed();
-          applyBlockInputMode(session);
-        }
+  // The window between here and openPty resolving is where an SSH
+  // handshake can hang for real (cold host, dead network, auth prompt
+  // waiting on a password the user hasn't typed yet) — the surface is
+  // already attached and focused, so without this flag the pane just
+  // shows a blank grid and blinking cursor with no explanation.
+  if (alive()) {
+    session.connecting = true;
+    session.callbacks.onConnecting?.(true);
+  }
+  let pty: PtySession;
+  try {
+    pty = await openPty(
+      startCols,
+      startRows,
+      {
+        onData: (bytes) => {
+          if (!session.disposed && generation === session.generation) {
+            mark("firstOutputMs");
+            model.write(bytes);
+            ghosttyBlocks(session.leafId)?.changed();
+            applyBlockInputMode(session);
+          }
+        },
+        onExit: (code) => {
+          if (session.disposed || generation !== session.generation) return;
+          session.shellExited = true;
+          session.writer.detach();
+          session.pty = null;
+          session.callbacks.onExit?.(code);
+        },
       },
-      onExit: (code) => {
-        if (session.disposed || generation !== session.generation) return;
-        session.shellExited = true;
-        session.writer.detach();
-        session.pty = null;
-        session.callbacks.onExit?.(code);
+      {
+        cwd: session.initialCwd,
+        blocks: !!ghosttyBlocks(session.leafId),
+        shell: preferences.terminalShell || undefined,
+        paneId: session.leafId,
+        env: session.env,
+        dockerExec: session.dockerExec,
       },
-    },
-    {
-      cwd: session.initialCwd,
-      blocks: !!ghosttyBlocks(session.leafId),
-      shell: preferences.terminalShell || undefined,
-      paneId: session.leafId,
-      env: session.env,
-      dockerExec: session.dockerExec,
-    },
-  );
+    );
+  } finally {
+    if (generation === session.generation) {
+      session.connecting = false;
+      session.callbacks.onConnecting?.(false);
+    }
+  }
   if (session.disposed || generation !== session.generation) {
     await pty.close();
     return;

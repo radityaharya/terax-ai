@@ -51,6 +51,11 @@ type Props = {
   hostAlias?: string | null;
   openLogsTabRef?: React.MutableRefObject<OpenLogsTabFn | null>;
   openExecTabRef?: React.MutableRefObject<OpenExecTabFn | null>;
+  /** False while spaces/tabs are still restoring from disk. `hostId` is
+   *  momentarily null during that window even when the eventual active
+   *  tab is an SSH host — suppress the "host-scoped" empty state until
+   *  boot resolves so it doesn't flash on every app launch. */
+  booted?: boolean;
 };
 
 const SEGMENTS: {
@@ -70,6 +75,7 @@ export function DockerPanel({
   hostAlias,
   openLogsTabRef,
   openExecTabRef,
+  booted = true,
 }: Props) {
   const [segment, setSegment] = useState<
     DockerResourceKind | "compose" | "swarm"
@@ -350,12 +356,20 @@ export function DockerPanel({
   };
 
   if (!hostId) {
+    // While spaces/tabs are still restoring, hostId is transiently null
+    // even when the tab about to become active is an SSH host — render
+    // just the title (no "host-scoped" message) so switching to the
+    // Docker view right after launch doesn't flash it before the real
+    // host resolves.
     return (
       <div className="flex h-full min-h-0 flex-col">
         <PanelTitle title="Docker" />
-        <div className="px-2 py-6 text-center text-[11px] text-muted-foreground/70">
-          Docker is host-scoped in v1. Open an SSH tab to browse its containers.
-        </div>
+        {booted ? (
+          <div className="px-2 py-6 text-center text-[11px] text-muted-foreground/70">
+            Docker is host-scoped in v1. Open an SSH tab to browse its
+            containers.
+          </div>
+        ) : null}
       </div>
     );
   }

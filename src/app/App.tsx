@@ -360,7 +360,33 @@ export default function App() {
     if (!spacesHydrated || !booted) return;
     const tab = tabsRef.current.find((t) => t.id === activeId);
     if (!tab) return;
-    void adoptWorkspaceEnv(tabEnv(tab));
+    const env = tabEnv(tab);
+    void adoptWorkspaceEnv(env);
+    // The Hosts sidebar dot only ever reflects `connections[hostId]`,
+    // which HostsPanel's probeHost() flow sets — but tabs restored at
+    // boot (or opened via the new-tab host picker) never go through that
+    // flow, so a genuinely live, streaming SSH tab shows a permanently
+    // gray "Unknown" dot. This is the choke point for every path that
+    // makes an SSH tab active; mark that host online here too, unless a
+    // probe is already resolving it (checking) or it needs attention
+    // (auth/host-key) — those states must win over "it's just active".
+    if (env.kind === "ssh") {
+      const current = useHostStore.getState().connections[env.hostId];
+      const settled =
+        current?.state === "checking" ||
+        current?.state === "needs-auth" ||
+        current?.state === "host-key" ||
+        current?.state === "online";
+      if (!settled) {
+        // Home is cosmetic here (HostsPanel shows it as the row detail
+        // line); leave it blank rather than probing — a real probeHost()
+        // call will fill it in properly if the user opens Hosts.
+        useHostStore.getState().setConnection(env.hostId, {
+          state: "online",
+          home: "",
+        });
+      }
+    }
   }, [activeId, tabs, spacesHydrated, booted, adoptWorkspaceEnv]);
 
   const [switcherOpen, setSwitcherOpen] = useState(false);
@@ -1719,6 +1745,7 @@ export default function App() {
                           }
                           openLogsTabRef={openDockerLogsTabRef}
                           openExecTabRef={newDockerExecTabRef}
+                          booted={booted}
                         />
                       ) : sidebarView === "explorer" ? (
                         <FileExplorer

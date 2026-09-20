@@ -1,3 +1,4 @@
+import { useHostStore } from "@/modules/hosts";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import type { WorkspaceEnv } from "@/modules/workspace";
@@ -13,6 +14,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Spinner } from "@/components/ui/spinner";
 import type { TerminalBackendKind } from "./backend/contracts";
 import { resolvedTerminalBackend } from "./backend/selection";
 import {
@@ -183,6 +185,9 @@ const GhosttyTerminalPane = memo(
             <GhosttyBlockOverlay leafId={leafId} />
           </Suspense>
         )}
+        {!session.error && session.connecting && (
+          <ConnectingOverlay env={env} onRetry={session.retry} />
+        )}
         {session.error && (
           <div
             role="alert"
@@ -215,6 +220,82 @@ const GhosttyTerminalPane = memo(
     );
   }),
 );
+
+/** Non-blocking "connecting" indicator for the window between a terminal
+ *  tab opening and its shell/PTY actually spawning (an SSH handshake here
+ *  can legitimately take seconds, or hang on a dead host). Delayed by
+ *  SHOW_DELAY_MS so local/fast SSH connects never flash it; escalates to
+ *  a Retry affordance after STALL_MS so a genuine hang isn't silent. */
+const CONNECTING_SHOW_DELAY_MS = 400;
+const CONNECTING_STALL_MS = 12_000;
+
+function ConnectingOverlay({
+  env,
+  onRetry,
+}: {
+  env: WorkspaceEnv | undefined;
+  onRetry: () => void;
+}) {
+  const [visible, setVisible] = useState(false);
+  const [stalled, setStalled] = useState(false);
+  const hostAlias = useHostStore((state) =>
+    env?.kind === "ssh"
+      ? (state.hosts.find((h) => h.id === env.hostId)?.alias ?? env.hostId)
+      : null,
+  );
+
+  useEffect(() => {
+    setVisible(false);
+    setStalled(false);
+    const showTimer = window.setTimeout(
+      () => setVisible(true),
+      CONNECTING_SHOW_DELAY_MS,
+    );
+    const stallTimer = window.setTimeout(
+      () => setStalled(true),
+      CONNECTING_STALL_MS,
+    );
+    return () => {
+      window.clearTimeout(showTimer);
+      window.clearTimeout(stallTimer);
+    };
+    // This component only exists while session.connecting is true (see the
+    // conditional render at the call site), so each connecting window is a
+    // fresh mount — timers correctly re-arm without extra deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!visible) return null;
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background/95 p-6 text-center text-sm"
+    >
+      <Spinner className="text-muted-foreground" />
+      <p className="text-foreground">
+        {hostAlias ? `Connecting to ${hostAlias}…` : "Starting terminal…"}
+      </p>
+      {stalled && (
+        <>
+          <p className="max-w-sm text-muted-foreground">
+            {hostAlias
+              ? `This is taking longer than expected. The host may be unreachable, or waiting on authentication.`
+              : "This is taking longer than expected."}
+          </p>
+          <button
+            type="button"
+            className="rounded-md border px-3 py-1.5 hover:bg-accent focus-visible:outline-2"
+            onClick={onRetry}
+          >
+            Retry
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
 
 export const TerminalPane = memo(
   forwardRef<TerminalPaneHandle, TerminalPaneProps>(
