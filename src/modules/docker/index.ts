@@ -1,10 +1,18 @@
 export { CleanupHub } from "./components/CleanupHub";
 export { DetailsDrawer } from "./components/DetailsDrawer";
+export { DockerConfirmDialog } from "./dialogs/DockerConfirmDialog";
 export { DockerEventsPane } from "./DockerEventsPane";
 export { DockerLogsPane } from "./DockerLogsPane";
 export { DockerNotifications } from "./DockerNotifications";
 export { DockerPanel } from "./DockerPanel";
 export { composeLabel, daemonLabel, swarmLabel } from "./lib/capabilities";
+export {
+  confirmDockerAction,
+  useDockerConfirmStore,
+  type DockerConfirmOptions,
+  type DockerResourceKind as DockerConfirmResourceKind,
+  type PendingDockerConfirm,
+} from "./lib/dockerConfirmStore";
 export {
   type ComposeProjectState,
   type ContainerAction,

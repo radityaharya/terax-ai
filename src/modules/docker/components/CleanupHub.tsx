@@ -1,7 +1,8 @@
 import { cn } from "@/lib/utils";
 import { Cancel01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { confirmDockerAction } from "../lib/dockerConfirmStore";
 import {
   type DiskUsage,
   type PruneTarget,
@@ -79,7 +80,6 @@ export function CleanupHub({ hostId, onClose, bare }: Props) {
   const refreshDisk = useDockerStore((s) => s.refreshDisk);
   const prune = useDockerStore((s) => s.prune);
   const clearPruneOutput = useDockerStore((s) => s.clearPruneOutput);
-  const [confirming, setConfirming] = useState<PruneTarget | null>(null);
 
   useEffect(() => {
     void refreshDisk(hostId);
@@ -93,15 +93,28 @@ export function CleanupHub({ hostId, onClose, bare }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const runPrune = (
+  const runPrune = async (
     target: PruneTarget,
     opts?: { all?: boolean; volumes?: boolean },
+    label?: string,
+    reclaimable?: string,
   ) => {
-    if (confirming !== target) {
-      setConfirming(target);
-      return;
-    }
-    setConfirming(null);
+    const targetLabel = label ?? target;
+    const confirmed = await confirmDockerAction({
+      title: `Prune ${targetLabel.toLowerCase()}`,
+      actionLabel: "Prune",
+      actionVariant: "destructive",
+      resourceKind: "System Prune",
+      resourceName: targetLabel,
+      resourceDetails:
+        reclaimable && reclaimable !== "—"
+          ? `Reclaimable: ${reclaimable}`
+          : undefined,
+      hostAlias: hostId,
+      description:
+        "Permanently removes unused Docker data from the remote host. This space reclamation cannot be undone.",
+    });
+    if (!confirmed) return;
     void prune(hostId, target, opts);
   };
 
@@ -167,43 +180,30 @@ export function CleanupHub({ hostId, onClose, bare }: Props) {
                   reclaimable: {row.reclaimable(disk)}
                   {row.optionLabel ? ` · ${row.optionLabel}` : ""}
                 </span>
-                {confirming === row.target ? (
-                  <span className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      disabled={pruning !== null}
-                      onClick={() => runPrune(row.target, row.options)}
-                      className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                    >
-                      {pruning === row.target ? "Pruning…" : "Confirm"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirming(null)}
-                      className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
-                    >
-                      Keep
-                    </button>
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={pruning !== null}
-                    onClick={() => runPrune(row.target, row.options)}
-                    title={`Prune ${row.label}`}
-                    aria-label={`Prune ${row.label}`}
-                    className={cn(
-                      "flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground",
-                      pruning !== null && "opacity-50",
-                    )}
-                  >
-                    <HugeiconsIcon
-                      icon={Delete02Icon}
-                      size={13}
-                      strokeWidth={1.75}
-                    />
-                  </button>
-                )}
+                <button
+                  type="button"
+                  disabled={pruning !== null}
+                  onClick={() =>
+                    void runPrune(
+                      row.target,
+                      row.options,
+                      row.label,
+                      row.reclaimable(disk),
+                    )
+                  }
+                  title={`Prune ${row.label}`}
+                  aria-label={`Prune ${row.label}`}
+                  className={cn(
+                    "flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground",
+                    pruning !== null && "opacity-50",
+                  )}
+                >
+                  <HugeiconsIcon
+                    icon={Delete02Icon}
+                    size={13}
+                    strokeWidth={1.75}
+                  />
+                </button>
               </div>
             </div>
           ))

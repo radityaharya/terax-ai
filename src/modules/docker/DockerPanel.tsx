@@ -3,7 +3,6 @@ import { useSidebarDeckStore } from "@/modules/sidebar";
 import {
   Activity01Icon,
   ArrowUpRight01Icon,
-  Cancel01Icon,
   ComputerTerminal02Icon,
   Delete02Icon,
   File02Icon,
@@ -24,10 +23,12 @@ import { SwarmPanel } from "./components/SwarmPanel";
 import { SwarmSecretsPanel } from "./components/SwarmSecretsPanel";
 import { DockerEventsPane } from "./DockerEventsPane";
 import { DockerLogsPane } from "./DockerLogsPane";
+import { DockerConfirmDialog } from "./dialogs/DockerConfirmDialog";
 import { ExecDialog } from "./dialogs/ExecDialog";
 import { PullDialog } from "./dialogs/PullDialog";
 import { RegistryDialog } from "./dialogs/RegistryDialog";
 import { daemonLabel } from "./lib/capabilities";
+import { confirmDockerAction } from "./lib/dockerConfirmStore";
 import { type ContainerAction, useDockerStore } from "./lib/dockerStore";
 import type { DockerContainer, DockerResourceKind } from "./lib/types";
 
@@ -86,7 +87,6 @@ export function DockerPanel({
   const setDeck = useSidebarDeckStore((s) => s.openCard);
   const closeDeck = useSidebarDeckStore((s) => s.closeCard);
   const [filter, setFilter] = useState("");
-  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [pullReference, setPullReference] = useState("");
   const [activePulls, setActivePulls] = useState<string[]>([]);
   // Detail openers: each replaces the current card (single focus). The
@@ -345,13 +345,68 @@ export function DockerPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostId, containers?.updatedAt]);
 
-  const runAction = (action: ContainerAction, id: string) => {
+  const runAction = async (action: ContainerAction, id: string) => {
     if (!hostId) return;
-    if (action === "remove" && confirmRemove !== id) {
-      setConfirmRemove(id);
-      return;
-    }
-    setConfirmRemove(null);
+    const name = containerNamesById[id] ?? id.slice(0, 12);
+    const container = containers?.items?.find((c) => containerId(c) === id);
+    const image = container?.Image ? String(container.Image) : undefined;
+
+    const actionMeta: Record<
+      ContainerAction,
+      {
+        title: string;
+        label: string;
+        variant: "destructive" | "warning" | "default";
+        desc: string;
+      }
+    > = {
+      start: {
+        title: "Start container",
+        label: "Start",
+        variant: "default",
+        desc: "Starts the stopped container process.",
+      },
+      stop: {
+        title: "Stop container",
+        label: "Stop",
+        variant: "warning",
+        desc: "Stops the running container process (sends SIGTERM, then SIGKILL if unresponsive).",
+      },
+      restart: {
+        title: "Restart container",
+        label: "Restart",
+        variant: "warning",
+        desc: "Restarts the running container process.",
+      },
+      kill: {
+        title: "Kill container",
+        label: "Kill",
+        variant: "destructive",
+        desc: "Sends SIGKILL immediately to the container process. Unsaved data will be lost.",
+      },
+      remove: {
+        title: "Remove container",
+        label: "Remove",
+        variant: "destructive",
+        desc: "Permanently removes the container. Any data not stored in persistent volumes will be lost.",
+      },
+    };
+
+    const meta = actionMeta[action];
+    const confirmed = await confirmDockerAction({
+      title: meta.title,
+      actionLabel: meta.label,
+      actionVariant: meta.variant,
+      resourceKind: "Container",
+      resourceName: name,
+      resourceDetails: image
+        ? `ID: ${id.slice(0, 12)} · Image: ${image}`
+        : `ID: ${id.slice(0, 12)}`,
+      hostAlias: hostAlias ?? hostId,
+      description: meta.desc,
+    });
+    if (!confirmed) return;
+
     void containerAction(hostId, action, [id], { force: true });
   };
 
@@ -510,9 +565,7 @@ export function DockerPanel({
                       key={id}
                       container={c}
                       busy={busyAction}
-                      confirmingRemove={confirmRemove === id}
                       onAction={(a) => runAction(a, id)}
-                      onCancelRemove={() => setConfirmRemove(null)}
                       onInspect={() =>
                         openInspectDeck({
                           kind: "container",
@@ -551,6 +604,7 @@ export function DockerPanel({
             ) : segment === "images" ? (
               <ImagesList
                 hostId={hostId}
+                hostAlias={hostAlias}
                 filter={filter}
                 onPull={openPullPromptDeck}
                 onRegistry={openRegistryDeck}
@@ -578,6 +632,7 @@ export function DockerPanel({
             ) : segment === "volumes" ? (
               <VolumesList
                 hostId={hostId}
+                hostAlias={hostAlias}
                 filter={filter}
                 onInspect={(kind, id, title) =>
                   openInspectDeck({ kind, id, title })
@@ -586,6 +641,7 @@ export function DockerPanel({
             ) : (
               <NetworksList
                 hostId={hostId}
+                hostAlias={hostAlias}
                 filter={filter}
                 onInspect={(kind, id, title) =>
                   openInspectDeck({ kind, id, title })
@@ -606,6 +662,7 @@ export function DockerPanel({
           ) : null}
         </div>
       )}
+      <DockerConfirmDialog />
     </div>
   );
 }
@@ -899,12 +956,14 @@ function PullPromptBody({
 
 function ImagesList({
   hostId,
+  hostAlias,
   filter,
   onPull,
   onRegistry,
   activePulls,
 }: {
   hostId: string;
+  hostAlias?: string | null;
   filter: string;
   onPull: () => void;
   onRegistry: () => void;
@@ -916,7 +975,6 @@ function ImagesList({
   const removeImage = useDockerStore((s) => s.removeImage);
   const checkUpdate = useDockerStore((s) => s.checkUpdate);
   const startPull = useDockerStore((s) => s.startPull);
-  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const items = images?.items ?? [];
@@ -963,8 +1021,21 @@ function ImagesList({
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      const jobId = startPull(hostId, ref);
-                      void jobId;
+                      void (async () => {
+                        const confirmed = await confirmDockerAction({
+                          title: "Pull image update",
+                          actionLabel: "Pull update",
+                          actionVariant: "default",
+                          resourceKind: "Image",
+                          resourceName: ref,
+                          hostAlias: hostAlias ?? hostId,
+                          description:
+                            "Pulls the newer image digest for this tag from the registry.",
+                        });
+                        if (!confirmed) return;
+                        const jobId = startPull(hostId, ref);
+                        void jobId;
+                      })();
                     }}
                     title="Update available — pull now"
                     className="ml-1.5 rounded bg-amber-500/15 px-1 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-500/25"
@@ -979,45 +1050,47 @@ function ImagesList({
                 ) : null}
               </span>
               <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
-                {confirmRemove === id
-                  ? `Remove ${ref}?`
-                  : `${String(img.Size ?? "")} · ${id.slice(0, 12)}${update?.status === "checking" ? " · checking updates…" : ""}`}
+                {`${String(img.Size ?? "")} · ${id.slice(0, 12)}${update?.status === "checking" ? " · checking updates…" : ""}`}
               </span>
             </span>
-            {confirmRemove === id ? (
-              <span className="flex shrink-0 items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setConfirmRemove(null);
+            <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+              <RowButton
+                label={`Check for updates to ${ref}`}
+                onClick={() => void checkUpdate(hostId, ref)}
+              >
+                <HugeiconsIcon
+                  icon={Refresh01Icon}
+                  size={13}
+                  strokeWidth={1.75}
+                />
+              </RowButton>
+              <RowButton
+                label={`Remove image ${ref}`}
+                onClick={() => {
+                  void (async () => {
+                    const confirmed = await confirmDockerAction({
+                      title: "Remove image",
+                      actionLabel: "Remove",
+                      actionVariant: "destructive",
+                      resourceKind: "Image",
+                      resourceName: ref,
+                      resourceDetails: `ID: ${id.slice(0, 12)} · Size: ${String(img.Size ?? "")}`,
+                      hostAlias: hostAlias ?? hostId,
+                      description:
+                        "Removes this image from the remote host. Any containers referencing this image should be stopped or removed first.",
+                    });
+                    if (!confirmed) return;
                     void removeImage(hostId, id, true);
-                  }}
-                  className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10"
-                >
-                  Remove
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmRemove(null)}
-                  className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
-                >
-                  Keep
-                </button>
-              </span>
-            ) : (
-              <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
-                <RowButton
-                  label={`Check for updates to ${ref}`}
-                  onClick={() => void checkUpdate(hostId, ref)}
-                >
-                  <HugeiconsIcon
-                    icon={Refresh01Icon}
-                    size={13}
-                    strokeWidth={1.75}
-                  />
-                </RowButton>
-              </span>
-            )}
+                  })();
+                }}
+              >
+                <HugeiconsIcon
+                  icon={Delete02Icon}
+                  size={13}
+                  strokeWidth={1.75}
+                />
+              </RowButton>
+            </span>
           </div>
         );
       })}
@@ -1049,16 +1122,17 @@ function ImagesList({
 
 function VolumesList({
   hostId,
+  hostAlias,
   filter,
   onInspect,
 }: {
   hostId: string;
+  hostAlias?: string | null;
   filter: string;
   onInspect: (kind: "volume", id: string, title: string) => void;
 }) {
   const volumes = useDockerStore((s) => s.byHost[hostId]?.volumes);
   const removeVolume = useDockerStore((s) => s.removeVolume);
-  const [confirm, setConfirm] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const items = volumes?.items ?? [];
@@ -1100,55 +1174,47 @@ function VolumesList({
                 {name}
               </span>
               <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
-                {confirm === name
-                  ? `Remove volume ${name}? Data will be lost.`
-                  : `${String(v.Driver ?? "")} · ${String(v.Scope ?? "")}`}
+                {`${String(v.Driver ?? "")} · ${String(v.Scope ?? "")}`}
               </span>
             </span>
-            {confirm === name ? (
-              <span className="flex shrink-0 items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setConfirm(null);
+            <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+              <RowButton
+                label={`Inspect volume ${name}`}
+                onClick={() => onInspect("volume", name, name)}
+              >
+                <HugeiconsIcon
+                  icon={File02Icon}
+                  size={13}
+                  strokeWidth={1.75}
+                />
+              </RowButton>
+              <RowButton
+                label={`Remove volume ${name}`}
+                onClick={() => {
+                  void (async () => {
+                    const confirmed = await confirmDockerAction({
+                      title: "Remove volume",
+                      actionLabel: "Remove",
+                      actionVariant: "destructive",
+                      resourceKind: "Volume",
+                      resourceName: name,
+                      resourceDetails: `${String(v.Driver ?? "")} · ${String(v.Scope ?? "")}`,
+                      hostAlias: hostAlias ?? hostId,
+                      description:
+                        "Permanently deletes this Docker volume and all stored data from the host.",
+                    });
+                    if (!confirmed) return;
                     void removeVolume(hostId, name);
-                  }}
-                  className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10"
-                >
-                  Remove
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirm(null)}
-                  className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
-                >
-                  Keep
-                </button>
-              </span>
-            ) : (
-              <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
-                <RowButton
-                  label={`Inspect volume ${name}`}
-                  onClick={() => onInspect("volume", name, name)}
-                >
-                  <HugeiconsIcon
-                    icon={File02Icon}
-                    size={13}
-                    strokeWidth={1.75}
-                  />
-                </RowButton>
-                <RowButton
-                  label={`Remove volume ${name}`}
-                  onClick={() => setConfirm(name)}
-                >
-                  <HugeiconsIcon
-                    icon={Delete02Icon}
-                    size={13}
-                    strokeWidth={1.75}
-                  />
-                </RowButton>
-              </span>
-            )}
+                  })();
+                }}
+              >
+                <HugeiconsIcon
+                  icon={Delete02Icon}
+                  size={13}
+                  strokeWidth={1.75}
+                />
+              </RowButton>
+            </span>
           </div>
         );
       })}
@@ -1158,16 +1224,17 @@ function VolumesList({
 
 function NetworksList({
   hostId,
+  hostAlias,
   filter,
   onInspect,
 }: {
   hostId: string;
+  hostAlias?: string | null;
   filter: string;
   onInspect: (kind: "network", id: string, title: string) => void;
 }) {
   const networks = useDockerStore((s) => s.byHost[hostId]?.networks);
   const removeNetwork = useDockerStore((s) => s.removeNetwork);
-  const [confirm, setConfirm] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const items = networks?.items ?? [];
@@ -1202,6 +1269,7 @@ function NetworksList({
       {filtered.map((n) => {
         const name = String(n.Name ?? "?");
         const builtin = isBuiltin(name);
+        const netId = String(n.ID ?? n.Id ?? "");
         return (
           <div
             key={String(n.ID ?? n.Id ?? name)}
@@ -1217,34 +1285,12 @@ function NetworksList({
                 {name}
               </span>
               <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
-                {confirm === name
-                  ? `Remove network ${name}?`
-                  : `${String(n.Driver ?? "")} · ${String(n.Scope ?? "")}`}
+                {`${String(n.Driver ?? "")} · ${String(n.Scope ?? "")}`}
               </span>
             </span>
             {builtin ? (
               <span className="shrink-0 rounded bg-accent px-1 py-px text-[10px] text-muted-foreground/70">
                 builtin
-              </span>
-            ) : confirm === name ? (
-              <span className="flex shrink-0 items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setConfirm(null);
-                    void removeNetwork(hostId, name);
-                  }}
-                  className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10"
-                >
-                  Remove
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirm(null)}
-                  className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
-                >
-                  Keep
-                </button>
               </span>
             ) : (
               <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
@@ -1260,7 +1306,25 @@ function NetworksList({
                 </RowButton>
                 <RowButton
                   label={`Remove network ${name}`}
-                  onClick={() => setConfirm(name)}
+                  onClick={() => {
+                    void (async () => {
+                      const confirmed = await confirmDockerAction({
+                        title: "Remove network",
+                        actionLabel: "Remove",
+                        actionVariant: "destructive",
+                        resourceKind: "Network",
+                        resourceName: name,
+                        resourceDetails: netId
+                          ? `ID: ${netId.slice(0, 12)} · ${String(n.Driver ?? "")}`
+                          : undefined,
+                        hostAlias: hostAlias ?? hostId,
+                        description:
+                          "Deletes this network. Connected containers will lose connectivity.",
+                      });
+                      if (!confirmed) return;
+                      void removeNetwork(hostId, name);
+                    })();
+                  }}
                 >
                   <HugeiconsIcon
                     icon={Delete02Icon}
@@ -1339,9 +1403,7 @@ const STATE_DOT: Record<string, string> = {
 function ContainerRow({
   container,
   busy,
-  confirmingRemove,
   onAction,
-  onCancelRemove,
   onInspect,
   onLogs,
   onLogsTab,
@@ -1350,9 +1412,7 @@ function ContainerRow({
 }: {
   container: DockerContainer;
   busy: ContainerAction | undefined;
-  confirmingRemove: boolean;
   onAction: (a: ContainerAction) => void;
-  onCancelRemove: () => void;
   onInspect: () => void;
   onLogs: () => void;
   onLogsTab: () => void;
@@ -1374,9 +1434,9 @@ function ContainerRow({
       role="button"
       tabIndex={0}
       title={`${name} (${id}) — click for details`}
-      onClick={confirmingRemove ? undefined : onInspect}
+      onClick={onInspect}
       onKeyDown={(e) => {
-        if (e.key === "Enter" && !confirmingRemove) {
+        if (e.key === "Enter") {
           e.preventDefault();
           onInspect();
         }
@@ -1399,105 +1459,77 @@ function ContainerRow({
           ) : null}
         </span>
         <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
-          {confirmingRemove ? `Remove ${name}?` : detail}
+          {detail}
         </span>
-        {statsLine && !confirmingRemove ? (
+        {statsLine ? (
           <span className="truncate text-[10px] tabular-nums leading-tight text-primary/80">
             {statsLine}
           </span>
         ) : null}
       </span>
-      {confirmingRemove ? (
-        <span className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onAction("remove");
-            }}
-            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10"
-          >
-            Remove
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onCancelRemove();
-            }}
-            className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
-          >
-            Keep
-          </button>
-        </span>
-      ) : (
-        <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
-          {running ? (
-            <>
-              <RowButton
-                label={`Stop ${name}`}
-                onClick={() => onAction("stop")}
-              >
-                <HugeiconsIcon icon={StopIcon} size={13} strokeWidth={1.75} />
-              </RowButton>
-              <RowButton
-                label={`Restart ${name}`}
-                onClick={() => onAction("restart")}
-              >
-                <HugeiconsIcon
-                  icon={RotateClockwiseIcon}
-                  size={13}
-                  strokeWidth={1.75}
-                />
-              </RowButton>
-              <RowButton
-                label={`Kill ${name}`}
-                onClick={() => onAction("kill")}
-              >
-                <HugeiconsIcon icon={ZapIcon} size={13} strokeWidth={1.75} />
-              </RowButton>
-            </>
-          ) : (
+      <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+        {running ? (
+          <>
             <RowButton
-              label={`Start ${name}`}
-              onClick={() => onAction("start")}
+              label={`Stop ${name}`}
+              onClick={() => onAction("stop")}
             >
-              <HugeiconsIcon icon={PlayIcon} size={13} strokeWidth={1.75} />
+              <HugeiconsIcon icon={StopIcon} size={13} strokeWidth={1.75} />
             </RowButton>
-          )}
-          <RowButton label={`Logs for ${name}`} onClick={onLogs}>
-            <HugeiconsIcon icon={File02Icon} size={13} strokeWidth={1.75} />
-          </RowButton>
-          <RowButton
-            label={`Open logs for ${name} in a tab`}
-            onClick={onLogsTab}
-          >
-            <HugeiconsIcon
-              icon={ArrowUpRight01Icon}
-              size={13}
-              strokeWidth={1.75}
-            />
-          </RowButton>
-          {running ? (
-            <RowButton label={`Exec shell in ${name}`} onClick={onExec}>
+            <RowButton
+              label={`Restart ${name}`}
+              onClick={() => onAction("restart")}
+            >
               <HugeiconsIcon
-                icon={ComputerTerminal02Icon}
+                icon={RotateClockwiseIcon}
                 size={13}
                 strokeWidth={1.75}
               />
             </RowButton>
-          ) : null}
+            <RowButton
+              label={`Kill ${name}`}
+              onClick={() => onAction("kill")}
+            >
+              <HugeiconsIcon icon={ZapIcon} size={13} strokeWidth={1.75} />
+            </RowButton>
+          </>
+        ) : (
           <RowButton
-            label={`Remove ${name}`}
-            onClick={() => onAction("remove")}
+            label={`Start ${name}`}
+            onClick={() => onAction("start")}
           >
-            <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
+            <HugeiconsIcon icon={PlayIcon} size={13} strokeWidth={1.75} />
           </RowButton>
-          <RowButton label="Cancel" onClick={onCancelRemove}>
-            <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={1.75} />
+        )}
+        <RowButton label={`Logs for ${name}`} onClick={onLogs}>
+          <HugeiconsIcon icon={File02Icon} size={13} strokeWidth={1.75} />
+        </RowButton>
+        <RowButton
+          label={`Open logs for ${name} in a tab`}
+          onClick={onLogsTab}
+        >
+          <HugeiconsIcon
+            icon={ArrowUpRight01Icon}
+            size={13}
+            strokeWidth={1.75}
+          />
+        </RowButton>
+        {running ? (
+          <RowButton label={`Exec shell in ${name}`} onClick={onExec}>
+            <HugeiconsIcon
+              icon={ComputerTerminal02Icon}
+              size={13}
+              strokeWidth={1.75}
+            />
           </RowButton>
-        </span>
-      )}
+        ) : null}
+        <RowButton
+          label={`Remove ${name}`}
+          onClick={() => onAction("remove")}
+        >
+          <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
+        </RowButton>
+      </span>
     </div>
   );
 }

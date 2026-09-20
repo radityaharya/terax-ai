@@ -10,6 +10,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
+import { confirmDockerAction } from "../lib/dockerConfirmStore";
 import {
   useDockerStore,
   type SwarmNode,
@@ -31,7 +32,6 @@ export function SwarmPanel({ hostId, swarmActive, onOpenServiceLogs }: Props) {
   const nodeAction = useDockerStore((s) => s.nodeAction);
   const refreshStackDrift = useDockerStore((s) => s.refreshStackDrift);
   const [scaleTarget, setScaleTarget] = useState<{ id: string; name: string; replicas: string } | null>(null);
-  const [confirmStackRm, setConfirmStackRm] = useState<string | null>(null);
   const [driftStack, setDriftStack] = useState<string | null>(null);
 
   useEffect(() => {
@@ -42,6 +42,73 @@ export function SwarmPanel({ hostId, swarmActive, onOpenServiceLogs }: Props) {
 
   const busy = swarm?.busyService ?? {};
   const drift = swarm?.drift ?? {};
+
+  const handleRollback = async (svc: SwarmService) => {
+    const name = serviceName(svc);
+    const confirmed = await confirmDockerAction({
+      title: "Rollback swarm service",
+      actionLabel: "Rollback",
+      actionVariant: "warning",
+      resourceKind: "Swarm Service",
+      resourceName: name,
+      resourceDetails: `Image: ${String(svc.Image ?? "")}`,
+      hostAlias: hostId,
+      description: "Rolls back the service configuration to its previous version across all replicas in the swarm.",
+    });
+    if (!confirmed) return;
+    void serviceAction(hostId, "rollback", serviceId(svc));
+  };
+
+  const handleRemoveService = async (svc: SwarmService) => {
+    const name = serviceName(svc);
+    const confirmed = await confirmDockerAction({
+      title: "Remove swarm service",
+      actionLabel: "Remove",
+      actionVariant: "destructive",
+      resourceKind: "Swarm Service",
+      resourceName: name,
+      resourceDetails: `ID: ${serviceId(svc)} · Image: ${String(svc.Image ?? "")}`,
+      hostAlias: hostId,
+      description: "Permanently removes this service and terminates all its replica tasks across the swarm.",
+    });
+    if (!confirmed) return;
+    void serviceAction(hostId, "rm", serviceId(svc));
+  };
+
+  const handleNodeAction = async (a: "drain" | "activate" | "pause" | "promote" | "demote", node: SwarmNode) => {
+    const id = nodeId(node);
+    const hostname = String(node.Hostname ?? id);
+    const isDrain = a === "drain";
+    const confirmed = await confirmDockerAction({
+      title: isDrain ? "Drain swarm node" : `Set node to ${a}`,
+      actionLabel: isDrain ? "Drain node" : a,
+      actionVariant: isDrain ? "warning" : "default",
+      resourceKind: "Swarm Node",
+      resourceName: hostname,
+      resourceDetails: `Node ID: ${id} · Status: ${String(node.Status ?? "")}`,
+      hostAlias: hostId,
+      description: isDrain
+        ? "Tasks on this node will be stopped and rescheduled on other active swarm nodes."
+        : `Sets node availability to ${a}. Node will resume accepting tasks.`,
+    });
+    if (!confirmed) return;
+    void nodeAction(hostId, a, id);
+  };
+
+  const handleStackRemove = async (name: string, servicesCount?: string) => {
+    const confirmed = await confirmDockerAction({
+      title: "Remove swarm stack",
+      actionLabel: "Remove",
+      actionVariant: "destructive",
+      resourceKind: "Swarm Stack",
+      resourceName: name,
+      resourceDetails: servicesCount ? `${servicesCount} service(s)` : undefined,
+      hostAlias: hostId,
+      description: "Removes this stack and terminates all services and tasks deployed under it.",
+    });
+    if (!confirmed) return;
+    void stackAction(hostId, "rm", name);
+  };
 
   return (
     <div className="flex flex-col gap-2 px-1.5 pb-2">
@@ -74,8 +141,8 @@ export function SwarmPanel({ hostId, swarmActive, onOpenServiceLogs }: Props) {
               })
             }
             onLogs={() => onOpenServiceLogs(serviceId(svc), serviceName(svc))}
-            onRollback={() => void serviceAction(hostId, "rollback", serviceId(svc))}
-            onRemove={() => void serviceAction(hostId, "rm", serviceId(svc))}
+            onRollback={() => void handleRollback(svc)}
+            onRemove={() => void handleRemoveService(svc)}
           />
         ))
       )}
@@ -87,7 +154,20 @@ export function SwarmPanel({ hostId, swarmActive, onOpenServiceLogs }: Props) {
           onSubmit={() => {
             const n = Number(scaleTarget.replicas);
             if (Number.isInteger(n) && n >= 0 && n <= 1024) {
-              void serviceAction(hostId, "scale", scaleTarget.id, { replicas: n });
+              void (async () => {
+                const confirmed = await confirmDockerAction({
+                  title: "Scale swarm service",
+                  actionLabel: "Scale",
+                  actionVariant: "default",
+                  resourceKind: "Swarm Service",
+                  resourceName: scaleTarget.name,
+                  resourceDetails: `Target replicas: ${n}`,
+                  hostAlias: hostId,
+                  description: `Updates desired replica count to ${n}. Swarm will schedule or terminate tasks accordingly.`,
+                });
+                if (!confirmed) return;
+                void serviceAction(hostId, "scale", scaleTarget.id, { replicas: n });
+              })();
             }
             setScaleTarget(null);
           }}
@@ -99,7 +179,7 @@ export function SwarmPanel({ hostId, swarmActive, onOpenServiceLogs }: Props) {
         <NodeRow
           key={nodeId(n)}
           node={n}
-          onAction={(a) => void nodeAction(hostId, a, nodeId(n))}
+          onAction={(a) => void handleNodeAction(a, n)}
         />
       ))}
       <SectionTitle title="Stacks" count={swarm?.stacks.length ?? 0} />
@@ -112,6 +192,7 @@ export function SwarmPanel({ hostId, swarmActive, onOpenServiceLogs }: Props) {
           const name = String(st.Name ?? "?");
           const d = drift[name];
           const drifted = d && JSON.stringify(d.running) !== JSON.stringify(d.desired);
+          const servicesCount = String(st.Services ?? "");
           return (
             <div key={name} className="rounded-md border border-border/40 px-2 py-1.5">
               <div className="flex items-center gap-1.5">
@@ -119,7 +200,7 @@ export function SwarmPanel({ hostId, swarmActive, onOpenServiceLogs }: Props) {
                   {name}
                 </span>
                 <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/70">
-                  {String(st.Services ?? "")} svc
+                  {servicesCount} svc
                 </span>
                 {drifted ? (
                   <span className="shrink-0 rounded bg-amber-500/15 px-1 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400" title={`Running differs from compose file.\nRunning: ${(d?.running ?? []).join(", ")}\nDesired: ${(d?.desired ?? []).join(", ")}`}>
@@ -128,41 +209,15 @@ export function SwarmPanel({ hostId, swarmActive, onOpenServiceLogs }: Props) {
                 ) : null}
               </div>
               <div className="mt-1 flex items-center gap-0.5">
-                {confirmStackRm === name ? (
-                  <span className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setConfirmStackRm(null);
-                        void stackAction(hostId, "rm", name);
-                      }}
-                      className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10"
-                    >
-                      Confirm remove
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmStackRm(null)}
-                      className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
-                    >
-                      Keep
-                    </button>
-                  </span>
-                ) : (
-                  <>
-                    <SmallButton label={`Check drift for ${name}`} onClick={() => {
-                      setDriftStack(name);
-                      // Compose file path resolved from the stack's services in a later pass;
-                      // for now drift checks the services list itself.
-                      void refreshStackDrift(hostId, name, "");
-                    }}>
-                      <HugeiconsIcon icon={Refresh01Icon} size={12} strokeWidth={1.75} />
-                    </SmallButton>
-                    <SmallButton label={`Remove stack ${name}`} onClick={() => setConfirmStackRm(name)}>
-                      <HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={1.75} />
-                    </SmallButton>
-                  </>
-                )}
+                <SmallButton label={`Check drift for ${name}`} onClick={() => {
+                  setDriftStack(name);
+                  void refreshStackDrift(hostId, name, "");
+                }}>
+                  <HugeiconsIcon icon={Refresh01Icon} size={12} strokeWidth={1.75} />
+                </SmallButton>
+                <SmallButton label={`Remove stack ${name}`} onClick={() => void handleStackRemove(name, servicesCount)}>
+                  <HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={1.75} />
+                </SmallButton>
                 {driftStack === name && d ? (
                   <span className="ml-1 truncate text-[10px] text-muted-foreground/70">
                     run: {d.running.join(", ") || "—"} · want: {d.desired.join(", ") || "—"}
@@ -243,7 +298,6 @@ function ServiceRow({
   const name = serviceName(service);
   const health = service.replicaHealth;
   const under = health?.underReplicated ?? false;
-  const [confirmRm, setConfirmRm] = useState(false);
   return (
     <div className="group rounded-md px-2 py-1.5 transition-colors hover:bg-accent/50">
       <div className="flex items-center gap-1.5">
@@ -270,39 +324,20 @@ function ServiceRow({
       <div className="mt-0.5 truncate text-[10px] text-muted-foreground/60">
         {String(service.Image ?? "")}
       </div>
-      {confirmRm ? (
-        <div className="mt-1 flex items-center gap-1">
-          <button
-            type="button"
-            onClick={onRemove}
-            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10"
-          >
-            Confirm remove
-          </button>
-          <button
-            type="button"
-            onClick={() => setConfirmRm(false)}
-            className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
-          >
-            Keep
-          </button>
-        </div>
-      ) : (
-        <div className="mt-1 hidden items-center gap-0.5 group-hover:flex">
-          <SmallButton label={`Scale ${name}`} onClick={onScale}>
-            <HugeiconsIcon icon={ArrowDown01Icon} size={12} strokeWidth={1.75} />
-          </SmallButton>
-          <SmallButton label={`Logs for ${name}`} onClick={onLogs}>
-            <HugeiconsIcon icon={PlayIcon} size={12} strokeWidth={1.75} />
-          </SmallButton>
-          <SmallButton label={`Rollback ${name}`} onClick={onRollback}>
-            <HugeiconsIcon icon={RotateClockwiseIcon} size={12} strokeWidth={1.75} />
-          </SmallButton>
-          <SmallButton label={`Remove ${name}`} onClick={() => setConfirmRm(true)}>
-            <HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={1.75} />
-          </SmallButton>
-        </div>
-      )}
+      <div className="mt-1 hidden items-center gap-0.5 group-hover:flex">
+        <SmallButton label={`Scale ${name}`} onClick={onScale}>
+          <HugeiconsIcon icon={ArrowDown01Icon} size={12} strokeWidth={1.75} />
+        </SmallButton>
+        <SmallButton label={`Logs for ${name}`} onClick={onLogs}>
+          <HugeiconsIcon icon={PlayIcon} size={12} strokeWidth={1.75} />
+        </SmallButton>
+        <SmallButton label={`Rollback ${name}`} onClick={onRollback}>
+          <HugeiconsIcon icon={RotateClockwiseIcon} size={12} strokeWidth={1.75} />
+        </SmallButton>
+        <SmallButton label={`Remove ${name}`} onClick={onRemove}>
+          <HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={1.75} />
+        </SmallButton>
+      </div>
     </div>
   );
 }

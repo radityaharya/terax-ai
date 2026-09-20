@@ -1,6 +1,7 @@
 import { Delete02Icon, Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
+import { confirmDockerAction } from "../lib/dockerConfirmStore";
 import { useDockerStore } from "../lib/dockerStore";
 
 type Props = {
@@ -19,7 +20,6 @@ export function SwarmSecretsPanel({ hostId }: Props) {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [file, setFile] = useState("");
-  const [confirm, setConfirm] = useState<string | null>(null);
 
   useEffect(() => {
     void refreshSwarmSecrets(hostId);
@@ -39,6 +39,23 @@ export function SwarmSecretsPanel({ hostId }: Props) {
         setFile("");
       });
     }
+  };
+
+  const handleRemove = async (item: { id: string; name: string }) => {
+    const isSecret = tab === "secrets";
+    const confirmed = await confirmDockerAction({
+      title: `Remove swarm ${isSecret ? "secret" : "config"}`,
+      actionLabel: "Remove",
+      actionVariant: "destructive",
+      resourceKind: isSecret ? "Secret" : "Config",
+      resourceName: item.name,
+      resourceDetails: `ID: ${item.id}`,
+      hostAlias: hostId,
+      description: `Permanently deletes this ${isSecret ? "secret" : "config"} from the swarm manager. Services referencing it will fail if restarted.`,
+    });
+    if (!confirmed) return;
+    if (isSecret) void secretRemove(hostId, item.name);
+    else void configRemove(hostId, item.name);
   };
 
   const items =
@@ -82,37 +99,14 @@ export function SwarmSecretsPanel({ hostId }: Props) {
           {items.map((item) => (
             <div key={item.id} className="group flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-accent/50">
               <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{item.name}</span>
-              {confirm === item.id ? (
-                <span className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setConfirm(null);
-                      if (tab === "secrets") void secretRemove(hostId, item.name);
-                      else void configRemove(hostId, item.name);
-                    }}
-                    className="rounded px-1.5 py-px text-[10px] font-medium text-destructive hover:bg-destructive/10"
-                  >
-                    Confirm
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirm(null)}
-                    className="rounded px-1.5 py-px text-[10px] text-muted-foreground hover:bg-accent"
-                  >
-                    Keep
-                  </button>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  aria-label={`Remove ${tab === "secrets" ? "secret" : "config"} ${item.name}`}
-                  onClick={() => setConfirm(item.id)}
-                  className="hidden size-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-accent hover:text-foreground group-hover:flex"
-                >
-                  <HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={1.75} />
-                </button>
-              )}
+              <button
+                type="button"
+                aria-label={`Remove ${tab === "secrets" ? "secret" : "config"} ${item.name}`}
+                onClick={() => void handleRemove(item)}
+                className="hidden size-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-accent hover:text-foreground group-hover:flex"
+              >
+                <HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={1.75} />
+              </button>
             </div>
           ))}
         </div>

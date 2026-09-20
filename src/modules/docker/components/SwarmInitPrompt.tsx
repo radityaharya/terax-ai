@@ -1,6 +1,7 @@
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
+import { confirmDockerAction } from "../lib/dockerConfirmStore";
 import { useDockerStore } from "../lib/dockerStore";
 
 type Props = {
@@ -29,14 +30,47 @@ export function SwarmInitPrompt({ hostId, onClose }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const submit = () => {
-    if (mode === "init") void swarmInit(hostId, advertiseAddr.trim() || undefined).then(onClose);
-    else if (mode === "join" && token.trim() && addr.trim()) {
+  const submit = async () => {
+    if (mode === "init") {
+      const confirmed = await confirmDockerAction({
+        title: "Initialize swarm cluster",
+        actionLabel: "Initialize",
+        actionVariant: "default",
+        resourceKind: "Swarm Cluster",
+        resourceName: hostId,
+        resourceDetails: advertiseAddr.trim() ? `Advertise: ${advertiseAddr.trim()}` : undefined,
+        hostAlias: hostId,
+        description: "Initializes this Docker host as a swarm manager and creates a new swarm cluster.",
+      });
+      if (!confirmed) return;
+      void swarmInit(hostId, advertiseAddr.trim() || undefined).then(onClose);
+    } else if (mode === "join" && token.trim() && addr.trim()) {
+      const confirmed = await confirmDockerAction({
+        title: "Join swarm cluster",
+        actionLabel: "Join",
+        actionVariant: "default",
+        resourceKind: "Swarm Cluster",
+        resourceName: addr.trim(),
+        resourceDetails: `Manager address: ${addr.trim()}`,
+        hostAlias: hostId,
+        description: "Joins this Docker host as a worker node in the swarm cluster.",
+      });
+      if (!confirmed) return;
       void swarmJoin(hostId, token.trim(), addr.trim()).then(() => {
         setToken("");
         onClose();
       });
     } else if (mode === "leave" && confirmLeave) {
+      const confirmed = await confirmDockerAction({
+        title: "Leave swarm cluster",
+        actionLabel: "Leave swarm",
+        actionVariant: "destructive",
+        resourceKind: "Swarm Cluster",
+        resourceName: hostId,
+        hostAlias: hostId,
+        description: "Forces this node to leave the swarm cluster. All swarm services on this node will terminate.",
+      });
+      if (!confirmed) return;
       void swarmLeave(hostId, true).then(onClose);
     }
   };

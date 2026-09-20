@@ -1,6 +1,7 @@
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
+import { confirmDockerAction } from "../lib/dockerConfirmStore";
 import { useDockerStore } from "../lib/dockerStore";
 
 type Props = {
@@ -173,7 +174,22 @@ export function RegistryDialog({ hostId, onClose, bare }: Props) {
           <button
             type="button"
             disabled={state?.busy}
-            onClick={() => void registryLogout(hostId, active)}
+            onClick={() => {
+              void (async () => {
+                const confirmed = await confirmDockerAction({
+                  title: "Log out of registry",
+                  actionLabel: "Log out",
+                  actionVariant: "destructive",
+                  resourceKind: "Registry",
+                  resourceName: active,
+                  hostAlias: hostId,
+                  description:
+                    "Removes saved login credentials for this registry from your OS keyring.",
+                });
+                if (!confirmed) return;
+                void registryLogout(hostId, active);
+              })();
+            }}
             className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
           >
             Log out

@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import { ArrowUp01Icon, ArrowDown01Icon, PlayIcon, Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { confirmDockerAction } from "../lib/dockerConfirmStore";
 import { useDockerStore, type ComposeProjectState } from "../lib/dockerStore";
 
 type Props = {
@@ -14,14 +14,50 @@ type Props = {
 /** Compose project card: grouped containers + up/down/restart/pull. */
 export function ComposeCard({ hostId, project, containerNames, onOpenLogs }: Props) {
   const composeAction = useDockerStore((s) => s.composeAction);
-  const [confirm, setConfirm] = useState<"down" | null>(null);
 
-  const run = (action: "up" | "down" | "restart" | "pull", opts?: { build?: boolean; volumes?: boolean }) => {
-    if (action === "down" && confirm !== "down") {
-      setConfirm("down");
-      return;
-    }
-    setConfirm(null);
+  const run = async (
+    action: "up" | "down" | "restart" | "pull",
+    opts?: { build?: boolean; volumes?: boolean },
+  ) => {
+    const meta = {
+      up: {
+        title: "Start compose project",
+        label: "Start",
+        variant: "default" as const,
+        desc: `Starts all service containers defined in ${project.name}.`,
+      },
+      restart: {
+        title: "Restart compose project",
+        label: "Restart",
+        variant: "warning" as const,
+        desc: `Restarts all running containers in ${project.name}.`,
+      },
+      pull: {
+        title: "Pull compose images",
+        label: "Pull",
+        variant: "default" as const,
+        desc: `Pulls updated images for all services in ${project.name}.`,
+      },
+      down: {
+        title: "Stop compose project",
+        label: "Stop",
+        variant: "destructive" as const,
+        desc: `Stops and removes all containers and networks created by ${project.name}.`,
+      },
+    }[action];
+
+    const confirmed = await confirmDockerAction({
+      title: meta.title,
+      actionLabel: meta.label,
+      actionVariant: meta.variant,
+      resourceKind: "Compose Project",
+      resourceName: project.name,
+      resourceDetails: `${project.containers.length} container(s) · ${project.files.map((f) => f.split("/").pop()).join(", ")}`,
+      hostAlias: hostId,
+      description: meta.desc,
+    });
+    if (!confirmed) return;
+
     void composeAction(hostId, project.name, action, opts);
   };
 
@@ -63,37 +99,18 @@ export function ComposeCard({ hostId, project, containerNames, onOpenLogs }: Pro
         </div>
       ) : null}
       <div className="mt-1.5 flex items-center gap-0.5">
-        <CardButton label={`Start ${project.name}`} onClick={() => run("up")}>
+        <CardButton label={`Start ${project.name}`} onClick={() => void run("up")}>
           <HugeiconsIcon icon={PlayIcon} size={13} strokeWidth={1.75} />
         </CardButton>
-        <CardButton label={`Restart ${project.name}`} onClick={() => run("restart")}>
+        <CardButton label={`Restart ${project.name}`} onClick={() => void run("restart")}>
           <HugeiconsIcon icon={Refresh01Icon} size={13} strokeWidth={1.75} />
         </CardButton>
-        <CardButton label={`Pull ${project.name}`} onClick={() => run("pull")}>
+        <CardButton label={`Pull ${project.name}`} onClick={() => void run("pull")}>
           <HugeiconsIcon icon={ArrowDown01Icon} size={13} strokeWidth={1.75} />
         </CardButton>
-        {confirm === "down" ? (
-          <span className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => run("down", { volumes: false })}
-              className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10"
-            >
-              Confirm down
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirm(null)}
-              className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
-            >
-              Keep
-            </button>
-          </span>
-        ) : (
-          <CardButton label={`Stop ${project.name}`} onClick={() => run("down")}>
-            <HugeiconsIcon icon={ArrowUp01Icon} size={13} strokeWidth={1.75} />
-          </CardButton>
-        )}
+        <CardButton label={`Stop ${project.name}`} onClick={() => void run("down", { volumes: false })}>
+          <HugeiconsIcon icon={ArrowUp01Icon} size={13} strokeWidth={1.75} />
+        </CardButton>
       </div>
     </div>
   );
