@@ -142,6 +142,11 @@ fn wait_with_timeout(
         buf
     });
     let deadline = std::time::Instant::now() + timeout;
+    // Back off from 1ms to 25ms: a command that answers immediately is
+    // reaped without waiting a fixed 25ms tick, while a long one stops
+    // busy-polling. The old flat 25ms sleep taxed every probe on the
+    // connect path with up to 25ms of avoidable latency.
+    let mut delay = Duration::from_millis(1);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -160,7 +165,8 @@ fn wait_with_timeout(
                     let _ = child.wait();
                     return Err("ssh command timed out".into());
                 }
-                std::thread::sleep(Duration::from_millis(25));
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(Duration::from_millis(25));
             }
             Err(e) => return Err(format!("wait ssh: {e}")),
         }
@@ -370,6 +376,98 @@ printf %s "$shell""#;
     Ok(shell)
 }
 
+/// Remote script that prints the facts the spawn path needs, marker
+/// delimited, in a single login. `$HOME`, the login shell, and the installed
+/// agent's `--version` token were three separate `ssh` handshakes; on
+/// Windows there is no ControlMaster to amortize them, so the connect path
+/// paid three full TCP+KEX+auth round trips before it could even start the
+/// agent channel. `TERAX_AGENT` is omitted entirely when the agent is not
+/// installed, which the parser treats as "needs upload". Every external
+/// command is guarded so a bare remote still resolves a home and a shell.
+const FACTS_SCRIPT: &str = r#"printf 'TERAX_HOME:%s\n' "$HOME"
+uid="$(id -u 2>/dev/null || printf '')"
+entry=''
+if [ -n "$uid" ] && command -v getent >/dev/null 2>&1; then
+  entry="$(getent passwd "$uid" 2>/dev/null || true)"
+fi
+if [ -z "$entry" ] && [ -n "$uid" ] && [ -r /etc/passwd ]; then
+  entry="$(awk -F: -v u="$uid" '$3 == u { print; exit }' /etc/passwd 2>/dev/null)"
+fi
+shell=''
+if [ -n "$entry" ]; then
+  shell="${entry##*:}"
+fi
+if [ -z "$shell" ] && [ -n "$SHELL" ]; then
+  shell="$SHELL"
+fi
+if [ -z "$shell" ]; then
+  shell=/bin/sh
+fi
+printf 'TERAX_SHELL:%s\n' "$shell"
+agent="$HOME/.cache/terax/terax-remote"
+if [ -x "$agent" ]; then
+  printf 'TERAX_AGENT:%s\n' "$("$agent" --version 2>/dev/null || true)"
+fi"#;
+
+const HOME_MARKER: &str = "TERAX_HOME:";
+const SHELL_MARKER: &str = "TERAX_SHELL:";
+const AGENT_MARKER: &str = "TERAX_AGENT:";
+
+/// Facts about a host that one `probe_remote_facts` round trip resolves.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RemoteFacts {
+    pub home: String,
+    pub login_shell: String,
+    /// Raw `terax-remote --version` output; empty when the agent is absent
+    /// or older than the marker, which the caller reads as "install it".
+    pub agent_version: String,
+}
+
+/// Parses marker-delimited `probe_remote_facts` output. Pure so the framing
+/// contract is unit-testable without a live host: banners and stray output
+/// on stdout are ignored, only prefixed lines count, and the last marker of
+/// a kind wins (a chatty remote cannot smuggle a fake value in first).
+pub fn parse_remote_facts(stdout: &str) -> RemoteFacts {
+    let mut facts = RemoteFacts::default();
+    for line in stdout.lines() {
+        let line = line.trim_end_matches('\r');
+        if let Some(v) = line.strip_prefix(HOME_MARKER) {
+            facts.home = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix(SHELL_MARKER) {
+            facts.login_shell = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix(AGENT_MARKER) {
+            facts.agent_version = v.trim().to_string();
+        }
+    }
+    facts
+}
+
+/// One-shot probe returning home, login shell, and installed agent version
+/// over a single ssh handshake. Auth failures classify exactly like
+/// `probe_auth` (same stderr), so the UI's next-step hints are unchanged.
+pub fn probe_remote_facts(host: &SshHost) -> Result<RemoteFacts, SshError> {
+    match run_ssh_capture(
+        host,
+        true,
+        &["sh".to_string(), "-c".to_string(), FACTS_SCRIPT.to_string()],
+        PROBE_TIMEOUT,
+    ) {
+        Ok((0, stdout, _)) => {
+            let facts = parse_remote_facts(&stdout);
+            if facts.home.is_empty() {
+                return Err(SshError::CommandFailed {
+                    message: "could not resolve remote home".into(),
+                });
+            }
+            Ok(facts)
+        }
+        Ok((_, _, stderr)) => Err(classify_probe_output(&stderr)),
+        Err(_) => Err(SshError::TimedOut {
+            message: "ssh connection timed out".into(),
+        }),
+    }
+}
+
 /// Shared connection args for interactive flows (terminal, master start).
 /// Never includes secrets: identity files by path only, passwords only via
 /// the PTY prompt or the one-shot askpass helper.
@@ -435,5 +533,36 @@ mod tests {
         let script = agent_upload_script("/tmp/a b/agent");
         assert!(script.contains("'/tmp/a b/agent'"));
         assert!(script.contains("'/tmp/a b/agent'.tmp.$$"));
+    }
+
+    #[test]
+    fn parses_all_facts_from_marker_lines() {
+        let out = "motd banner\nTERAX_HOME:/home/deploy\nnoise\nTERAX_SHELL:/bin/zsh\nTERAX_AGENT:terax-remote 0.9.0 protocol=3\n";
+        let facts = parse_remote_facts(out);
+        assert_eq!(facts.home, "/home/deploy");
+        assert_eq!(facts.login_shell, "/bin/zsh");
+        assert_eq!(facts.agent_version, "terax-remote 0.9.0 protocol=3");
+    }
+
+    #[test]
+    fn missing_agent_marker_means_install() {
+        let facts = parse_remote_facts("TERAX_HOME:/root\nTERAX_SHELL:/bin/bash\n");
+        assert_eq!(facts.home, "/root");
+        assert_eq!(facts.login_shell, "/bin/bash");
+        assert!(facts.agent_version.is_empty());
+    }
+
+    #[test]
+    fn ignores_unprefixed_output_and_trailing_cr() {
+        let out = "HOME:/fake\r\nTERAX_HOME:/real\r\nTERAX_SHELL:/bin/sh\r\n";
+        let facts = parse_remote_facts(out);
+        assert_eq!(facts.home, "/real");
+        assert_eq!(facts.login_shell, "/bin/sh");
+    }
+
+    #[test]
+    fn last_marker_of_a_kind_wins() {
+        let out = "TERAX_HOME:/first\nTERAX_HOME:/second\n";
+        assert_eq!(parse_remote_facts(out).home, "/second");
     }
 }

@@ -96,8 +96,8 @@ describe("probeHost", () => {
     core.invoke.mockImplementation((cmd: string) => {
       if (cmd === "ssh_host_key_status")
         return Promise.resolve({ known: true, lines: [] });
-      if (cmd === "ssh_probe_auth") return Promise.resolve({ ok: true });
-      if (cmd === "ssh_home_for") return Promise.resolve("/home/deploy");
+      if (cmd === "ssh_probe_host")
+        return Promise.resolve({ ok: true, home: "/home/deploy" });
       return Promise.reject(new Error(`unexpected ${cmd}`));
     });
     const status = await probeHost(host());
@@ -119,7 +119,7 @@ describe("probeHost", () => {
     core.invoke.mockImplementation((cmd: string) => {
       if (cmd === "ssh_host_key_status")
         return Promise.resolve({ known: true, lines: [] });
-      if (cmd === "ssh_probe_auth")
+      if (cmd === "ssh_probe_host")
         return Promise.resolve({ ok: false, message: "denied", next: "password" });
       return Promise.reject(new Error(`unexpected ${cmd}`));
     });

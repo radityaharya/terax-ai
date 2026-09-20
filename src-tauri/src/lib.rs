@@ -217,6 +217,14 @@ pub fn run() {
             if let Err(error) = control::start(_app.handle().clone(), control_for_setup.clone()) {
                 log::warn!("could not start Terax control server: {error}");
             }
+            // Non-secret SSH host facts persist under the app data dir so a
+            // reconnect after restart skips the probe handshakes. Falls back
+            // to memory-only when the path is unavailable.
+            let ssh_facts_dir = _app
+                .path()
+                .app_local_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir());
+            _app.manage(ssh::SshShared::with_persist_dir(ssh_facts_dir));
             #[cfg(target_os = "macos")]
             if let Some(main) = _app.get_webview_window("main") {
                 let handle = _app.handle().clone();
@@ -236,7 +244,6 @@ pub fn run() {
         .manage(modules::window_presentation::WindowPresentationState::default())
         .manage(control_state)
         .manage(shell::ShellState::default())
-        .manage(ssh::SshShared::default())
         .manage(secrets::SecretsState::default())
         .manage(fs::watch::FsWatchState::default())
         .manage(history::HistoryState::default())
@@ -335,6 +342,7 @@ pub fn run() {
             ssh::commands::ssh_home_for,
             ssh::commands::ssh_login_shell_for,
             ssh::commands::ssh_probe_auth,
+            ssh::commands::ssh_probe_host,
             ssh::commands::zellij_sessions,
             ssh::commands::zellij_rename_session,
             ssh::commands::zellij_kill_session,

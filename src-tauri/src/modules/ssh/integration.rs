@@ -32,7 +32,7 @@ const FISH_INIT_SCRIPT: &str = include_str!("../pty/scripts/init.fish");
 pub const FISH_REINSTALL_PROMPT: &str =
     "functions -q __terax_install_prompt; and __terax_install_prompt";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShellKind {
     Zsh,
     Bash,
@@ -103,9 +103,42 @@ fn ensure_inner(
     let host = store
         .get(host_id)
         .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
-    let remote_bin = super::commands::ensure_remote_agent(&host, Some(&ssh.session))?;
-    // Home: persisted record wins, then the session cache, else one probe
-    // that is remembered for the rest of the app run.
+    // One handshake resolves home, login shell, and the installed agent
+    // version. Only skip it when every fact is already cached and the agent
+    // was verified this app run; otherwise the spawn path used to pay three
+    // separate connections (version probe + home + login shell) here.
+    let cached = ssh.session.get(host_id);
+    let probed_version = if cached.home.is_some()
+        && cached.login_shell.is_some()
+        && cached.agent_verified
+    {
+        None
+    } else {
+        let facts = super::session::probe_remote_facts(&host).map_err(|e| e.to_string())?;
+        let version = facts.agent_version.clone();
+        ssh.session.update(host_id, |f| {
+            f.home = Some(facts.home.clone());
+            if !facts.login_shell.is_empty() {
+                f.login_shell = Some(facts.login_shell.clone());
+            }
+            // Always overwrite: an empty version (agent absent) must clear
+            // any persisted version so a later launch re-probes instead of
+            // trusting a stale on-disk token.
+            f.agent_version = if facts.agent_version.is_empty() {
+                None
+            } else {
+                Some(facts.agent_version.clone())
+            };
+            f.agent_verified = terax_control_protocol::remote_agent_matches(&facts.agent_version);
+        });
+        Some(version)
+    };
+    let remote_bin = super::commands::ensure_remote_agent_with(
+        &host,
+        Some(&ssh.session),
+        probed_version.as_deref(),
+    )?;
+    // Home: the persisted record wins, then the cached/probed value.
     let remote_root = match host.remote_root.clone().filter(|r| !r.is_empty()) {
         Some(root) => {
             ssh.session.update(host_id, |f| {
@@ -115,24 +148,17 @@ fn ensure_inner(
             });
             root
         }
-        None => match ssh.session.get(host_id).home {
-            Some(home) => home,
-            None => {
-                let home = super::session::ssh_home(&host).map_err(|e| e.to_string())?;
-                ssh.session.update(host_id, |f| f.home = Some(home.clone()));
-                home
-            }
-        },
+        None => ssh
+            .session
+            .get(host_id)
+            .home
+            .ok_or_else(|| "could not resolve remote home".to_string())?,
     };
-    // Login shell: cached for the app run after the first probe.
-    let shell_path = match ssh.session.get(host_id).login_shell {
-        Some(shell) => shell,
-        None => {
-            let shell = super::session::ssh_login_shell(&host).map_err(|e| e.to_string())?;
-            ssh.session.update(host_id, |f| f.login_shell = Some(shell.clone()));
-            shell
-        }
-    };
+    let shell_path = ssh
+        .session
+        .get(host_id)
+        .login_shell
+        .ok_or_else(|| "could not resolve remote login shell".to_string())?;
     Ok(ensure_remote_integration(
         // Return the resolved shell too so the PTY spawn path doesn't
         // re-probe it (that was a duplicate ssh handshake per terminal).
@@ -145,10 +171,12 @@ fn ensure_inner(
     ))
 }
 
-/// Installs the Terax shell-integration scripts on the remote host via the
-/// agent RPC channel (fs_create_dir + fs_write_file) and returns the launch
-/// wiring for the detected login shell. Best-effort: any failure degrades
-/// to `None` (bare shell) with a warning, never a spawn failure.
+/// Installs the Terax shell-integration scripts on the remote host via one
+/// batched `fs_write_files` RPC and returns the launch wiring for the
+/// detected login shell. The old path issued fs_create_dir + fs_write_file
+/// per file: four round trips for zsh, each of which could grow the RPC pool
+/// to another full SSH handshake on Windows. Best-effort: any failure
+/// degrades to `None` (bare shell) with a warning, never a spawn failure.
 pub fn ensure_remote_integration(
     rpc: &SshRpcManager,
     host_id: &str,
@@ -164,74 +192,36 @@ pub fn ensure_remote_integration(
         };
     }
     let base = format!("{}/.cache/terax/shell-integration", remote_root.trim_end_matches('/'));
-    // Remote create_dir errors when the dir exists (explorer "new folder"
-    // semantics). For idempotent installs, treat "already exists" as success.
-    let mkdir = |path: String| -> Result<(), String> {
-        match rpc.request(
+    let home = remote_root.trim_end_matches('/');
+    let plan = integration_files(kind, &base, home);
+    let files: Vec<serde_json::Value> = plan
+        .iter()
+        .map(|(path, content)| json!({ "path": path, "content": content }))
+        .collect();
+    let result = rpc
+        .request(
             host_id,
-            "fs_create_dir",
-            json!({ "path": path }),
+            terax_control_protocol::REMOTE_METHOD_FS_WRITE_FILES,
+            json!({ "files": files }),
             remote_bin,
             remote_root,
-        ) {
-            Ok(_) => Ok(()),
-            Err(e) if e.contains("already exists") => Ok(()),
-            Err(e) => Err(e),
-        }
-    };
-    let write = |rel: &str, content: &str| -> Result<(), String> {
-        mkdir(format!("{base}/{}", dir_of(rel)))?;
-        rpc.request(
-            host_id,
-            "fs_write_file",
-            json!({ "path": format!("{base}/{rel}"), "content": content }),
-            remote_bin,
-            remote_root,
-        )?;
-        Ok(())
-    };
-    let result = match kind {
-        ShellKind::Zsh => {
-            write("zsh/.zshenv", &unix_newlines(ZSHENV_SCRIPT))
-                .and_then(|_| write("zsh/.zprofile", &unix_newlines(ZPROFILE_SCRIPT)))
-                .and_then(|_| write("zsh/.zshrc", &unix_newlines(ZSHRC_SCRIPT)))
-                .and_then(|_| write("zsh/.zlogin", &unix_newlines(ZLOGIN_SCRIPT)))
-                .map(|_| SshIntegration::Zsh {
-                    zdotdir: format!("{base}/zsh"),
-                    shell: shell_path.to_string(),
-                })
-        }
-        ShellKind::Bash => write("bash/bashrc", &unix_newlines(BASHRC_SCRIPT)).map(|_| {
-            SshIntegration::Bash {
+        )
+        .map(|_| match kind {
+            ShellKind::Zsh => SshIntegration::Zsh {
+                zdotdir: format!("{base}/zsh"),
+                shell: shell_path.to_string(),
+            },
+            ShellKind::Bash => SshIntegration::Bash {
                 rcfile: format!("{base}/bash/bashrc"),
                 shell: shell_path.to_string(),
-            }
-        }),
-        ShellKind::Fish => {
-            // Fish reads conf.d from the real home; install there, not cache.
-            let home = remote_root.trim_end_matches('/');
-            let conf = format!("{home}/.config/fish/conf.d");
-            mkdir(conf.clone())
-            .and_then(|_| {
-                rpc.request(
-                    host_id,
-                    "fs_write_file",
-                    json!({
-                        "path": format!("{conf}/terax.fish"),
-                        "content": unix_newlines(FISH_INIT_SCRIPT),
-                    }),
-                    remote_bin,
-                    remote_root,
-                )
-            })
-            .map(|_| SshIntegration::Fish {
+            },
+            ShellKind::Fish => SshIntegration::Fish {
                 shell: shell_path.to_string(),
-            })
-        }
-        ShellKind::Other => Ok(SshIntegration::Plain {
-            shell: shell_path.to_string(),
-        }),
-    };
+            },
+            ShellKind::Other => SshIntegration::Plain {
+                shell: shell_path.to_string(),
+            },
+        });
     match result {
         Ok(integration) => {
             log::info!("ssh shell integration ready for {} ({shell_path})", host.hostname);
@@ -244,8 +234,25 @@ pub fn ensure_remote_integration(
     }
 }
 
-fn dir_of(rel: &str) -> &str {
-    rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
+/// (path, content) plan for a shell's integration install. Pure so the
+/// batch payload, paths, and per-shell file set are lockable in a test
+/// without a live host. Zsh gets its four startup files under a private
+/// ZDOTDIR; bash gets one rcfile; fish must live in the real home conf.d.
+fn integration_files(kind: ShellKind, base: &str, home: &str) -> Vec<(String, String)> {
+    match kind {
+        ShellKind::Zsh => vec![
+            (format!("{base}/zsh/.zshenv"), unix_newlines(ZSHENV_SCRIPT)),
+            (format!("{base}/zsh/.zprofile"), unix_newlines(ZPROFILE_SCRIPT)),
+            (format!("{base}/zsh/.zshrc"), unix_newlines(ZSHRC_SCRIPT)),
+            (format!("{base}/zsh/.zlogin"), unix_newlines(ZLOGIN_SCRIPT)),
+        ],
+        ShellKind::Bash => vec![(format!("{base}/bash/bashrc"), unix_newlines(BASHRC_SCRIPT))],
+        ShellKind::Fish => vec![(
+            format!("{home}/.config/fish/conf.d/terax.fish"),
+            unix_newlines(FISH_INIT_SCRIPT),
+        )],
+        ShellKind::Other => Vec::new(),
+    }
 }
 
 fn unix_newlines(content: &str) -> String {
@@ -274,10 +281,37 @@ mod tests {
     }
 
     #[test]
-    fn dir_of_splits_parent() {
-        assert_eq!(dir_of("zsh/.zshenv"), "zsh");
-        assert_eq!(dir_of("bash/bashrc"), "bash");
-        assert_eq!(dir_of("flat"), "");
+    fn zsh_plan_writes_four_files_under_the_cache_base() {
+        let base = "/home/u/.cache/terax/shell-integration";
+        let plan = integration_files(ShellKind::Zsh, base, "/home/u");
+        let paths: Vec<&str> = plan.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "/home/u/.cache/terax/shell-integration/zsh/.zshenv",
+                "/home/u/.cache/terax/shell-integration/zsh/.zprofile",
+                "/home/u/.cache/terax/shell-integration/zsh/.zshrc",
+                "/home/u/.cache/terax/shell-integration/zsh/.zlogin",
+            ]
+        );
+    }
+
+    #[test]
+    fn bash_plan_writes_one_rcfile() {
+        let plan = integration_files(ShellKind::Bash, "/h/.cache/terax/shell-integration", "/h");
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].0, "/h/.cache/terax/shell-integration/bash/bashrc");
+    }
+
+    #[test]
+    fn fish_plan_targets_real_home_conf_d() {
+        let plan = integration_files(
+            ShellKind::Fish,
+            "/h/.cache/terax/shell-integration",
+            "/h",
+        );
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].0, "/h/.config/fish/conf.d/terax.fish");
     }
 
     #[test]

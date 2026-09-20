@@ -42,6 +42,15 @@ export type ProbeOutcome = {
   next?: string | null;
 };
 
+/** Result of the combined `ssh_probe_host` command: auth + remote facts
+ *  (home, login shell, agent version) resolved in one ssh handshake. */
+export type HostProbe = {
+  ok: boolean;
+  home?: string | null;
+  message?: string | null;
+  next?: string | null;
+};
+
 export type HostKeyStatus = {
   known: boolean;
   lines: string[];

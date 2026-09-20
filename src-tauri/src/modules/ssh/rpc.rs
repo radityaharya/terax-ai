@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -17,43 +18,107 @@ const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-struct RpcChild {
-    child: Child,
-    stdin: ChildStdin,
-    reader: BufReader<ChildStdout>,
-}
-
+/// One stdio pipe to a host's agent, plus the dispatch table that routes
+/// responses back to their caller by request id. The agent serves requests
+/// concurrently and may answer out of order, so the desktop must match
+/// responses to waiters instead of assuming the next line is its own. This
+/// replaces the old POOL_SIZE lane pipes: a single multiplexed pipe now
+/// provides concurrency without opening (on Windows) a full extra SSH
+/// handshake per lane.
 struct RpcConnection {
-    rpc: Mutex<RpcChild>,
+    child: Mutex<Child>,
+    writer: Mutex<ChildStdin>,
+    pending: Arc<Pending>,
+    alive: Arc<AtomicBool>,
     token: String,
-    /// Highest agent protocol the far end advertised (from the ping
-    /// handshake). Gates v3 envelope fields like `lane`: never send a v3
-    /// field to a v2 agent — unknown fields are ignored today, but version
-    /// gating keeps that a deliberate choice per field, not an accident.
-    protocol: u16,
+    /// Agent protocol, learned from the spawn ping. Gates additive envelope
+    /// fields (lane) so an older agent is never sent a field it cannot read.
+    protocol: AtomicU16,
 }
 
-/// Independent stdio pipes to the same host's agent. The agent protocol
-/// is strictly one-request-at-a-time per pipe (single-threaded serve
-/// loop), and one Mutex guards that framing per pipe, so unrelated calls
-/// (explorer listing dir A, git polling status, preview stating a file)
-/// were queueing behind each other on a single pipe. A small pool lets
-/// them run concurrently; the remote agent itself is stateless per call
-/// (each request carries its full path + token), so any pipe serves any
-/// method.
-const POOL_SIZE: usize = 4;
+/// Responses awaiting a caller, keyed by request id. A caller registers a
+/// channel before writing and waits on it; a reader thread completes it when
+/// the matching response line arrives.
+#[derive(Default)]
+struct Pending {
+    waiters: Mutex<HashMap<String, mpsc::Sender<Value>>>,
+}
+
+impl Pending {
+    fn register(&self, id: &str) -> mpsc::Receiver<Value> {
+        let (tx, rx) = mpsc::channel();
+        self.waiters.lock().unwrap().insert(id.to_string(), tx);
+        rx
+    }
+
+    /// Route a response to its waiter. Returns false when no caller is
+    /// waiting (a timed-out request, or a duplicate/unsolicited line).
+    fn complete(&self, id: &str, value: Value) -> bool {
+        match self.waiters.lock().unwrap().remove(id) {
+            Some(tx) => tx.send(value).is_ok(),
+            None => false,
+        }
+    }
+
+    fn cancel(&self, id: &str) {
+        self.waiters.lock().unwrap().remove(id);
+    }
+
+    /// Drop every waiter, disconnecting their channels. Called when the pipe
+    /// ends so callers fail immediately instead of waiting out RPC_TIMEOUT.
+    fn fail_all(&self) {
+        self.waiters.lock().unwrap().clear();
+    }
+}
+
+/// Reads newline-delimited responses and dispatches each to its waiter.
+/// Nothing here assumes request order: the agent is concurrent, so `id` is
+/// the only correlation key.
+fn spawn_reader(stdout: ChildStdout, pending: Arc<Pending>, alive: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut buf: Vec<u8> = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if buf.len() > MAX_MESSAGE_BYTES {
+                        // Oversized frame: the framing contract is broken,
+                        // stop reading rather than desync on a partial line.
+                        break;
+                    }
+                    if let Ok(value) = serde_json::from_slice::<Value>(&buf) {
+                        let id = value
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        if let Some(id) = id {
+                            pending.complete(&id, value);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        alive.store(false, Ordering::SeqCst);
+        pending.fail_all();
+    });
+}
 
 pub struct SshRpcManager {
-    /// host_id -> up to POOL_SIZE pipes, round-robined per request.
-    connections: Mutex<HashMap<String, Vec<Arc<RpcConnection>>>>,
-    next_lane: Mutex<HashMap<String, usize>>,
+    /// host_id -> the single multiplexed pipe.
+    connections: Mutex<HashMap<String, Arc<RpcConnection>>>,
+    /// Serializes pipe creation so a first-use burst opens one channel, not
+    /// one per racing caller.
+    spawn_lock: Mutex<()>,
 }
 
 impl Default for SshRpcManager {
     fn default() -> Self {
         Self {
             connections: Mutex::new(HashMap::new()),
-            next_lane: Mutex::new(HashMap::new()),
+            spawn_lock: Mutex::new(()),
         }
     }
 }
@@ -80,15 +145,10 @@ fn generate_token() -> Result<String, SshError> {
     Ok(token)
 }
 
-/// Lane reserved for stateful calls. It never advances the round-robin
-/// cursor, so stateless traffic cannot steal it mid-sequence and strand a
-/// background handle on the wrong agent process.
-const STATEFUL_LANE: usize = 0;
-
-/// v3 affinity lanes for stateful namespaces. One u8 tag per follow class:
+/// v3+ affinity lanes for stateful namespaces. One u8 tag per follow class:
 /// the desktop pins each spawn/poll/kill sequence to its tag, and the agent
 /// resolves the tag to an isolated handle map. Tags are stable wire values
-/// (do not renumber): future transports relocate namespaces by tag.
+/// (do not renumber): a future transport relocates namespaces by tag.
 pub const AFFINITY_DEFAULT: u8 = 0;
 pub const AFFINITY_SHELL_BG: u8 = 1;
 pub const AFFINITY_SHELL_SESSION: u8 = 2;
@@ -97,8 +157,8 @@ pub const AFFINITY_DOCKER_EVENTS: u8 = 4;
 pub const AFFINITY_DOCKER_PULL: u8 = 5;
 pub const AFFINITY_COMPOSE_LOGS: u8 = 6;
 
-/// Stateful method -> its v3 affinity tag. None = stateless (any pipe
-/// serves it; requests carry full params).
+/// Stateful method -> its v3 affinity tag. None = stateless (any order; the
+/// request carries full params).
 fn affinity_for(method: &str) -> Option<u8> {
     Some(match method {
         "shell_bg_spawn" | "shell_bg_logs" | "shell_bg_kill" => AFFINITY_SHELL_BG,
@@ -119,15 +179,9 @@ fn affinity_for(method: &str) -> Option<u8> {
 
 impl SshRpcManager {
     /// Sends a request to the host agent, spawning the channel on first use.
-    /// The agent binary path on the remote is resolved at connect time.
-    ///
-    /// Routing: stateless methods round-robin the pool (any pipe serves
-    /// any request). Stateful methods pin to the reserved pipe AND carry
-    /// their v3 affinity tag, so the agent resolves them in an isolated
-    /// handle namespace. Belt and suspenders: the pin keeps today's
-    /// process-local maps correct; the tag keeps it correct when state
-    /// moves out-of-process (socket daemon) or when a lane dies and the
-    /// pool respawns elsewhere.
+    /// Stateful methods carry their v3 affinity tag so the agent resolves
+    /// spawn/poll/kill in the same isolated handle namespace even though all
+    /// traffic now shares one pipe.
     pub fn request(
         &self,
         host_id: &str,
@@ -136,38 +190,70 @@ impl SshRpcManager {
         remote_bin: &str,
         remote_root: &str,
     ) -> Result<Value, String> {
-        validate_host_id(host_id).map_err(|m| m)?;
-        if let Some(affinity) = affinity_for(method) {
-            let conn = self.pinned_connection(host_id, remote_bin, remote_root, STATEFUL_LANE)?;
-            // Pull procs live in the events map but spawn under the pull
-            // tag; poll/kill must resolve the SAME tag or the handle lookup
-            // misses. The agent maps AFFINITY_DOCKER_PULL -> events map.
-            return self.call_with_lane(&conn, host_id, method, params, Some(affinity));
-        }
+        validate_host_id(host_id)?;
         let conn = self.connection(host_id, remote_bin, remote_root)?;
-        self.call(&conn, host_id, method, params)
+        let response = self.call_raw_with_lane(&conn, method, params, affinity_for(method))?;
+        self.finish_call(&conn, host_id, response)
     }
 
     pub fn drop_connection(&self, host_id: &str) {
-        if let Some(pool) = self.connections.lock().unwrap().remove(host_id) {
-            for conn in pool {
-                if let Ok(mut rpc) = conn.rpc.lock() {
-                    let _ = rpc.child.kill();
-                }
+        if let Some(conn) = self.connections.lock().unwrap().remove(host_id) {
+            conn.alive.store(false, Ordering::SeqCst);
+            conn.pending.fail_all();
+            if let Ok(mut child) = conn.child.lock() {
+                let _ = child.kill();
             }
         }
-        self.next_lane.lock().unwrap().remove(host_id);
     }
 
-    fn spawn_lane(
+    /// Fetch-or-spawn the host's pipe. A dead pipe (reader thread exited) is
+    /// discarded and replaced; live ones are shared, since responses are
+    /// dispatched by id and the agent serves requests concurrently.
+    fn connection(
         &self,
-        host: &super::hosts::SshHost,
+        host_id: &str,
         remote_bin: &str,
         remote_root: &str,
     ) -> Result<Arc<RpcConnection>, String> {
+        if let Some(conn) = self.live_connection(host_id) {
+            return Ok(conn);
+        }
+        let _guard = self.spawn_lock.lock().unwrap();
+        if let Some(conn) = self.live_connection(host_id) {
+            return Ok(conn);
+        }
+        let conn = self.spawn_connection(host_id, remote_bin, remote_root)?;
+        self.connections
+            .lock()
+            .unwrap()
+            .insert(host_id.to_string(), conn.clone());
+        Ok(conn)
+    }
+
+    fn live_connection(&self, host_id: &str) -> Option<Arc<RpcConnection>> {
+        let mut pools = self.connections.lock().unwrap();
+        match pools.get(host_id).cloned() {
+            Some(conn) if conn.alive.load(Ordering::SeqCst) => Some(conn),
+            Some(_) => {
+                pools.remove(host_id);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn spawn_connection(
+        &self,
+        host_id: &str,
+        remote_bin: &str,
+        remote_root: &str,
+    ) -> Result<Arc<RpcConnection>, String> {
+        let host = host_store()
+            .get(host_id)
+            .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
         let token = generate_token().map_err(|e| e.to_string())?;
         let remote_cmd = format!("{remote_bin} serve --root {remote_root} --token {token}");
-        let args = rpc_args(host, &remote_cmd);
+        let args = rpc_args(&host, &remote_cmd);
         let mut cmd = Command::new(super::session::ssh_binary());
         for arg in args {
             cmd.arg(arg);
@@ -181,149 +267,35 @@ impl SshRpcManager {
         let mut child = cmd.spawn().map_err(|e| format!("spawn ssh rpc: {e}"))?;
         let stdin = child.stdin.take().ok_or("no rpc stdin")?;
         let stdout = child.stdout.take().ok_or("no rpc stdout")?;
-        let conn = RpcConnection {
-            rpc: Mutex::new(RpcChild {
-                child,
-                stdin,
-                reader: BufReader::new(stdout),
-            }),
+        let pending = Arc::new(Pending::default());
+        let alive = Arc::new(AtomicBool::new(true));
+        // The reader must be running before the ping so its response can be
+        // dispatched to the waiter registered below.
+        spawn_reader(stdout, pending.clone(), alive.clone());
+        let conn = Arc::new(RpcConnection {
+            child: Mutex::new(child),
+            writer: Mutex::new(stdin),
+            pending,
+            alive,
             token,
-            // Pessimistic until the handshake below proves otherwise.
-            protocol: 2,
-        };
-        // Verify the channel before caching: ping must succeed. The ping
-        // response carries the agent's protocol version — that gates v3
-        // envelope fields (lane affinity) per connection. `conn` is still
-        // uniquely owned here (not yet published to the pool), so plain
-        // field writes are race-free; wrap in Arc only at the end.
-        let staged = Arc::new(conn);
-        let ping = self.call_raw(&staged, "ping", serde_json::json!({}))?;
+            // Pessimistic until the ping proves otherwise.
+            protocol: AtomicU16::new(2),
+        });
+        let ping = self.call_raw(&conn, "ping", serde_json::json!({}))?;
         if !ping.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            conn.alive.store(false, Ordering::SeqCst);
+            if let Ok(mut c) = conn.child.lock() {
+                let _ = c.kill();
+            }
             return Err("remote agent ping failed".into());
         }
         let advertised = ping
             .get("result")
             .and_then(|r| r.get("protocol"))
-            .and_then(serde_json::Value::as_u64)
+            .and_then(Value::as_u64)
             .unwrap_or(2) as u16;
-        let mut conn = Arc::try_unwrap(staged).map_err(|_| "rpc lane uniquely owned".to_string())?;
-        conn.protocol = advertised.max(2);
-        Ok(Arc::new(conn))
-    }
-
-    /// Round-robin a lane from the host's pool, growing it lazily to
-    /// POOL_SIZE. The pool map is only held for the index bookkeeping;
-    /// lane spawns (full ssh handshakes) happen outside the map lock so
-    /// concurrent first-use calls don't serialize on it.
-    fn connection(
-        &self,
-        host_id: &str,
-        remote_bin: &str,
-        remote_root: &str,
-    ) -> Result<Arc<RpcConnection>, String> {
-        let lane = {
-            let mut lanes = self.next_lane.lock().unwrap();
-            let next = lanes.entry(host_id.to_string()).or_insert(0);
-            // The stateful lane is reserved: round-robin skips it so bulk
-            // stateless calls never evict the pipe that owns live handles.
-            let mut lane = *next % POOL_SIZE;
-            if lane == STATEFUL_LANE {
-                *next = next.wrapping_add(1);
-                lane = *next % POOL_SIZE;
-            }
-            *next = next.wrapping_add(1);
-            lane
-        };
-        if let Some(conn) = self
-            .connections
-            .lock()
-            .unwrap()
-            .get(host_id)
-            .and_then(|pool| pool.get(lane).cloned())
-        {
-            return Ok(conn);
-        }
-        self.insert_lane(host_id, lane, remote_bin, remote_root)
-    }
-
-    /// Fetch-or-spawn a fixed lane without touching the round-robin cursor.
-    /// Used by stateful methods so a spawn/poll/kill sequence always lands
-    /// on the same agent process (and by nobody else).
-    fn pinned_connection(
-        &self,
-        host_id: &str,
-        remote_bin: &str,
-        remote_root: &str,
-        lane: usize,
-    ) -> Result<Arc<RpcConnection>, String> {
-        if let Some(conn) = self
-            .connections
-            .lock()
-            .unwrap()
-            .get(host_id)
-            .and_then(|pool| pool.get(lane).cloned())
-        {
-            return Ok(conn);
-        }
-        self.insert_lane(host_id, lane, remote_bin, remote_root)
-    }
-
-    fn insert_lane(
-        &self,
-        host_id: &str,
-        lane: usize,
-        remote_bin: &str,
-        remote_root: &str,
-    ) -> Result<Arc<RpcConnection>, String> {
-        let host = host_store()
-            .get(host_id)
-            .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
-        let conn = self.spawn_lane(&host, remote_bin, remote_root)?;
-        let mut pools = self.connections.lock().unwrap();
-        let pool = pools.entry(host_id.to_string()).or_default();
-        if lane < pool.len() {
-            // Another thread won the race and filled this lane first; use
-            // theirs and drop ours (our child process gets killed here).
-            let existing = pool[lane].clone();
-            drop(pools);
-            if let Ok(mut rpc) = conn.rpc.lock() {
-                let _ = rpc.child.kill();
-            }
-            return Ok(existing);
-        }
-        // Lanes are positional by round-robin index; pad any gap so that
-        // pool[lane] is always this lane's connection.
-        while pool.len() < lane {
-            pool.push(conn.clone());
-        }
-        pool.push(conn.clone());
+        conn.protocol.store(advertised.max(2), Ordering::SeqCst);
         Ok(conn)
-    }
-
-    /// Stateful call: carries the v3 lane affinity through to the agent so
-    /// the request resolves in the pinned handle namespace. Stateless
-    /// callers use `call` (no lane = legacy shared namespace).
-    fn call_with_lane(
-        &self,
-        conn: &Arc<RpcConnection>,
-        host_id: &str,
-        method: &str,
-        params: Value,
-        lane: Option<u8>,
-    ) -> Result<Value, String> {
-        let response = self.call_raw_with_lane(conn, method, params, lane)?;
-        return self.finish_call(conn, host_id, response);
-    }
-
-    fn call(
-        &self,
-        conn: &Arc<RpcConnection>,
-        host_id: &str,
-        method: &str,
-        params: Value,
-    ) -> Result<Value, String> {
-        let response = self.call_raw(conn, method, params)?;
-        return self.finish_call(conn, host_id, response);
     }
 
     fn finish_call(
@@ -332,9 +304,6 @@ impl SshRpcManager {
         host_id: &str,
         response: Value,
     ) -> Result<Value, String> {
-        // Version learning happens only at spawn (ping handshake): pooled
-        // lanes are shared through cloned Arcs, so per-response upgrades
-        // would need interior mutability for zero benefit.
         if response.get("ok").and_then(Value::as_bool).unwrap_or(false) {
             return Ok(response.get("result").cloned().unwrap_or(Value::Null));
         }
@@ -360,9 +329,10 @@ impl SshRpcManager {
         self.call_raw_with_lane(conn, method, params, None)
     }
 
-    /// Raw call carrying an optional v3 lane affinity. The lane is only
-    /// sent when the far end advertised protocol >= 3; older agents get
-    /// the v2 envelope and resolve to the legacy shared namespace.
+    /// One multiplexed round trip: register a waiter for the id, write the
+    /// request under the writer lock (held only for the write), then wait for
+    /// the reader thread to dispatch the matching response. The lock is never
+    /// held across the round trip, so concurrent calls flow through one pipe.
     fn call_raw_with_lane(
         &self,
         conn: &Arc<RpcConnection>,
@@ -379,77 +349,37 @@ impl SshRpcManager {
             "method": method,
             "params": params,
         });
-        if conn.protocol >= 3 {
+        if conn.protocol.load(Ordering::SeqCst) >= 3 {
             if let Some(l) = lane {
                 envelope["lane"] = serde_json::json!(l);
             }
         }
-        let line = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
-        // Hold the lock for the whole round-trip: stdio is a single stream
-        // and interleaved requests would corrupt framing.
-        let mut rpc = conn.rpc.lock().map_err(|_| "rpc lock poisoned".to_string())?;
-        rpc.stdin
-            .write_all(line.as_bytes())
-            .map_err(|e| format!("rpc write: {e}"))?;
-        rpc.stdin.write_all(b"\n").map_err(|e| format!("rpc write: {e}"))?;
-        rpc.stdin.flush().map_err(|e| format!("rpc flush: {e}"))?;
-        let reader = &mut rpc.reader;
-        let mut line_buf: Vec<u8> = Vec::new();
-        let deadline = std::time::Instant::now() + RPC_TIMEOUT;
-        loop {
-            if std::time::Instant::now() >= deadline {
-                return Err("remote request timed out".into());
-            }
-            let mut byte = [0u8; 1];
-            match read_byte_with_timeout(reader, &mut byte, deadline) {
-                Ok(0) => return Err("remote agent closed the channel".into()),
-                Ok(_) => {
-                    line_buf.push(byte[0]);
-                    if byte[0] == b'\n' {
-                        break;
-                    }
-                    if line_buf.len() > MAX_MESSAGE_BYTES {
-                        return Err("remote response too large".into());
-                    }
-                }
-                Err(e) => return Err(e),
+        let mut line = serde_json::to_vec(&envelope).map_err(|e| e.to_string())?;
+        line.push(b'\n');
+        let rx = conn.pending.register(&id);
+        {
+            let mut writer = conn.writer.lock().map_err(|_| "rpc lock poisoned".to_string())?;
+            if let Err(e) = writer.write_all(&line).and_then(|_| writer.flush()) {
+                drop(writer);
+                conn.pending.cancel(&id);
+                return Err(format!("rpc write: {e}"));
             }
         }
-        let response: Value =
-            serde_json::from_slice(&line_buf).map_err(|e| format!("invalid remote response: {e}"))?;
-        Ok(response)
-    }
-}
-
-fn read_byte_with_timeout(
-    reader: &mut BufReader<ChildStdout>,
-    byte: &mut [u8; 1],
-    deadline: std::time::Instant,
-) -> Result<usize, String> {
-    loop {
-        // BufReader over a pipe blocks; poll in short slices so the deadline
-        // stays responsive without losing buffered bytes.
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return Err("remote request timed out".into());
-        }
-        // Try a non-blocking fill: if the pipe has data, read it.
-        match reader.fill_buf() {
-            Ok(buf) if !buf.is_empty() => {
-                byte[0] = buf[0];
-                reader.consume(1);
-                return Ok(1);
+        match rx.recv_timeout(RPC_TIMEOUT) {
+            Ok(value) => Ok(value),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                conn.pending.cancel(&id);
+                Err("remote request timed out".into())
             }
-            Ok(_) => {}
-            Err(e) => return Err(format!("rpc read: {e}")),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err("remote agent closed the channel".into()),
         }
-        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn stateful_methods_are_pinned() {
@@ -484,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn stateless_methods_stay_on_pool() {
+    fn stateless_methods_carry_no_affinity() {
         for m in [
             "ping",
             "fs_read_dir",
@@ -512,5 +442,44 @@ mod tests {
         let t = generate_token().unwrap();
         assert_eq!(t.len(), 64);
         assert!(t.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn pending_routes_responses_by_id_out_of_order() {
+        // The agent answers concurrently; a response for "b" arriving before
+        // "a" must still reach the caller that is waiting on "b".
+        let pending = Pending::default();
+        let rx_a = pending.register("a");
+        let rx_b = pending.register("b");
+        assert!(pending.complete("b", json!({ "id": "b", "ok": true })));
+        assert!(pending.complete("a", json!({ "id": "a", "ok": true })));
+        assert_eq!(rx_b.recv().unwrap()["id"], "b");
+        assert_eq!(rx_a.recv().unwrap()["id"], "a");
+    }
+
+    #[test]
+    fn pending_ignores_unknown_and_duplicate_ids() {
+        let pending = Pending::default();
+        assert!(!pending.complete("nobody", json!({ "id": "nobody" })));
+        let _rx = pending.register("a");
+        assert!(pending.complete("a", json!({ "id": "a" })));
+        // Second completion for the same id has no waiter left.
+        assert!(!pending.complete("a", json!({ "id": "a" })));
+    }
+
+    #[test]
+    fn pending_cancel_drops_a_timed_out_waiter() {
+        let pending = Pending::default();
+        let _rx = pending.register("a");
+        pending.cancel("a");
+        assert!(!pending.complete("a", json!({ "id": "a" })));
+    }
+
+    #[test]
+    fn pending_fail_all_disconnects_waiters() {
+        let pending = Pending::default();
+        let rx = pending.register("a");
+        pending.fail_all();
+        assert!(matches!(rx.recv(), Err(mpsc::RecvError)));
     }
 }

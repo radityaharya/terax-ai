@@ -16,7 +16,14 @@ pub const PROTOCOL_VERSION: u16 = 1;
 ///   explicit `limit`/`sinceOffset` window instead of assuming completeness.
 /// - `*_poll` accepts `limit` (max bytes): lets the client bound each
 ///   chunk under the frame cap without trial and error.
-pub const REMOTE_PROTOCOL_VERSION: u16 = 3;
+///
+/// v4 (additive method):
+/// - `fs_write_files` writes a batch of `{path, content}` entries in one
+///   request, creating parent directories as needed. Shell-integration
+///   install writes four zsh files; doing that as four requests cost four
+///   round trips (and, on Windows, could grow the RPC pool to four full SSH
+///   handshakes) for what is one logical operation.
+pub const REMOTE_PROTOCOL_VERSION: u16 = 4;
 /// Token `terax-remote --version` must include and the desktop must match
 /// before it may reuse an installed agent. The app version alone is not
 /// enough: the wire contract can change (v1 -> v3 lanes) without the crate
@@ -60,6 +67,9 @@ pub const REMOTE_METHOD_FS_READ_DIR: &str = "fs_read_dir";
 pub const REMOTE_METHOD_FS_READ_FILE: &str = "fs_read_file";
 pub const REMOTE_METHOD_FS_READ_BYTES: &str = "fs_read_bytes";
 pub const REMOTE_METHOD_FS_WRITE_FILE: &str = "fs_write_file";
+/// Batch atomic-ish write of many `{path, content}` files in one request,
+/// creating parent directories. Added in protocol v4.
+pub const REMOTE_METHOD_FS_WRITE_FILES: &str = "fs_write_files";
 pub const REMOTE_METHOD_FS_STAT: &str = "fs_stat";
 pub const REMOTE_METHOD_FS_SEARCH: &str = "fs_search";
 pub const REMOTE_METHOD_FS_GREP: &str = "fs_grep";
@@ -189,6 +199,7 @@ pub const REMOTE_METHODS: &[&str] = &[
     REMOTE_METHOD_FS_READ_FILE,
     REMOTE_METHOD_FS_READ_BYTES,
     REMOTE_METHOD_FS_WRITE_FILE,
+    REMOTE_METHOD_FS_WRITE_FILES,
     REMOTE_METHOD_FS_STAT,
     REMOTE_METHOD_FS_SEARCH,
     REMOTE_METHOD_FS_GREP,

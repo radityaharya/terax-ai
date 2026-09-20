@@ -17,9 +17,35 @@ binary, the same way git and WSL shell out today.
   on first spawn, enabling OSC 7/133 + command blocks remotely.
 - **RPC side-channel**: `SshRpcManager` (`ssh/rpc.rs`) holds one stdio
   `ssh -T host terax-remote serve --root <dir> --token <hex>` child per
-  host. Requests are newline-delimited JSON (protocol v2, additive over the
-  local control protocol), multiplexed by id under a single lock. The
-  `ssh_rpc` Tauri command allow-lists methods; anything else is rejected.
+  host. Requests are newline-delimited JSON (protocol v4, additive over the
+  local control protocol) multiplexed over that single pipe: a background
+  reader dispatches responses to their caller by request `id`, and the
+  writer lock is held only for the write, not the round trip. The agent
+  serves each request on its own thread, so a long operation (a `docker
+  pull`, a poll sequence) never blocks unrelated requests. Stateful
+  sequences stay isolated through the v3 lane tag (`lane`), not separate
+  processes. The `ssh_rpc` Tauri command allow-lists methods; anything else
+  is rejected.
+
+## Connect path
+
+Win32-OpenSSH never implemented connection multiplexing
+(ControlMaster/ControlPath, [PowerShell/Win32-OpenSSH#1328](https://github.com/PowerShell/Win32-OpenSSH/issues/1328)),
+so every `ssh` invocation is a full TCP+KEX+auth handshake. The connect path
+is shaped around that:
+
+- One marker-delimited `sh -c` probe (`session::probe_remote_facts`) resolves
+  remote home, login shell, and the installed agent version token in a single
+  handshake. `ssh_probe_host` (host panel) and the PTY spawn path both use it.
+- Non-secret facts (home, login shell, agent version) persist under the app
+  data dir (`terax-ssh-facts.json`) and are re-validated against the current
+  protocol on load, so a reconnect after restart skips the probe. Editing or
+  deleting a host invalidates its facts.
+- The RPC side-channel is one multiplexed pipe per host (see above), not a
+  pool of lane processes: concurrency comes from id dispatch plus the
+  agent's per-request threads, so a first-use burst opens one SSH handshake,
+  not one per concurrent call. Shell integration installs with one batched
+  `fs_write_files` call instead of a mkdir+write per file.
 
 ## The agent
 
@@ -34,7 +60,7 @@ only, loopback by construction since it runs as the ssh child.
   (`pnpm build:remote`, cross-compile with `TERAX_REMOTE_TARGET`), uploaded
   on first connect via stdin redirect + `chmod +x`, version-checked on
   every connect, refused on mismatch.
-- Methods: `fs_*` (read_dir/read_file/write_file/stat/search/grep,
+- Methods: `fs_*` (read_dir/read_file/write_file/write_files/stat/search/grep,
   create/rename/delete/delete_batch/move/copy), `git_*` (panel/status/
   resolve/diff/diff_content/stage/unstage/discard/commit/log/show/
   files/file_diff/remote_url/fetch/pull/push/branches/checkout),

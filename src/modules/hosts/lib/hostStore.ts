@@ -2,8 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import type {
   HostKeyStatus,
+  HostProbe,
   ImportedHost,
-  ProbeOutcome,
   ScannedKey,
   SshHost,
   SshHostInput,
@@ -116,12 +116,14 @@ export async function probeHost(host: SshHost): Promise<ConnectionStatus> {
       setConnection(host.id, status);
       return status;
     }
-    const outcome = await invoke<ProbeOutcome>("ssh_probe_auth", {
+    const outcome = await invoke<HostProbe>("ssh_probe_host", {
       id: host.id,
     });
     if (outcome.ok) {
-      const home = await invoke<string>("ssh_home_for", { id: host.id });
-      const status: ConnectionStatus = { state: "online", home };
+      const status: ConnectionStatus = {
+        state: "online",
+        home: outcome.home ?? "",
+      };
       setConnection(host.id, status);
       return status;
     }

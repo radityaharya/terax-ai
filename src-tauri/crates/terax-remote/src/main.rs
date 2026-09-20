@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
@@ -12,7 +12,7 @@ use terax_control_protocol::{
     REMOTE_METHOD_FS_DELETE_BATCH, REMOTE_METHOD_FS_GREP, REMOTE_METHOD_FS_MOVE,
     REMOTE_METHOD_FS_RENAME,
     REMOTE_METHOD_FS_READ_DIR, REMOTE_METHOD_FS_READ_FILE, REMOTE_METHOD_FS_READ_BYTES, REMOTE_METHOD_FS_SEARCH,
-    REMOTE_METHOD_FS_STAT, REMOTE_METHOD_FS_WRITE_FILE, REMOTE_METHOD_GIT_CHECKOUT_BRANCH,
+    REMOTE_METHOD_FS_STAT, REMOTE_METHOD_FS_WRITE_FILE, REMOTE_METHOD_FS_WRITE_FILES, REMOTE_METHOD_GIT_CHECKOUT_BRANCH,
     REMOTE_METHOD_GIT_COMMIT, REMOTE_METHOD_GIT_COMMIT_FILES, REMOTE_METHOD_GIT_COMMIT_FILE_DIFF,
     REMOTE_METHOD_GIT_DIFF, REMOTE_METHOD_GIT_DIFF_CONTENT, REMOTE_METHOD_GIT_DISCARD,
     REMOTE_METHOD_GIT_FETCH, REMOTE_METHOD_GIT_LIST_BRANCHES, REMOTE_METHOD_GIT_LOG,
@@ -113,24 +113,71 @@ fn main() {
     serve_root(root, token);
 }
 
+/// Caps concurrent request handlers so a burst cannot spawn unbounded
+/// threads. The reader thread blocks here when full, which backpressures the
+/// client over the SSH channel.
+const MAX_INFLIGHT: usize = 32;
+
+struct InflightGate {
+    limit: usize,
+    active: Mutex<usize>,
+    cv: Condvar,
+}
+
+impl InflightGate {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            active: Mutex::new(0),
+            cv: Condvar::new(),
+        }
+    }
+
+    fn enter(&self) {
+        let mut active = self.active.lock().unwrap();
+        while *active >= self.limit {
+            active = self.cv.wait(active).unwrap();
+        }
+        *active += 1;
+    }
+
+    fn leave(&self) {
+        let mut active = self.active.lock().unwrap();
+        *active = active.saturating_sub(1);
+        self.cv.notify_one();
+    }
+}
+
+/// Writes one response line under a single lock so concurrent handlers never
+/// interleave bytes. The whole line (payload + newline) is one write.
+fn write_response(stdout: &Mutex<std::io::Stdout>, response: &ControlResponse) {
+    let mut bytes = serde_json::to_vec(response).unwrap_or_else(|_| b"{}".to_vec());
+    bytes.push(b'\n');
+    if let Ok(mut out) = stdout.lock() {
+        let _ = out.write_all(&bytes);
+        let _ = out.flush();
+    }
+}
+
 fn serve_root(root: String, token: String) {
     let registry = WorkspaceRegistry::default();
     let canonical = registry.authorize(&root).unwrap_or_else(|e| {
         eprintln!("cannot authorize root {root}: {e}");
         std::process::exit(2);
     });
-    let agent = Agent {
+    let agent = Arc::new(Agent {
         registry,
         root: canonical,
         sessions: Mutex::new(HashMap::new()),
         bg_lanes: Mutex::new(HashMap::new()),
         next_session: AtomicU32::new(1),
         docker: docker::DockerShared::default(),
-    };
+    });
     auth::expect_token(&token);
     let stdin = std::io::stdin();
     let mut reader = BufReader::new(stdin.lock());
-    let mut stdout = std::io::stdout().lock();
+    let stdout = Arc::new(Mutex::new(std::io::stdout()));
+    let gate = Arc::new(InflightGate::new(MAX_INFLIGHT));
     let mut line = String::new();
     loop {
         line.clear();
@@ -139,12 +186,22 @@ fn serve_root(root: String, token: String) {
             Ok(_) => {}
             Err(_) => break,
         }
-        let response = agent.handle_line(&line);
-        let mut bytes = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());
-        bytes.push(b'\n');
-        if stdout.write_all(&bytes).is_err() || stdout.flush().is_err() {
-            break;
-        }
+        // Each request is served on its own thread so a long operation (a
+        // poll sequence, `docker pull`, `shell_run`) does not block unrelated
+        // requests on the same pipe. Responses may arrive out of order; the
+        // client correlates them by request id. On stdin EOF the process
+        // exits, which drops any in-flight work and matches the old
+        // single-threaded shutdown behavior.
+        let request_line = std::mem::take(&mut line);
+        gate.enter();
+        let agent = agent.clone();
+        let stdout = stdout.clone();
+        let gate = gate.clone();
+        std::thread::spawn(move || {
+            let response = agent.handle_line(&request_line);
+            write_response(&stdout, &response);
+            gate.leave();
+        });
     }
 }
 
@@ -247,6 +304,44 @@ impl Agent {
                     Ok(mtime) => ControlResponse::success(request.id, json!(mtime)),
                     Err(e) => ControlResponse::failure(request.id, "io_error", e),
                 }
+            }
+            REMOTE_METHOD_FS_WRITE_FILES => {
+                // Batch write. Every path is authorized individually before
+                // any bytes land, and parent directories are created (the
+                // single-file call requires them to exist, which is what
+                // forced shell-integration install into a mkdir-per-write
+                // dance of separate round trips).
+                let files = params
+                    .get("files")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let mut planned: Vec<(PathBuf, String)> = Vec::with_capacity(files.len());
+                for entry in &files {
+                    let path = PathBuf::from(entry.get("path").and_then(Value::as_str).unwrap_or(""));
+                    if path.as_os_str().is_empty() || !self.authorized(&path) {
+                        return denied(request.id);
+                    }
+                    planned.push((
+                        path,
+                        entry
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                    ));
+                }
+                for (path, content) in &planned {
+                    if let Some(parent) = path.parent() {
+                        if let Err(e) = std::fs::create_dir_all(parent) {
+                            return ControlResponse::failure(request.id, "io_error", e.to_string());
+                        }
+                    }
+                    if let Err(e) = terax_core::fs::file::write_file_sync(path, content.as_bytes()) {
+                        return ControlResponse::failure(request.id, "io_error", e);
+                    }
+                }
+                ControlResponse::success(request.id, json!({ "written": planned.len() }))
             }
             REMOTE_METHOD_FS_STAT => {
                 let path = PathBuf::from(str_param("path"));
@@ -816,6 +911,66 @@ mod lane_harness_tests {
         // ...but the owning lane reads fine.
         let hit = poll_bg(&agent, h3, Some(3));
         assert!(hit.ok, "owning lane poll failed: {:?}", hit.error);
+    }
+
+    #[test]
+    fn fs_write_files_creates_parents_and_writes_each_file() {
+        let agent = test_agent();
+        let root = agent.root.clone();
+        let one = root.join("nested/dir/one.txt");
+        let two = root.join("two.txt");
+        let resp = agent.route(req(
+            "fs_write_files",
+            json!({
+                "files": [
+                    { "path": one.to_string_lossy(), "content": "first" },
+                    { "path": two.to_string_lossy(), "content": "second" },
+                ]
+            }),
+            None,
+        ));
+        assert!(resp.ok, "batch write failed: {:?}", resp.error);
+        assert_eq!(std::fs::read_to_string(&one).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(&two).unwrap(), "second");
+    }
+
+    #[test]
+    fn fs_write_files_denies_unauthorized_before_writing_any() {
+        let agent = test_agent();
+        let outside = PathBuf::from("/etc/terax-should-not-exist");
+        let resp = agent.route(req(
+            "fs_write_files",
+            json!({ "files": [{ "path": outside.to_string_lossy(), "content": "x" }] }),
+            None,
+        ));
+        assert!(!resp.ok);
+        assert_eq!(
+            resp.error.map(|e| e.code),
+            Some("path_not_accessible".to_string())
+        );
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn agent_route_is_safe_under_concurrent_lanes() {
+        // The serve loop now dispatches each request on its own thread, so
+        // route must be Sync and lane namespaces must stay isolated while
+        // many requests interleave. This exercises both without a live ssh.
+        let agent = Arc::new(test_agent());
+        let mut handles = Vec::new();
+        for lane in 0..8u8 {
+            let agent = agent.clone();
+            handles.push(std::thread::spawn(move || {
+                let handle = spawn_bg(&agent, Some(lane));
+                for _ in 0..100 {
+                    let resp = poll_bg(&agent, handle, Some(lane));
+                    assert!(resp.ok, "concurrent poll failed: {:?}", resp.error);
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("worker thread panicked");
+        }
     }
 
     #[test]
