@@ -25,6 +25,7 @@ import { disconnectHost } from "./lib/idleDisconnect";
 import type { ImportedHost, SshHost } from "./lib/types";
 
 type Props = {
+  /** Opens a new terminal tab on the host. */
   onConnect: (host: SshHost) => void;
   onEdit: (host: SshHost | null) => void;
   onShowHostKey: (host: SshHost) => void;
@@ -242,7 +243,11 @@ function HostRow({
     <div
       role="button"
       tabIndex={0}
-      title={`Connect to ${host.alias}`}
+      title={
+        status?.state === "online"
+          ? `Open another terminal on ${host.alias}`
+          : `Connect to ${host.alias}`
+      }
       onClick={confirmingDelete ? undefined : onClick}
       onKeyDown={(e) => {
         if (e.key === "Enter" && !confirmingDelete) {

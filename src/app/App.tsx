@@ -1421,26 +1421,16 @@ export default function App() {
   } | null>(null);
 
   // Per-tab hosts (Tabby-style): connecting opens a NEW terminal tab on the
-  // host in the current space. Existing tabs keep their own env + sessions;
+  // host in the current space, every time. Tabs are cheap and independent —
+  // a second shell on the same host is a normal thing to want, and the tab
+  // strip is how you get back to an existing one, so nothing here looks for
+  // an existing tab to focus. Existing tabs keep their own env + sessions;
   // the active-tab effect mirrors the new tab's env to global, which swings
   // explorer/git/terminal routing to the remote. Returns true when a tab was
   // opened (callers use this to skip redundant focus work).
   const handleConnectHost = useCallback(
     async (host: SshHost): Promise<boolean> => {
       const env: WorkspaceEnv = { kind: "ssh", hostId: host.id };
-      // Reuse an existing tab on this host when there is one in this space:
-      // clicking a connected host jumps to it instead of piling up tabs.
-      const spaceId = activeSpaceIdRef.current;
-      const existing = tabsRef.current.find(
-        (t) =>
-          t.spaceId === spaceId &&
-          tabEnv(t).kind === "ssh" &&
-          (tabEnv(t) as { hostId: string }).hostId === host.id,
-      );
-      if (existing) {
-        setActiveId(existing.id);
-        return false;
-      }
       // probeHost already resolved home into the connection status; reuse it
       // instead of a duplicate ssh_home_for handshake per host click.
       const known = useHostStore.getState().connections[host.id];
@@ -1448,7 +1438,7 @@ export default function App() {
       newTabWithEnv(env, home ?? undefined, host.alias);
       return true;
     },
-    [newTabWithEnv, setActiveId],
+    [newTabWithEnv],
   );
   handleConnectHostRef.current = handleConnectHost;
   // Stable alias for menu callbacks (NewTabMenu) so the Header JSX above
