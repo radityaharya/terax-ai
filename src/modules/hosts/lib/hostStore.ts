@@ -4,6 +4,7 @@ import type {
   HostKeyStatus,
   HostProbe,
   ImportedHost,
+  IrohBootstrapResult,
   ScannedKey,
   SshHost,
   SshHostInput,
@@ -146,4 +147,37 @@ export async function scanKeys(
   port: number,
 ): Promise<ScannedKey[]> {
   return invoke<ScannedKey[]>("ssh_scan_host_keys", { hostname, port });
+}
+
+/** Step 1 of iroh pairing: drives the SSH channel to arm the fallback and
+ *  returns the host's iroh identity for a confirmation dialog. Does not
+ *  pin anything yet. */
+export async function setupIrohHost(
+  hostId: string,
+): Promise<IrohBootstrapResult> {
+  return invoke<IrohBootstrapResult>("iroh_setup_host", { hostId });
+}
+
+/** Step 2: the user confirmed the fingerprint. Writes the pin and updates
+ *  the in-memory host list so the panel reflects it immediately. */
+export async function confirmIrohPin(
+  hostId: string,
+  endpointId: string,
+): Promise<void> {
+  await invoke("iroh_confirm_pin", { hostId, endpointId });
+  useHostStore.setState((s) => ({
+    hosts: s.hosts.map((h) =>
+      h.id === hostId ? { ...h, irohEndpointId: endpointId } : h,
+    ),
+  }));
+}
+
+/** Clears the pin, the stored token, and any live iroh connection. */
+export async function disableIroh(hostId: string): Promise<void> {
+  await invoke("iroh_disable", { hostId });
+  useHostStore.setState((s) => ({
+    hosts: s.hosts.map((h) =>
+      h.id === hostId ? { ...h, irohEndpointId: null } : h,
+    ),
+  }));
 }

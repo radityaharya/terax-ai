@@ -3,7 +3,8 @@ pub mod modules;
 #[cfg(target_os = "macos")]
 use modules::app_menu;
 use modules::{
-    agent, control, fs, git, history, lsp, net, pty, secrets, shell, ssh, vibrancy, workspace,
+    agent, control, fs, git, history, iroh_fallback, lsp, net, pty, secrets, shell, ssh, vibrancy,
+    workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -220,11 +221,39 @@ pub fn run() {
             // Non-secret SSH host facts persist under the app data dir so a
             // reconnect after restart skips the probe handshakes. Falls back
             // to memory-only when the path is unavailable.
-            let ssh_facts_dir = _app
+            let data_dir = _app
                 .path()
                 .app_local_data_dir()
                 .unwrap_or_else(|_| std::env::temp_dir());
-            _app.manage(ssh::SshShared::with_persist_dir(ssh_facts_dir));
+            let iroh_shared =
+                iroh_fallback::IrohShared::with_persist_path(data_dir.join("terax-iroh.json"));
+            // Load the n0 API key out of the keychain once at startup so the
+            // endpoint built on the first fallback dial already knows it.
+            // The read is async, so it runs as a task; until it lands the
+            // manager simply behaves as the zero-config default.
+            {
+                let handle = _app.handle().clone();
+                let rpc = iroh_shared.rpc.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state: tauri::State<'_, secrets::SecretsState> =
+                        tauri::Manager::state(&handle);
+                    match secrets::secrets_get(
+                        handle.clone(),
+                        state,
+                        iroh_fallback::IROH_SECRET_SERVICE.into(),
+                        iroh_fallback::IROH_API_KEY_ACCOUNT.into(),
+                    )
+                    .await
+                    {
+                        Ok(Some(secret)) if !secret.trim().is_empty() => {
+                            rpc.set_api_secret(Some(secret))
+                        }
+                        _ => {}
+                    }
+                });
+            }
+            _app.manage(iroh_shared);
+            _app.manage(ssh::SshShared::with_persist_dir(data_dir));
             #[cfg(target_os = "macos")]
             if let Some(main) = _app.get_webview_window("main") {
                 let handle = _app.handle().clone();
@@ -351,6 +380,13 @@ pub fn run() {
             ssh::commands::zellij_delete_all_sessions,
             ssh::commands::ssh_rpc,
             ssh::commands::ssh_disconnect,
+            iroh_fallback::commands::iroh_setup_host,
+            iroh_fallback::commands::iroh_confirm_pin,
+            iroh_fallback::commands::iroh_disable,
+            iroh_fallback::commands::iroh_get_config,
+            iroh_fallback::commands::iroh_set_relay_urls,
+            iroh_fallback::commands::iroh_set_api_key,
+            iroh_fallback::commands::iroh_clear_api_key,
             control::control_frontend_ready,
             control::control_respond,
             get_launch_dir,

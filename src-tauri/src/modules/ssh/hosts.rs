@@ -26,6 +26,13 @@ pub struct SshHost {
     pub color: Option<String>,
     #[serde(default)]
     pub agent_forward: bool,
+    /// Pinned iroh EndpointId (64 lowercase hex chars) for the P2P fallback
+    /// transport. `None` means the host has no fallback armed: `ssh_rpc`
+    /// only ever tries SSH for it. Unlike SSH host keys (which the real
+    /// `ssh` binary pins to `~/.ssh/known_hosts`), Terax itself owns this
+    /// pin - there is no OS-level trust store for iroh identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iroh_endpoint_id: Option<String>,
     #[serde(default)]
     pub created_at_ms: u64,
     #[serde(default)]
@@ -63,6 +70,17 @@ pub fn normalize_host_color(raw: Option<&str>) -> Result<Option<String>, String>
         return Err("color must be a hex value like #4f8ff7".into());
     }
     Ok(Some(format!("#{}", expanded.to_lowercase())))
+}
+
+/// An iroh `EndpointId` displays as 64 lowercase hex characters (the
+/// Ed25519 public key). Rejecting anything else before it is ever persisted
+/// means a malformed or crafted value can never reach `EndpointId::from_str`
+/// downstream in the iroh RPC dial path.
+pub fn validate_iroh_endpoint_id(id: &str) -> Result<(), String> {
+    if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("iroh endpoint id must be 64 hex characters".into());
+    }
+    Ok(())
 }
 
 pub fn normalize_host_input(input: &SshHostInput) -> Result<SshHostFields, String> {
@@ -402,6 +420,17 @@ mod tests {
     }
 
     #[test]
+    fn iroh_endpoint_id_validator_accepts_only_64_hex() {
+        let good = "a".repeat(64);
+        assert!(validate_iroh_endpoint_id(&good).is_ok());
+        assert!(validate_iroh_endpoint_id("").is_err());
+        assert!(validate_iroh_endpoint_id(&"a".repeat(63)).is_err());
+        assert!(validate_iroh_endpoint_id(&"a".repeat(65)).is_err());
+        assert!(validate_iroh_endpoint_id(&"z".repeat(64)).is_err());
+        assert!(validate_iroh_endpoint_id("javascript:alert(1)").is_err());
+    }
+
+    #[test]
     fn host_id_slug_is_filesafe() {
         assert_eq!(host_id_for("Prod Web 01!"), "prod web 01");
         assert_eq!(host_id_for("..evil.."), "evil");
@@ -424,6 +453,7 @@ mod tests {
                 bound_space_id: None,
                 color: None,
                 agent_forward: false,
+                iroh_endpoint_id: None,
                 created_at_ms: 0,
                 updated_at_ms: 0,
             });

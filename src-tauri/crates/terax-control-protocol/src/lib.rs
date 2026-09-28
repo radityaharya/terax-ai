@@ -23,7 +23,16 @@ pub const PROTOCOL_VERSION: u16 = 1;
 ///   install writes four zsh files; doing that as four requests cost four
 ///   round trips (and, on Windows, could grow the RPC pool to four full SSH
 ///   handshakes) for what is one logical operation.
-pub const REMOTE_PROTOCOL_VERSION: u16 = 4;
+///
+/// v5 (additive method):
+/// - `iroh_bootstrap` asks the agent (still reached over the SSH RPC pipe)
+///   to generate-or-load a persistent iroh identity and a fallback-channel
+///   token, then ensure a detached `terax-remote iroh-serve` daemon is
+///   running for this root. This is the only method that spawns a
+///   long-lived process instead of answering inline; the iroh transport it
+///   arms speaks the exact same `ControlRequest`/`ControlResponse` envelope,
+///   just over an iroh QUIC stream instead of ssh stdio.
+pub const REMOTE_PROTOCOL_VERSION: u16 = 5;
 /// Token `terax-remote --version` must include and the desktop must match
 /// before it may reuse an installed agent. The app version alone is not
 /// enough: the wire contract can change (v1 -> v3 lanes) without the crate
@@ -51,6 +60,18 @@ pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 /// Max log/event bytes returned per poll response. Kept well under
 /// MAX_MESSAGE_BYTES so JSON escaping overhead can never blow the frame.
 pub const MAX_POLL_BYTES: usize = 32 * 1024;
+
+/// ALPN for the iroh P2P fallback transport. One request per QUIC bidi
+/// stream (open, write one JSON `ControlRequest` line, finish; read one
+/// JSON `ControlResponse` line to end): unlike the ssh RPC pipe, iroh
+/// streams are cheap enough that multiplexing many logical requests over
+/// one pipe buys nothing, so there is no id-based dispatch table on this
+/// transport. Bumping the trailing version forces both sides to renegotiate
+/// if the framing ever changes incompatibly.
+pub const IROH_ALPN: &[u8] = b"terax-remote/iroh/1";
+/// Cap on a single iroh request/response frame. Matches MAX_MESSAGE_BYTES
+/// since both carry the same ControlRequest/ControlResponse JSON envelope.
+pub const IROH_MAX_FRAME_BYTES: usize = MAX_MESSAGE_BYTES;
 pub const METHOD_PING: &str = "ping";
 pub const METHOD_CAPABILITIES: &str = "capabilities";
 pub const METHOD_IDENTIFY: &str = "identify";
@@ -106,6 +127,12 @@ pub const REMOTE_METHOD_SHELL_SESSION_CLOSE: &str = "shell_session_close";
 pub const REMOTE_METHOD_SHELL_BG_SPAWN: &str = "shell_bg_spawn";
 pub const REMOTE_METHOD_SHELL_BG_LOGS: &str = "shell_bg_logs";
 pub const REMOTE_METHOD_SHELL_BG_KILL: &str = "shell_bg_kill";
+
+/// v5: ask the agent (over the SSH RPC pipe) to arm the iroh P2P fallback
+/// transport for this root — generate/load a persistent identity, generate/
+/// load a fallback token, and ensure a detached `iroh-serve` daemon is
+/// running. Never itself carries fs/git/shell payload.
+pub const REMOTE_METHOD_IROH_BOOTSTRAP: &str = "iroh_bootstrap";
 
 // Docker capabilities / daemon: version, compose v2/v1, swarm state,
 // server version, rootless/socket, context.
@@ -236,6 +263,7 @@ pub const REMOTE_METHODS: &[&str] = &[
     REMOTE_METHOD_SHELL_BG_SPAWN,
     REMOTE_METHOD_SHELL_BG_LOGS,
     REMOTE_METHOD_SHELL_BG_KILL,
+    REMOTE_METHOD_IROH_BOOTSTRAP,
     REMOTE_METHOD_DOCKER_CAPABILITIES,
     REMOTE_METHOD_DOCKER_SYSTEM_DF,
     REMOTE_METHOD_DOCKER_STATS,

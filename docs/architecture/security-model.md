@@ -79,6 +79,35 @@ The short version:
   checks are a pre-filter only.
 - Remote OSC 7 paths never enter the local workspace registry.
 
+## Iroh P2P fallback
+
+An optional fallback transport for already-paired SSH hosts
+(`docs/architecture/iroh-fallback.md`). The short version:
+
+- SSH stays the only first-contact channel; a host's iroh identity is only
+  ever learned once over SSH and explicitly pinned by the user
+  (`iroh_confirm_pin`), TOFU-style like SSH host keys - except Terax itself
+  owns the pin since there is no OS trust store for iroh identities.
+  Un-pinned hosts pay zero cost.
+- `terax-remote` goes from "binds nothing" (SSH-child, stdio only) to
+  optionally running a detached daemon that binds one iroh QUIC endpoint,
+  but only for hosts that explicitly bootstrapped it.
+- Two independent auth gates: iroh's own cryptographic peer authentication
+  (EndpointId, inherent to the QUIC/TLS handshake), plus the same bearer
+  token + constant-time-compare pattern the SSH RPC channel already uses.
+- The fallback reuses the exact same `REMOTE_METHODS` allow-list as the SSH
+  channel - no new remote capability surface, only a new pipe.
+- Transport config is global and set in Settings > Iroh: custom relay URLs
+  (non-secret, app data dir) and an optional n0 Iroh Services API key
+  (keychain, service `terax-iroh`). Both are pushed to the agent over the
+  authenticated SSH channel at bootstrap; the agent writes them 0600. An
+  API key is used locally to mint an endpoint-bound relay token and is never
+  sent to the relay.
+- No relay is Terax-operated. Custom relays can fully replace n0 (address
+  lookup is disabled in that mode); no systemd, so a rebooted or crashed
+  host's fallback stays down until the next successful SSH connect re-arms
+  it.
+
 ## Docker management
 
 Docker on SSH hosts rides the same agent channel (`docs/architecture/docker.md`).

@@ -11,6 +11,7 @@ import {
   Settings01Icon,
   SourceCodeIcon,
   UserMultiple02Icon,
+  ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -19,6 +20,7 @@ import { AboutSection } from "./sections/AboutSection";
 import { AgentsSection } from "./sections/AgentsSection";
 import { EditorSection } from "./sections/EditorSection";
 import { GeneralSection } from "./sections/GeneralSection";
+import { IrohSection } from "./sections/IrohSection";
 import { ModelsSection } from "./sections/ModelsSection";
 import { ShortcutsSection } from "./sections/ShortcutsSection";
 import { ThemesSection } from "./sections/ThemesSection";
@@ -60,6 +62,7 @@ const TABS: {
     icon: UserMultiple02Icon,
     component: AgentsSection,
   },
+  { id: "iroh", label: "Iroh", icon: ZapIcon, component: IrohSection },
   {
     id: "about",
     label: "About",
@@ -75,6 +78,7 @@ const VALID_TABS: SettingsTab[] = [
   "shortcuts",
   "models",
   "agents",
+  "iroh",
   "about",
 ];
 

@@ -1382,6 +1382,7 @@ mod tests {
             bound_space_id: None,
             color: None,
             agent_forward: false,
+            iroh_endpoint_id: None,
             created_at_ms: 0,
             updated_at_ms: 0,
         });

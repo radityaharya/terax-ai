@@ -287,6 +287,8 @@ Long-form contributor guides live under `docs/`. These guides elaborate on `TERA
 - `docs/architecture/two-process-model.md` - IPC boundary and command reference
 - `docs/architecture/pty-shell-integration.md` - PTY, shell init scripts, OSC, ConPTY, Job Object
 - `docs/architecture/security-model.md` - consolidated security model and boundaries
+- `docs/architecture/ssh-remote.md` - SSH remote workspaces: transport, agent, hosts
+- `docs/architecture/iroh-fallback.md` - optional P2P fallback transport for already-paired SSH hosts
 - `docs/architecture/ai-subsystem.md` - AI stack, sessions, tools, adding a provider
 - `docs/architecture/terminal-renderer-pool.md` - model ownership and presentation pool invariants
 - `docs/contributing/testing.md` - testing contract and core-subsystem invariants

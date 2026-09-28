@@ -9,17 +9,18 @@ import {
   PlusSignIcon,
   Refresh01Icon,
   ServerStack03Icon,
+  ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
 import { resolveHostColor } from "./lib/hostColor";
 import {
+  type ConnectionStatus,
   deleteHost,
   probeHost,
   refreshHosts,
   refreshImported,
   useHostStore,
-  type ConnectionStatus,
 } from "./lib/hostStore";
 import { disconnectHost } from "./lib/idleDisconnect";
 import type { ImportedHost, SshHost } from "./lib/types";
@@ -51,7 +52,12 @@ function statusDot(status: ConnectionStatus | undefined): {
   }
 }
 
-export function HostsPanel({ onConnect, onEdit, onShowHostKey, onShowAuth }: Props) {
+export function HostsPanel({
+  onConnect,
+  onEdit,
+  onShowHostKey,
+  onShowAuth,
+}: Props) {
   const hosts = useHostStore((s) => s.hosts);
   const imported = useHostStore((s) => s.imported);
   const importedLoaded = useHostStore((s) => s.importedLoaded);
@@ -146,7 +152,10 @@ export function HostsPanel({ onConnect, onEdit, onShowHostKey, onShowAuth }: Pro
           ))
         )}
         {importedLoaded && unimported.length > 0 && (
-          <ImportedSection hosts={unimported} onImport={() => void refreshHosts()} />
+          <ImportedSection
+            hosts={unimported}
+            onImport={() => void refreshHosts()}
+          />
         )}
       </div>
     </div>
@@ -274,8 +283,18 @@ function HostRow({
         style={{ color: resolveHostColor(host) }}
       />
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-[12px] font-medium leading-tight">
-          {host.alias}
+        <span className="flex min-w-0 items-center gap-1 truncate text-[12px] font-medium leading-tight">
+          <span className="truncate">{host.alias}</span>
+          {host.irohEndpointId && (
+            <span title="P2P fallback enabled" className="shrink-0">
+              <HugeiconsIcon
+                icon={ZapIcon}
+                size={11}
+                strokeWidth={1.75}
+                className="text-muted-foreground/60"
+              />
+            </span>
+          )}
         </span>
         <span className="truncate text-[10px] leading-tight text-muted-foreground/60">
           {confirmingDelete ? "Delete this host?" : detail}
@@ -308,15 +327,15 @@ function HostRow({
         <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
           {status?.state === "online" && (
             <RowButton label="Disconnect host" onClick={onDisconnect}>
-              <HugeiconsIcon
-                icon={Cancel01Icon}
-                size={13}
-                strokeWidth={1.75}
-              />
+              <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={1.75} />
             </RowButton>
           )}
           <RowButton label="Edit host" onClick={onEdit}>
-            <HugeiconsIcon icon={PencilEdit02Icon} size={13} strokeWidth={1.75} />
+            <HugeiconsIcon
+              icon={PencilEdit02Icon}
+              size={13}
+              strokeWidth={1.75}
+            />
           </RowButton>
           <RowButton label="Delete host" onClick={onDelete}>
             <HugeiconsIcon icon={Delete02Icon} size={13} strokeWidth={1.75} />
@@ -385,7 +404,9 @@ function ImportedSection({
         type="button"
         onClick={toggle}
         aria-expanded={!collapsed}
-        title={collapsed ? "Expand ssh-config hosts" : "Collapse ssh-config hosts"}
+        title={
+          collapsed ? "Expand ssh-config hosts" : "Collapse ssh-config hosts"
+        }
         className="flex w-full items-center gap-1 rounded px-2 pb-1 text-left text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/40"
       >
         <HugeiconsIcon

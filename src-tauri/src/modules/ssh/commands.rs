@@ -24,7 +24,7 @@ pub async fn ssh_save_host(
     state: tauri::State<'_, SshShared>,
     input: SshHostInput,
 ) -> Result<SshHost, String> {
-    let fields = normalize_host_input(&input).map_err(|m| m)?;
+    let fields = normalize_host_input(&input)?;
     let now = now_ms();
     let store = host_store();
     let (id, created) = match input.id {
@@ -43,7 +43,12 @@ pub async fn ssh_save_host(
             (id, now)
         }
     };
-    let bound = store.get(&id).and_then(|h| h.bound_space_id);
+    let existing = store.get(&id);
+    let bound = existing.as_ref().and_then(|h| h.bound_space_id.clone());
+    // The iroh pin is set only via `iroh_confirm_pin`, never through the
+    // host editor form - preserve it across ordinary edits the same way
+    // `bound_space_id` survives a save that doesn't mention it.
+    let iroh_endpoint_id = existing.and_then(|h| h.iroh_endpoint_id);
     let host = SshHost {
         id,
         alias: fields.alias,
@@ -55,6 +60,7 @@ pub async fn ssh_save_host(
         bound_space_id: bound,
         color: fields.color,
         agent_forward: fields.agent_forward,
+        iroh_endpoint_id,
         created_at_ms: created,
         updated_at_ms: now,
     };
@@ -711,19 +717,66 @@ pub fn ensure_remote_agent_with(
 pub async fn ssh_rpc(
     app: tauri::AppHandle,
     state: tauri::State<'_, SshShared>,
+    iroh_state: tauri::State<'_, crate::modules::iroh_fallback::IrohShared>,
     host_id: String,
     method: String,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    super::hosts::validate_host_id(&host_id)?;
+    match ssh_rpc_call(&app, &state, &host_id, &method, params.clone()).await {
+        Ok(v) => Ok(v),
+        Err(ssh_err) => {
+            // Fall back to iroh only when the host has a pinned endpoint:
+            // an unconfigured host (the overwhelming majority) never pays
+            // for the fallback attempt at all. Error classification between
+            // "SSH is genuinely unreachable" and "auth/protocol failure" is
+            // deliberately not attempted here - both cases are worth a
+            // fallback try, and if iroh also fails, the original SSH error
+            // (usually the more actionable one for the user) is returned
+            // rather than the iroh dial failure.
+            let has_fallback = host_store()
+                .get(&host_id)
+                .map(|h| h.iroh_endpoint_id.is_some())
+                .unwrap_or(false);
+            if !has_fallback {
+                return Err(ssh_err);
+            }
+            match crate::modules::iroh_fallback::commands::iroh_rpc_call(
+                &app,
+                &iroh_state,
+                &host_id,
+                &method,
+                params,
+            )
+            .await
+            {
+                Ok(v) => Ok(v),
+                Err(_iroh_err) => Err(ssh_err),
+            }
+        }
+    }
+}
+
+/// Core of `ssh_rpc`, factored out so other backend callers (the iroh
+/// bootstrap flow in `iroh_fallback::commands`) can issue an allow-listed
+/// remote request over the same SSH RPC pipe without going through the
+/// Tauri command/IPC boundary. Kept exactly in sync with the command: the
+/// allow-list check is the single source of truth either way.
+pub async fn ssh_rpc_call(
+    app: &tauri::AppHandle,
+    state: &SshShared,
+    host_id: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    super::hosts::validate_host_id(host_id)?;
     let store = host_store();
-    store.load(&app);
+    store.load(app);
     let host = store
-        .get(&host_id)
+        .get(host_id)
         .ok_or_else(|| format!("unknown SSH host: {host_id}"))?;
     // Single source of truth: the protocol registry. Any method not listed
     // in REMOTE_METHODS is rejected before touching the network.
-    if !terax_control_protocol::REMOTE_METHODS.contains(&method.as_str()) {
+    if !terax_control_protocol::REMOTE_METHODS.contains(&method) {
         return Err(format!("remote method not allowed: {method}"));
     }
     // Serialize agent ensure per host: the first fan-out (explorer + git
@@ -732,7 +785,7 @@ pub async fn ssh_rpc(
     // The second waiter finds the agent already installed and skips upload.
     // Once verified this session, the probe is skipped entirely.
     let remote_bin = {
-        let _guard = state.ensure_lock.acquire(&host_id);
+        let _guard = state.ensure_lock.acquire(host_id);
         ensure_remote_agent(&host, Some(&state.session))?
     };
     // Resolve the agent root: explicit setting wins, then the in-memory
@@ -740,25 +793,25 @@ pub async fn ssh_rpc(
     // probe the remote home once and remember it everywhere.
     let remote_root = match host.remote_root.clone().filter(|r| !r.is_empty()) {
         Some(root) => {
-            state.session.update(&host_id, |f| {
+            state.session.update(host_id, |f| {
                 if f.home.is_none() {
                     f.home = Some(root.clone());
                 }
             });
             root
         }
-        None => match state.session.get(&host_id).home {
+        None => match state.session.get(host_id).home {
             Some(home) => home,
             None => match super::session::ssh_home(&host) {
                 Ok(home) => {
-                    state.session.update(&host_id, |f| {
+                    state.session.update(host_id, |f| {
                         f.home = Some(home.clone());
                     });
                     let mut updated = host.clone();
                     updated.remote_root = Some(home.clone());
                     updated.updated_at_ms = now_ms();
                     store.upsert(updated);
-                    let _ = store.persist(&app);
+                    let _ = store.persist(app);
                     home
                 }
                 Err(e) => {
@@ -771,20 +824,21 @@ pub async fn ssh_rpc(
     let params = serde_json::Value::Object(params);
     state
         .rpc
-        .request(&host_id, &method, params, &remote_bin, &remote_root)
-        .map_err(|e| {
-            state.rpc.drop_connection(&host_id);
-            e
+        .request(host_id, method, params, &remote_bin, &remote_root)
+        .inspect_err(|_| {
+            state.rpc.drop_connection(host_id);
         })
 }
 
 #[tauri::command]
 pub async fn ssh_disconnect(
     state: tauri::State<'_, SshShared>,
+    iroh_state: tauri::State<'_, crate::modules::iroh_fallback::IrohShared>,
     host_id: String,
 ) -> Result<(), String> {
     super::hosts::validate_host_id(&host_id)?;
     state.rpc.drop_connection(&host_id);
+    iroh_state.rpc.drop_connection(&host_id);
     // Drop cached session facts too: a disconnect means the next use must
     // re-verify the agent and re-resolve home/shell against a live host.
     state.session.invalidate_host(&host_id);

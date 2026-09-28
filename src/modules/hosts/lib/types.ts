@@ -11,6 +11,9 @@ export type SshHost = {
    *  from the host id (see `resolveHostColor`). */
   color?: string | null;
   agentForward: boolean;
+  /** Pinned iroh EndpointId (64 hex chars) for the P2P fallback transport.
+   *  `null`/absent means no fallback armed: connections only ever try SSH. */
+  irohEndpointId?: string | null;
   createdAtMs: number;
   updatedAtMs: number;
 };
@@ -60,4 +63,12 @@ export type ScannedKey = {
   keyType: string;
   keyData: string;
   fingerprint: string;
+};
+
+/** Result of `iroh_setup_host`: the host's iroh identity, ready to show in
+ *  a TOFU-style confirmation dialog before `iroh_confirm_pin` writes it. */
+export type IrohBootstrapResult = {
+  endpointId: string;
+  fingerprint: string;
+  alreadyPinned: boolean;
 };

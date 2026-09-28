@@ -9,12 +9,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ServerStack03Icon } from "@hugeicons/core-free-icons";
+import { ServerStack03Icon, ZapIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { HostColorPicker } from "./HostColorPicker";
+import { IrohPairDialog } from "./IrohPairDialog";
 import { hostIdSeed, suggestHostColor } from "./lib/hostColor";
-import { saveHost } from "./lib/hostStore";
+import { disableIroh, saveHost } from "./lib/hostStore";
 import type { SshHost, SshHostInput } from "./lib/types";
 
 type Props = {
@@ -34,6 +35,11 @@ export function HostEditorDialog({ host, onOpenChange, onSaved }: Props) {
   const [agentForward, setAgentForward] = useState(host?.agentForward ?? false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [irohEndpointId, setIrohEndpointId] = useState(
+    host?.irohEndpointId ?? null,
+  );
+  const [irohPairing, setIrohPairing] = useState(false);
+  const [irohBusy, setIrohBusy] = useState(false);
 
   useEffect(() => {
     setAlias(host?.alias ?? "");
@@ -44,6 +50,7 @@ export function HostEditorDialog({ host, onOpenChange, onSaved }: Props) {
     setRemoteRoot(host?.remoteRoot ?? "");
     setColor(host?.color ?? null);
     setAgentForward(host?.agentForward ?? false);
+    setIrohEndpointId(host?.irohEndpointId ?? null);
     setError(null);
     setSaving(false);
   }, [host]);
@@ -87,7 +94,11 @@ export function HostEditorDialog({ host, onOpenChange, onSaved }: Props) {
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-1.75">
-            <HugeiconsIcon icon={ServerStack03Icon} size={16} strokeWidth={1.75} />
+            <HugeiconsIcon
+              icon={ServerStack03Icon}
+              size={16}
+              strokeWidth={1.75}
+            />
             {host ? "Edit host" : "Add SSH host"}
           </DialogTitle>
           <DialogDescription>
@@ -131,7 +142,10 @@ export function HostEditorDialog({ host, onOpenChange, onSaved }: Props) {
               />
             </Field>
           </div>
-          <Field label="Hostname" hint="IP or DNS name, never a full ssh command">
+          <Field
+            label="Hostname"
+            hint="IP or DNS name, never a full ssh command"
+          >
             <Input
               value={hostname}
               onChange={(e) => setHostname(e.target.value)}
@@ -145,7 +159,10 @@ export function HostEditorDialog({ host, onOpenChange, onSaved }: Props) {
               placeholder="~/.ssh/id_ed25519"
             />
           </Field>
-          <Field label="Remote root (optional)" hint="Defaults to the remote home">
+          <Field
+            label="Remote root (optional)"
+            hint="Defaults to the remote home"
+          >
             <Input
               value={remoteRoot}
               onChange={(e) => setRemoteRoot(e.target.value)}
@@ -167,6 +184,47 @@ export function HostEditorDialog({ host, onOpenChange, onSaved }: Props) {
               </span>
             </span>
           </label>
+          {host && (
+            <div className="flex flex-col gap-1 rounded-md border border-border/60 p-2.5 text-xs">
+              <div className="flex items-center gap-1.5 font-medium">
+                <HugeiconsIcon icon={ZapIcon} size={13} strokeWidth={1.75} />
+                Iroh P2P fallback
+              </div>
+              <span className="text-muted-foreground">
+                {irohEndpointId
+                  ? "Enabled. Terax falls back to a direct peer-to-peer connection if SSH becomes unreachable."
+                  : "Disabled. Requires an open SSH connection to pair."}
+              </span>
+              <div>
+                {irohEndpointId ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-[11px] text-destructive"
+                    disabled={irohBusy}
+                    onClick={() => {
+                      setIrohBusy(true);
+                      disableIroh(host.id)
+                        .then(() => setIrohEndpointId(null))
+                        .catch((e) => setError(String(e)))
+                        .finally(() => setIrohBusy(false));
+                    }}
+                  >
+                    {irohBusy ? "Disabling..." : "Disable"}
+                  </Button>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="h-6 px-2 text-[11px]"
+                    onClick={() => setIrohPairing(true)}
+                  >
+                    Pair now
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
           {error && <div className="text-xs text-destructive">{error}</div>}
         </div>
         <DialogFooter>
@@ -178,6 +236,13 @@ export function HostEditorDialog({ host, onOpenChange, onSaved }: Props) {
           </Button>
         </DialogFooter>
       </DialogContent>
+      {irohPairing && host && (
+        <IrohPairDialog
+          host={host}
+          onOpenChange={setIrohPairing}
+          onEnabled={(endpointId) => setIrohEndpointId(endpointId)}
+        />
+      )}
     </Dialog>
   );
 }

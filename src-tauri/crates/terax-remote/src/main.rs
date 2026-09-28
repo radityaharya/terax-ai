@@ -19,6 +19,7 @@ use terax_control_protocol::{
     REMOTE_METHOD_GIT_PANEL_SNAPSHOT, REMOTE_METHOD_GIT_PULL_FF_ONLY, REMOTE_METHOD_GIT_PUSH,
     REMOTE_METHOD_GIT_REMOTE_URL, REMOTE_METHOD_GIT_RESOLVE_REPO, REMOTE_METHOD_GIT_SHOW_COMMIT,
     REMOTE_METHOD_GIT_STAGE, REMOTE_METHOD_GIT_STATUS, REMOTE_METHOD_GIT_UNSTAGE,
+    REMOTE_METHOD_IROH_BOOTSTRAP,
     REMOTE_METHOD_SHELL_BG_KILL, REMOTE_METHOD_SHELL_BG_LOGS, REMOTE_METHOD_SHELL_BG_SPAWN,
     REMOTE_METHOD_SHELL_RUN, REMOTE_METHOD_SHELL_SESSION_CLOSE, REMOTE_METHOD_SHELL_SESSION_OPEN,
     REMOTE_METHOD_SHELL_SESSION_RUN, REMOTE_PROTOCOL_VERSION,
@@ -27,6 +28,7 @@ use terax_core::workspace::{WorkspaceEnv, WorkspaceRegistry};
 
 mod auth;
 mod docker;
+mod iroh_fallback;
 
 /// One background-handle namespace: an isolated handle map plus its own
 /// counter, so two follows in different lanes never share handle ids.
@@ -57,7 +59,7 @@ impl LaneBg {
     }
 }
 
-struct Agent {
+pub(crate) struct Agent {
     registry: WorkspaceRegistry,
     root: PathBuf,
     sessions: Mutex<HashMap<u32, Arc<terax_core::shell::session::ShellSession>>>,
@@ -70,6 +72,23 @@ struct Agent {
 }
 
 impl Agent {}
+
+/// Builds an `Agent` rooted at `root`, shared by both transports: the SSH
+/// RPC pipe (`serve_root`, stdio) and the iroh fallback daemon
+/// (`iroh_fallback::run_foreground`, one accept loop). Only the transport
+/// differs; request routing (`Agent::route`) is identical either way.
+pub(crate) fn build_agent(root: &str) -> Result<Arc<Agent>, String> {
+    let registry = WorkspaceRegistry::default();
+    let canonical = registry.authorize(root).map_err(|e| e.to_string())?;
+    Ok(Arc::new(Agent {
+        registry,
+        root: canonical,
+        sessions: Mutex::new(HashMap::new()),
+        bg_lanes: Mutex::new(HashMap::new()),
+        next_session: AtomicU32::new(1),
+        docker: docker::DockerShared::default(),
+    }))
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -89,17 +108,36 @@ fn main() {
     let mut token: Option<String> = None;
     let mut iter = args.iter().skip(1).peekable();
     let mut serve = false;
+    let mut iroh_serve = false;
     while let Some(a) = iter.next() {
         match a.as_str() {
             "serve" => serve = true,
+            "iroh-serve" => iroh_serve = true,
             "--root" => root = iter.next().cloned(),
             "--token" => token = iter.next().cloned(),
             _ => {}
         }
     }
+    if iroh_serve {
+        let root = root.unwrap_or_else(|| {
+            eprintln!("terax-remote iroh-serve requires --root");
+            std::process::exit(2);
+        });
+        // `run_foreground` never returns (`process::exit`); unix-only, since
+        // the daemonize step (setsid via pre_exec) is unix-only too.
+        #[cfg(unix)]
+        iroh_fallback::run_foreground(root);
+        #[cfg(not(unix))]
+        {
+            eprintln!("iroh-serve is only supported on unix remote hosts");
+            std::process::exit(2);
+        }
+    }
     if !serve {
         eprintln!("Usage: terax-remote serve --root <path> --token <hex>");
-        eprintln!("Serves Terax remote requests on stdin/stdout (newline-delimited JSON).");
+        eprintln!("       terax-remote iroh-serve --root <path>");
+        eprintln!("Serves Terax remote requests on stdin/stdout (newline-delimited JSON),");
+        eprintln!("or as a detached iroh P2P fallback daemon.");
         std::process::exit(2);
     }
     let root = root.unwrap_or_else(|| {
@@ -160,18 +198,9 @@ fn write_response(stdout: &Mutex<std::io::Stdout>, response: &ControlResponse) {
 }
 
 fn serve_root(root: String, token: String) {
-    let registry = WorkspaceRegistry::default();
-    let canonical = registry.authorize(&root).unwrap_or_else(|e| {
+    let agent = build_agent(&root).unwrap_or_else(|e| {
         eprintln!("cannot authorize root {root}: {e}");
         std::process::exit(2);
-    });
-    let agent = Arc::new(Agent {
-        registry,
-        root: canonical,
-        sessions: Mutex::new(HashMap::new()),
-        bg_lanes: Mutex::new(HashMap::new()),
-        next_session: AtomicU32::new(1),
-        docker: docker::DockerShared::default(),
     });
     auth::expect_token(&token);
     let stdin = std::io::stdin();
@@ -210,7 +239,7 @@ fn local_env() -> WorkspaceEnv {
 }
 
 impl Agent {
-    fn handle_line(&self, line: &str) -> ControlResponse {
+    pub(crate) fn handle_line(&self, line: &str) -> ControlResponse {
         let request: ControlRequest = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(e) => {
@@ -239,6 +268,27 @@ impl Agent {
 
     fn route(&self, request: ControlRequest) -> ControlResponse {
         let params = request.params.clone();
+        if request.method == REMOTE_METHOD_IROH_BOOTSTRAP {
+            // `apiSecret`/`relayUrls` are optional and tri-state: absent
+            // leaves the remote config untouched, present (even empty)
+            // rewrites it. See `iroh_fallback::bootstrap`.
+            let api_secret = params
+                .get("apiSecret")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let relay_urls: Option<Vec<String>> = params
+                .get("relayUrls")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect());
+            return match iroh_fallback::bootstrap(
+                &self.root,
+                api_secret.as_deref(),
+                relay_urls.as_deref(),
+            ) {
+                Ok(info) => ControlResponse::success(request.id, serde_json::json!(info)),
+                Err(e) => ControlResponse::failure(request.id, "iroh_bootstrap_failed", e),
+            };
+        }
         // Docker routes live in docker.rs; thin dispatch only here.
         if request.method.starts_with("docker_") {
             let authorized = |p: &PathBuf| self.authorized(p);

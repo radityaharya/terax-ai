@@ -1,20 +1,29 @@
-export { HostsPanel } from "./HostsPanel";
 export { HostEditorDialog } from "./HostEditorDialog";
 export { HostKeyDialog } from "./HostKeyDialog";
-export { SshAuthDialog, type SshAuthChoice } from "./SshAuthDialog";
+export { HostsPanel } from "./HostsPanel";
+export { IrohPairDialog } from "./IrohPairDialog";
 export {
   bindHostSpace,
+  type ConnectionStatus,
+  confirmIrohPin,
   deleteHost,
-  useHostStore,
+  disableIroh,
+  probeHost,
   refreshHosts,
   refreshImported,
-  probeHost,
   saveHost,
-  type ConnectionStatus,
+  setupIrohHost,
+  useHostStore,
 } from "./lib/hostStore";
 export {
-  markHostActive,
   cancelIdleDisconnect,
   disconnectHost,
+  markHostActive,
 } from "./lib/idleDisconnect";
-export type { SshHost, ImportedHost, ProbeOutcome } from "./lib/types";
+export type {
+  ImportedHost,
+  IrohBootstrapResult,
+  ProbeOutcome,
+  SshHost,
+} from "./lib/types";
+export { type SshAuthChoice, SshAuthDialog } from "./SshAuthDialog";
